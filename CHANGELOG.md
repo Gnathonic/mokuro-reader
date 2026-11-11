@@ -7,6 +7,12 @@
 - Local Folder: see the OCR queue of a mokuro-bunko that manages the folder, and leave
   series.json and catalog.json to it (mokuro-bunko needs 0.8)
 
+### Changed
+
+- Server OCR status is read per series, and only while its series page is open: far
+  less data, and no more freezes on a long queue (mokuro-bunko needs 0.8)
+- Server OCR says "starting", "soon" and "finishing"
+
 ## [1.11.0] - 2026-11-07
 
 ### Added

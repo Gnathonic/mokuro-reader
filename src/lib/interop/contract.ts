@@ -335,6 +335,25 @@ export function bunkoBody<T>(name: string, snapshot: T, now: number): T {
 }
 
 /**
+ * Does the Bunko checkout hold `interop/contract/<rel>`? False without a
+ * checkout, and for a checkout from before that file.
+ */
+export function hasContractFile(rel: string): boolean {
+  const dir = contractDir();
+  return !!dir && existsSync(join(dir, rel));
+}
+
+/**
+ * `bunkoBody` for a fixture newer than `CONTRACT_BASELINE`: Bunko's when its
+ * checkout has it, else the snapshot (a checkout from before it is no finding
+ * about either side; `describeContractFile` reports it).
+ */
+export function bunkoBodyIfPresent<T>(name: string, snapshot: T, now: number): T {
+  if (hasContractFile(`bunko/${name}.json`)) return loadBunkoFixture(name, { now }).body;
+  return rebase(structuredClone(snapshot), now);
+}
+
+/**
  * `obj` with `patch` applied, where every patched field must already be in
  * `obj`: a test variation of a Bunko document fails on a field Bunko renamed
  * or dropped instead of quietly adding it back.

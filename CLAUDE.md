@@ -1072,14 +1072,24 @@ min`); `released` at once; rank epoch desc, claimed_at asc, instance_id asc.
   beside readable ones keeps its last record, and a read with NO node keeps
   the still-fresh records UNSTAMPED, so they go stale at 2 × ttl — the scope
   is forgotten only once nothing kept is fresh.
-- `.mokuro-queue.json` (`server-ocr-queue.ts`, `cloudSourceFor`): the server
-  queue file plus `instance_id`, `truncated` and `done[]`. Trusted only when
-  `instance_id` names the top-ranked fresh marker. The cloud poller keeps
-  going while the tab is visible (per-provider floors; MEGA also on its live
-  tree's events), completes a volume ONLY via `done[]` (absence from a
-  truncated list is waiting), and then relists (the hook `+layout.svelte`
-  sets), runs the OCR upgrade pass and pulls layers — never
-  `pullCompletedVolume`. Cloud uploads are watched while a marker is fresh.
+- Queue file v2 (bunko `docs/design/queue-file-v2.md`): NO root queue file is
+  read from a cloud library. The marker's `series_queue` block carries the
+  hold, held rows and the ETA work clock; `MarkerPoller`
+  (`server-ocr-queue.ts`) reads the marker every max(floor, ttl/3) while the
+  tab is visible (MEGA also on root control-file events). Each series folder
+  holds `.mokuro-series-queue.json` (`series-queue.ts`: parser, clock, trust,
+  slice), read ONLY by the open series page's loop (`series-queue-loop.ts`,
+  hooked from `SeriesView`): a stored copy counts only when its
+  `instance_id` names a fresh holder with `series_queue`, the highest `rev`
+  wins, a lower `rev` and torn JSON keep the last good copy. Over a bunko
+  server the virtual file carries `live` and is trusted as is; a 404 for a
+  series the listing holds marks that server v1 for the session and hands it
+  to its root-file `QueuePoller`. Cards read `seriesQueueStore` (one slice per
+  series, set only when what they show changed) before the v1 statuses
+  (`pendingStatusFor`). Completions (a job gone, a newer `done` entry) pull
+  through the manifest on a bunko server, else relist + upgrade pass + layer
+  pull (`CloudCompletions`). Cloud uploads are watched only while the holder
+  carries `series_queue`; nothing polls for them outside their series page.
 - Folder dedup keeps EVERY copy of both control files when duplicate roots
   merge (`dedupKeepsEveryCopy`, beside the merged root files): trashing the
   older one would pull a marker or queue out from under a running Bunko. A

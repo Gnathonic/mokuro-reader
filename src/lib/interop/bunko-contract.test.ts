@@ -41,11 +41,20 @@ import { QUEUE_SNAPSHOT, stripQueueParts } from '$lib/catalog/__fixtures__/mokur
 import { describePendingOcr } from '$lib/catalog/server-ocr-pending';
 import { MARKER_SNAPSHOT } from '$lib/catalog/__fixtures__/bunko-marker';
 import {
+  SERIES_QUEUE_HTTP_SNAPSHOT,
+  SERIES_QUEUE_SHAPES_SNAPSHOT,
+  seriesQueueShapes
+} from '$lib/catalog/__fixtures__/series-queue';
+import { parseSeriesQueueFile, pickTrustedCopy, seriesQueueSlice } from '$lib/catalog/series-queue';
+import {
   EPOCH_MS,
+  ETAG_SENTINEL,
   describeContract,
+  describeContractFile,
   fixtureFetch,
   fixtureHeader,
   hasContract,
+  hasContractFile,
   loadBunkoFixture,
   loadSeed,
   type Fixture
@@ -401,6 +410,65 @@ describeContract('the OCR queue file as Bunko writes it', () => {
   });
 });
 
+describeContractFile(
+  'bunko/series-queue-http.json',
+  'the series queue file (queue file v2) as Bunko serves it',
+  () => {
+    it('the snapshots used without a checkout match Bunko’s fixtures', () => {
+      expect(SERIES_QUEUE_HTTP_SNAPSHOT).toEqual(
+        loadBunkoFixture('series-queue-http', { now: EPOCH_MS }).body
+      );
+      if (hasContractFile('bunko/series-queue-shapes.json')) {
+        expect(SERIES_QUEUE_SHAPES_SNAPSHOT).toEqual(
+          loadBunkoFixture('series-queue-shapes', { now: EPOCH_MS }).body
+        );
+      }
+    });
+
+    it('the virtual file: the volume without OCR waits, held for want of a processor', () => {
+      const f = fx('series-queue-http');
+      expect(f.status).toBe(200);
+      expect(fixtureHeader(f)('ETag')).toBe(ETAG_SENTINEL);
+      const file = parseSeriesQueueFile(f.body)!;
+      expect(file).not.toBeNull();
+      // Its live block makes it Bunko's own answer: trusted as is.
+      expect(pickTrustedCopy([file], { kind: 'live' })).toBe(file);
+      const status = seriesQueueSlice(file, file.live).get('volume 02');
+      const view = describePendingOcr(status, NOW)!;
+      expect(view.lines.map((l) => [l.fullName, l.short])).toEqual([
+        ['Hayai Nova 2.5 · PP-OCR Manga 0.3', 'held: no processor connected']
+      ]);
+    });
+
+    it('an existing series with nothing owed is 200 with no volumes, not a 404', () => {
+      const f = fx('series-queue-http-empty');
+      expect(f.status).toBe(200);
+      const file = parseSeriesQueueFile(f.body)!;
+      expect(file.vols.size).toBe(0);
+      expect(seriesQueueSlice(file, file.live).size).toBe(0);
+    });
+
+    it('asked with its ETag, Bunko answers 304', () => {
+      const f = fx('series-queue-http-not-modified');
+      expect(f.status).toBe(304);
+      expect(f.request.headers?.['if-none-match']).toBe(ETAG_SENTINEL);
+    });
+
+    it('every job shape the renderer writes reads, and renders', () => {
+      const file = parseSeriesQueueFile(seriesQueueShapes())!;
+      expect([...file.vols.values()].flat().map((j) => j.state)).toEqual(['r', 'q', 'q', 'c', 'q']);
+      const slice = seriesQueueSlice(file, file.live);
+      expect([...slice.values()].flatMap((v) => v.jobs.map((j) => j.state))).toEqual([
+        'running',
+        'queued',
+        'held',
+        'starting',
+        'queued'
+      ]);
+    });
+  }
+);
+
 describeContract('the lease marker as Bunko writes it', () => {
   const record = (body: unknown): MarkerNodeRecord => {
     const m = parseBunkoMarker(body)!;
@@ -419,6 +487,7 @@ describeContract('the lease marker as Bunko writes it', () => {
       per_user_files: m.per_user_files,
       curated: m.curated,
       dedup: m.dedup,
+      series_queue: m.series_queue,
       changedAt: null
     };
   };

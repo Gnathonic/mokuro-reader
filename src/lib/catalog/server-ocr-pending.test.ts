@@ -21,11 +21,14 @@ const jobsOf = (i: number) => file.volumes[i].jobs as QueueJob[];
 describe('relativeEta', () => {
   it('says how long, and at what local clock time', () => {
     expect(relativeEta(at(3), NOW)).toEqual({ when: 'in ~3 min', clock: hhmm(at(3)) });
-    expect(relativeEta(at(0.5), NOW)).toEqual({ when: 'in <1 min', clock: hhmm(at(0.5)) });
+    // Within a minute, and never negative: "soon".
+    expect(relativeEta(at(0.5), NOW)).toEqual({ when: 'soon', clock: hhmm(at(0.5)) });
+    expect(relativeEta(at(1), NOW).when).toBe('soon');
+    expect(relativeEta(at(1.5), NOW).when).toBe('in ~2 min');
     expect(relativeEta(at(60), NOW).when).toBe('in ~1 h');
     expect(relativeEta(at(95), NOW).when).toBe('in ~1 h 35 min');
     expect(relativeEta(null, NOW)).toEqual({ when: 'queued', clock: null });
-    expect(relativeEta(at(-2), NOW)).toEqual({ when: 'any moment', clock: hhmm(at(-2)) });
+    expect(relativeEta(at(-2), NOW)).toEqual({ when: 'soon', clock: hhmm(at(-2)) });
   });
 });
 

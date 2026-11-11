@@ -1,6 +1,8 @@
 /**
  * Addendum C: ONE poller per bunko server reads `<dav root>/.mokuro-queue.json`
- * and drives the "Server OCR" status and the pull of finished volumes.
+ * and drives the "Server OCR" status and the pull of finished volumes. Since
+ * queue file v2 it is the kept v1 path: watched uploads and deep links, and a
+ * bunko server older than v2 (found by a series page's 404).
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -27,6 +29,13 @@ vi.mock('$lib/util/sync/provider-manager', async () => {
     }
   };
 });
+// A series page's folder lookups: the listing holds every series asked about.
+vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+  unifiedCloudManager: {
+    resolveCloudFolderTitle: (title: string) => title,
+    getCloudVolumesBySeries: () => [{}]
+  }
+}));
 
 import { db } from '$lib/catalog/db';
 import { providerManager } from '$lib/util/sync/provider-manager';
@@ -52,6 +61,7 @@ import {
   queueUrlForArchive,
   queueUrlForWebdav,
   resetServerOcrQueueForTest,
+  followSeriesQueue,
   startServerOcrQueue,
   watchServerOcr,
   watchedEntries
@@ -500,6 +510,67 @@ describe('pulling a volume whose jobs are done', () => {
     jobs: []
   };
   const target = { queueUrl: QUEUE, init: { cache: 'no-store' as const }, source: 'webdav' };
+
+  it('a v2 series page: a volume gone from its series file is pulled through its manifest', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const series = (vols: Record<string, unknown>) => ({
+      etag: JSON.stringify(vols),
+      nodes: [
+        {
+          id: 'u',
+          etag: JSON.stringify(vols),
+          blob: new Blob([
+            JSON.stringify({
+              v: 2,
+              instance_id: 'i',
+              rev: 1,
+              at: 0,
+              clock_at: 0,
+              series: 'Dr Stone',
+              rows: [{ kind: 'ocr', id: 'hayai-nova' }],
+              vols,
+              done: {},
+              live: { held: null, held_rows: [], clock: null, clock_at: null, batch_s: 5 }
+            })
+          ])
+        }
+      ]
+    });
+    let answer = series({ 'Dr Stone 01': [[0, 'r', 0, null]] });
+    const readControlFile = vi.fn(async () => answer);
+    getActiveProvider.mockReturnValue({
+      type: 'webdav',
+      readControlFile,
+      getWorkerUploadCredentials: async () => ({
+        webdavUrl: 'https://bunko.example',
+        webdavPutVerified: true
+      })
+    });
+    try {
+      const stop = await followSeriesQueue('Dr Stone');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(readControlFile).toHaveBeenCalledWith('.mokuro-series-queue.json', {
+        folder: 'Dr Stone',
+        ifNoneMatch: undefined
+      });
+      expect(upgradeOcrFromSidecarBlob).not.toHaveBeenCalled();
+      answer = series({});
+      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.waitFor(() => expect(importFetchedLayers).toHaveBeenCalled());
+      expect(upgradeOcrFromSidecarBlob).toHaveBeenCalledWith(
+        'v1',
+        'https://bunko.example/mokuro-reader/Dr%20Stone/Dr%20Stone%2001.mokuro',
+        expect.any(Blob)
+      );
+      // The root queue file was never read.
+      const urls = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]);
+      expect(urls).not.toContain('https://bunko.example/mokuro-reader/.mokuro-queue.json');
+      stop();
+    } finally {
+      getActiveProvider.mockReturnValue(null);
+      vi.useRealTimers();
+    }
+  });
 
   it('pulls the primary through the OCR upgrade and the layers through the shared importer', async () => {
     expect(await pullCompletedVolume(KEY1, entry, target)).toBe(true);
@@ -973,7 +1044,7 @@ describe('startServerOcrQueue (app start)', () => {
     getActiveProvider.mockReturnValue(null);
   });
 
-  it('drops the old recheck entries and polls every known server once', async () => {
+  it('drops the old recheck entries and polls every server with watched volumes once, not the connected one', async () => {
     localStorage.setItem(LEGACY_RECHECK_KEY, '[{"volume_uuid":"v1"}]');
     watchServerOcr(
       {
@@ -990,10 +1061,10 @@ describe('startServerOcrQueue (app start)', () => {
     await startServerOcrQueue();
     await vi.advanceTimersByTimeAsync(0);
     expect(localStorage.getItem(LEGACY_RECHECK_KEY)).toBeNull();
-    const urls = fetchMock.mock.calls.map((c) => c[0]).sort();
-    expect(urls).toEqual([CONNECTED, QUEUE].sort());
-    const connected = fetchMock.mock.calls.find((c) => c[0] === CONNECTED)!;
-    expect(connected[1].headers.Authorization).toMatch(/^Basic /);
+    // Queue file v2: the connected bunko server is read by its series pages only.
+    const urls = fetchMock.mock.calls.map((c) => c[0]);
+    expect(urls).toEqual([QUEUE]);
+    expect(urls).not.toContain(CONNECTED);
     const anonymous = fetchMock.mock.calls.find((c) => c[0] === QUEUE)!;
     expect(anonymous[1].headers.Authorization).toBeUndefined();
   });
@@ -1013,6 +1084,18 @@ describe('startServerOcrQueue (app start)', () => {
   });
 
   it('a card showing a volume nudges an idle poller, at most once a minute', async () => {
+    watchServerOcr(
+      {
+        volumeUuid: 'v9',
+        series: 'S',
+        volume: 'V',
+        queueUrl: QUEUE,
+        manifestUrl: 'https://bunko.example/m',
+        auth: 'none',
+        source: 'html-download'
+      },
+      { start: false }
+    );
     await startServerOcrQueue();
     await vi.advanceTimersByTimeAsync(0);
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -1065,23 +1148,14 @@ describe('a WebDAV login after app start', () => {
     statusFeed.set({ hasAnyAuthenticated: false, currentProviderType: null });
   });
 
-  it('polls the bunko server it connected to, at once', async () => {
+  it('reads nothing from the bunko server it connected to (its series pages read their files)', async () => {
     await startServerOcrQueue();
     await vi.advanceTimersByTimeAsync(0);
-    expect(fetchMock).not.toHaveBeenCalled(); // nothing connected at start
-
     getActiveProvider.mockReturnValue(bunkoServer);
     statusFeed.set({ hasAnyAuthenticated: true, currentProviderType: 'webdav' });
-    await vi.waitFor(() => expect(fetchMock.mock.calls.map((c) => c[0])).toEqual([CONNECTED]));
-  });
-
-  it('does not poll again a server it already polled at start', async () => {
-    getActiveProvider.mockReturnValue(bunkoServer);
-    statusFeed.set({ hasAnyAuthenticated: true, currentProviderType: 'webdav' });
-    await startServerOcrQueue();
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-    await vi.advanceTimersByTimeAsync(1_000); // the login's own look would land by now
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(fetchMock.mock.calls.map((c) => c[0])).not.toContain(CONNECTED);
   });
 
   it('does not poll a WebDAV server that is not bunko', async () => {
@@ -1117,9 +1191,12 @@ describe('switching to another WebDAV server', () => {
       webdavUsername: 'reader',
       webdavPassword: 'pw',
       webdavPutVerified: true
-    })
+    }),
+    // A bunko server older than queue file v2: no series file (404).
+    readControlFile: vi.fn(async () => null)
   };
   let offShown: (() => void) | null = null;
+  let offSeries: (() => void) | null = null;
 
   beforeEach(() => {
     vi.useFakeTimers({ now: NOW });
@@ -1142,6 +1219,8 @@ describe('switching to another WebDAV server', () => {
   afterEach(() => {
     offShown?.();
     offShown = null;
+    offSeries?.();
+    offSeries = null;
     resetServerOcrQueueForTest();
     vi.unstubAllGlobals();
     vi.useRealTimers();
@@ -1151,12 +1230,17 @@ describe('switching to another WebDAV server', () => {
 
   const callsTo = (url: string) => fetchMock.mock.calls.filter((c) => c[0] === url).length;
 
-  /** Logs in to server A after start, showing KEY1, which A's queue lists. */
+  /**
+   * Logs in to server A after start and opens a series page, showing KEY1: A
+   * answers 404 for the series file, so its v1 poller reads the root file,
+   * which lists KEY1.
+   */
   async function connectToA() {
     offShown = markVolumeShown(KEY1);
     await startServerOcrQueue();
     getActiveProvider.mockReturnValue(provider);
     statusFeed.set({ hasAnyAuthenticated: true, currentProviderType: 'webdav' });
+    offSeries = await followSeriesQueue('Dr Stone');
     await vi.waitFor(() => expect(get(serverOcrQueueStatus)[KEY1]).toBeDefined());
     expect(callsTo(QUEUE_A)).toBe(1);
   }
@@ -1165,12 +1249,12 @@ describe('switching to another WebDAV server', () => {
     await connectToA();
     server = B;
     statusFeed.set({ hasAnyAuthenticated: true, currentProviderType: 'webdav' });
-    await vi.waitFor(() => expect(callsTo(QUEUE_B)).toBe(1));
+    await vi.waitFor(() => expect(get(serverOcrQueueStatus)[KEY1]).toBeUndefined());
   }
 
-  it('polls the new server and withdraws the old one', async () => {
+  it('withdraws the old server, and does not read the new one at login', async () => {
     await connectThenSwitch();
-    expect(get(serverOcrQueueStatus)[KEY1]).toBeUndefined();
+    expect(callsTo(QUEUE_B)).toBe(0);
     // Its timer, a card nudge and a tab show reach the old server no more.
     await vi.advanceTimersByTimeAsync(QUEUE_BACKOFF_MS.at(-1)! * 2);
     const off = markVolumeShown(KEY2);
@@ -1195,9 +1279,10 @@ describe('switching to another WebDAV server', () => {
       },
       { start: false }
     );
+    offSeries?.();
+    offSeries = null;
     server = B;
     statusFeed.set({ hasAnyAuthenticated: true, currentProviderType: 'webdav' });
-    await vi.waitFor(() => expect(callsTo(QUEUE_B)).toBe(1));
     await vi.advanceTimersByTimeAsync(QUEUE_BACKOFF_MS.at(-1)! * 2);
     document.dispatchEvent(new Event('visibilitychange'));
     await vi.advanceTimersByTimeAsync(1_000);
@@ -1269,10 +1354,19 @@ describe('the queue under a bunko bearer token', () => {
       );
     });
     vi.stubGlobal('fetch', fetchMock);
-    await startServerOcrQueue();
+    // An upload to the server: its watch reads the root file as the account.
+    watchServerOcr({
+      volumeUuid: 'v1',
+      series: 'S',
+      volume: 'V',
+      queueUrl: CONNECTED,
+      manifestUrl: `${SERVER}/m`,
+      auth: 'webdav',
+      source: 'webdav'
+    });
     await vi.advanceTimersByTimeAsync(0);
-    expect(fetchMock.mock.calls.map((c) => c[0])).toEqual([CONNECTED, CONNECTED]);
-    expect(auths).toEqual(['Bearer old', 'Bearer new']);
+    expect(fetchMock.mock.calls.map((c) => c[0]).slice(0, 2)).toEqual([CONNECTED, CONNECTED]);
+    expect(auths.slice(0, 2)).toEqual(['Bearer old', 'Bearer new']);
     expect(reissue).toHaveBeenCalledTimes(1);
   });
 

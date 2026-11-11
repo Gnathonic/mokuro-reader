@@ -13,6 +13,7 @@ import {
   isMarkerFresh,
   markerRecords,
   onCloudBunkoMarkerChange,
+  onCloudSeriesQueueChange,
   parseBunkoMarker,
   refreshCloudBunkoMarker,
   resetCloudBunkoMarkersForTest,
@@ -81,6 +82,7 @@ function rec(over: Partial<MarkerNodeRecord> = {}): MarkerNodeRecord {
     per_user_files: [],
     curated: false,
     dedup: false,
+    series_queue: null,
     changedAt: T0,
     ...over
   };
@@ -193,8 +195,115 @@ describe('parseBunkoMarker', () => {
         'history/'
       ],
       curated: true,
-      dedup: true
+      dedup: true,
+      // Before queue file v2's store sink (B2) Bunko's marker carries no block.
+      series_queue: null
     });
+  });
+
+  it('reads the series_queue block (queue file v2); another version or garbage is null', () => {
+    const block = {
+      v: 2,
+      file: '.mokuro-series-queue.json',
+      batch_s: 120,
+      held: { reason: 'paused' },
+      held_rows: ['paddle', 7],
+      clock: [
+        [100, 1000],
+        [200, 1100]
+      ],
+      clock_at: 1000
+    };
+    expect(
+      parseBunkoMarker({ ...marker({ queue: null }), series_queue: block })?.series_queue
+    ).toEqual({
+      held: { reason: 'paused' },
+      held_rows: ['paddle'],
+      clock: [
+        [100, 1000],
+        [200, 1100]
+      ],
+      clock_at: 1000,
+      batch_s: 120
+    });
+    expect(
+      parseBunkoMarker({ ...marker(), series_queue: { ...block, v: 3 } })?.series_queue
+    ).toBeNull();
+    expect(parseBunkoMarker({ ...marker(), series_queue: 'yes' })?.series_queue).toBeNull();
+    // A clock that is not strictly increasing is no clock; the rest stands.
+    const flat = parseBunkoMarker({
+      ...marker(),
+      series_queue: {
+        ...block,
+        clock: [
+          [100, 1000],
+          [100, 1100]
+        ]
+      }
+    })?.series_queue;
+    expect(flat?.clock).toBeNull();
+    expect(flat?.held).toEqual({ reason: 'paused' });
+  });
+});
+
+describe('the series_queue block', () => {
+  const block = {
+    v: 2,
+    batch_s: 120,
+    held: null,
+    held_rows: [],
+    clock: [
+      [0, 0],
+      [86_400, 86_400]
+    ],
+    clock_at: 0
+  };
+
+  it("is kept per node, survives a reload, and only the holder's counts", async () => {
+    await ingestMarkerRead(
+      'google-drive',
+      read({ id: 'a', etag: '1', body: { ...marker(), series_queue: block } })
+    );
+    expect(cloudBunkoHolder('google-drive')?.series_queue?.batch_s).toBe(120);
+    // A cold reload from storage re-validates it.
+    resetCloudBunkoMarkersForTest(() => T0);
+    expect(cloudBunkoHolder('google-drive')?.series_queue?.clock).toEqual([
+      [0, 0],
+      [86_400, 86_400]
+    ]);
+  });
+
+  it('a refit tells the series-queue listeners, not the status listeners', async () => {
+    const status = vi.fn();
+    const queue = vi.fn();
+    onCloudBunkoMarkerChange(status);
+    onCloudSeriesQueueChange(queue);
+    await ingestMarkerRead(
+      'google-drive',
+      read({ id: 'a', etag: '1', body: { ...marker(), series_queue: block } })
+    );
+    expect(status).toHaveBeenCalledTimes(1);
+    expect(queue).toHaveBeenCalledTimes(1);
+    await ingestMarkerRead(
+      'google-drive',
+      read({
+        id: 'a',
+        etag: '2',
+        body: {
+          ...marker(),
+          series_queue: {
+            ...block,
+            clock_at: 300,
+            clock: [
+              [0, 300],
+              [86_400, 86_700]
+            ]
+          }
+        }
+      })
+    );
+    expect(status).toHaveBeenCalledTimes(1);
+    expect(queue).toHaveBeenCalledTimes(2);
   });
 });
 

@@ -24,8 +24,10 @@ import {
 } from '$lib/catalog/placeholders';
 import {
   describePendingOcr,
+  pendingStatusFor,
   queueKeyForVolume,
   serverOcrQueueStatus,
+  seriesQueueStore,
   watchedKeyStore
 } from '$lib/catalog/server-ocr-pending';
 import { isMetadataOnly, isVolumeInstalled } from '$lib/catalog/volume-state';
@@ -466,7 +468,12 @@ async function pendingOcr(volumeId: string) {
   const volume = (await db.volumes.get(volumeId)) ?? (await cardVolume(volumeId));
   if (!volume) throw new Error(`No volume ${volumeId} on this device`);
   const key = queueKeyForVolume(volume, get(watchedKeyStore));
-  return plain(describePendingOcr(get(serverOcrQueueStatus)[key], Date.now()));
+  return plain(
+    describePendingOcr(
+      pendingStatusFor(key, get(seriesQueueStore), get(serverOcrQueueStatus)),
+      Date.now()
+    )
+  );
 }
 
 /** The reader's page turn (paged mode), against the volume's primary pages. */

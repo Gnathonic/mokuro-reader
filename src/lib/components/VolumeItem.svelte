@@ -63,8 +63,10 @@
     describePendingOcr,
     markVolumeShown,
     pendingOcrClock,
+    pendingStatusFor,
     queueKeyForVolume,
     serverOcrQueueStatus,
+    seriesQueueStore,
     watchedKeyStore
   } from '$lib/catalog/server-ocr-pending';
   import { uploadFailures } from '$lib/util/upload-failures';
@@ -134,13 +136,17 @@
   // the one `volumesWithPlaceholders` decorated with the current listing, while
   // `liveVolume` is the raw stored row.
   let isNotInstalled = $derived(needsDownload(liveVolume));
-  // OCR the server is still making for this volume, from its server's queue
-  // file (`server-ocr-queue.ts`), one line per job. The shared clock re-derives
-  // only this text, about twice a minute.
+  // OCR the server is still making for this volume, one line per job: its
+  // series' slice of the v2 series queue file (`series-queue-loop.ts`), else
+  // the v1 root file (`server-ocr-queue.ts`). The status is its own derived,
+  // so a read that leaves this volume's jobs as they were (the same object)
+  // redraws nothing here; the shared clock re-derives only the text, about
+  // twice a minute.
   let serverOcrKey = $derived(queueKeyForVolume(liveVolume, $watchedKeyStore));
-  let serverOcr = $derived(
-    describePendingOcr($serverOcrQueueStatus[serverOcrKey], $pendingOcrClock)
+  let serverOcrStatus = $derived(
+    pendingStatusFor(serverOcrKey, $seriesQueueStore, $serverOcrQueueStatus)
   );
+  let serverOcr = $derived(describePendingOcr(serverOcrStatus, $pendingOcrClock));
   // A volume the catalog is showing is one the queue poller keeps an eye on.
   $effect(() => markVolumeShown(serverOcrKey));
   // The last cloud upload of this volume failed for good (persisted until one succeeds).

@@ -15,16 +15,22 @@ import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/serie
 import type { VolumeMetadata } from '$lib/types';
 import { assertNoRedirectEscape } from '$lib/util/link-safety';
 import type { ProviderType, SyncProvider } from '$lib/util/sync/provider-interface';
-import { QUEUE_FILE_NAME } from '$lib/util/sync/syncable-file';
 import { validParts } from '$lib/reader/edit/ocr-label';
 import {
   authFromCredentials,
   bearerOf,
   webdavAuthorization
 } from '$lib/util/sync/core/providers/webdav-authorization';
+import { cloudBunkoHolder, refreshCloudBunkoMarker } from './cloud-bunko-marker';
+import {
+  followSeriesQueue as followSeriesQueueLoop,
+  resetSeriesQueueLoopForTest,
+  type SeriesQueueEnv
+} from './series-queue-loop';
 import {
   isVolumeShown,
   queueStatusStore,
+  resetSeriesQueueStoreForTest,
   setShownListener,
   volumeQueueKey,
   watchedKeyStore,
@@ -56,15 +62,16 @@ import {
  *   watched, shows the manifest's jobs, and is asked again at its
  *   `recheck_after`.
  *
- * A CLOUD-DIRECT Bunko (library on Drive / OneDrive / MEGA / plain WebDAV,
- * bunko design 0.8 §9) writes the same file into the library folder. Its
- * poller reads it through the provider (`cloudSourceFor`, a `QueueSource`):
- * the marker `.mokuro-bunko.json` first, then the queue file, trusted only
- * when its `instance_id` names the marker's lease holder. That poller keeps
- * going while the tab is visible (the marker decides `serverCompilesMetadata`),
- * completes a volume ONLY by its entry in `done[]` — absence from a
- * `truncated` list is waiting — and on completion relists, runs the OCR
- * upgrade pass and pulls layers (`CloudCompletions`), never a manifest pull.
+ * Queue file v2 (bunko `docs/design/queue-file-v2.md`) moved the queue into
+ * one file per series folder, read only while that series' page is open
+ * (`series-queue-loop.ts`, wired here by `followSeriesQueue`). What stays of
+ * this poller is the kept v1 path: a Bunko server older than v2 (a 404 for a
+ * series file), watched uploads to a Bunko server and deep-link imports. No
+ * queue file is read at app start any more, and none from a cloud library: a
+ * cloud-direct Bunko writes no root queue file. Its lease marker
+ * `.mokuro-bunko.json` is still read every `ttl/3` while the tab is visible
+ * (`MarkerPoller`): it decides `serverCompilesMetadata`, the lease holder and
+ * the queue's work clock.
  *
  * Replaces the per-volume recheck timers of Addendum A (their persisted
  * entries are removed once, `cleanupLegacyRecheckEntries`).
@@ -231,13 +238,9 @@ export interface QueueSourceRead {
   etag: string | null;
 }
 
-/**
- * Where a poller's queue file comes from. A bunko SERVER serves it over HTTP
- * (`httpQueueSource`); a cloud-direct Bunko writes it into the library folder,
- * read through the provider (`cloudQueueSource`).
- */
+/** Where a poller's queue file comes from: a bunko SERVER over HTTP (`httpQueueSource`). */
 export interface QueueSource {
-  /** The poller's key: the queue URL, or `cloud:<provider>`. */
+  /** The poller's key: the queue URL. */
   id: string;
   /**
    * One read. `'not-modified'`: the previous file stands. `'unavailable'`:
@@ -248,20 +251,6 @@ export interface QueueSource {
     etag: string | null;
     file: QueueFile | null;
   }): Promise<QueueSourceRead | 'not-modified' | 'unavailable'>;
-  /**
-   * How a volume of interest completes. `manifest` (a bunko server): it left
-   * the file, and its manifest decides. `done-list` (a cloud copy): only an
-   * entry in `done[]` completes it — absence from a truncated list is waiting.
-   */
-  completion?: 'manifest' | 'done-list';
-  /**
-   * Keep polling while the tab is visible even with nothing of interest: a
-   * cloud source also watches the Bunko marker, which decides
-   * `serverCompilesMetadata` for the whole library.
-   */
-  keepAlive?: boolean;
-  /** Floor between polls, seconds (default 30). */
-  minIntervalS?: number;
 }
 
 export interface QueuePollerDeps {
@@ -277,15 +266,13 @@ export interface QueuePollerDeps {
   /** The file as last read; null when polling stops (nothing to show from it). */
   onStatus: (file: QueueFile | null) => void;
   /**
-   * A volume of interest is done. `manifest` sources: it is no longer in the
-   * file, and its manifest decides — the jobs are done (pulled), or it answers
-   * what is still pending there. `done-list` sources: it is in `done[]`
-   * (`done` carries the entry); the answer is ignored.
+   * A volume of interest is done: it is no longer in the file, and its
+   * manifest decides — the jobs are done (pulled), or it answers what is
+   * still pending there.
    */
   onDone: (
     key: string,
-    entry: QueueVolume | undefined,
-    done?: QueueDone
+    entry: QueueVolume | undefined
   ) => void | Promise<boolean | PendingOnServer | void>;
   isHidden: () => boolean;
   fetch?: typeof fetch;
@@ -299,7 +286,6 @@ export function httpQueueSource(
 ): QueueSource {
   return {
     id: queueUrl,
-    completion: 'manifest',
     async read(prev) {
       const init = await requestInit();
       if (!init) return 'unavailable';
@@ -328,8 +314,6 @@ export class QueuePoller {
    * jobs: when to ask the manifest again, and the entry shown meanwhile.
    */
   private offList = new Map<string, { until: number; volume: QueueVolume }>();
-  /** `done-list` sources: the `done[]` entries already acted on (`key\0at`). */
-  private doneSeen: Set<string> | null = null;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private fetching = false;
   private again = false;
@@ -444,7 +428,7 @@ export class QueuePoller {
         this.lastFile = result.file;
       }
       if (this.lastFile) this.evaluate(this.lastFile);
-      else this.untrusted();
+      else this.halt();
     } finally {
       this.fetching = false;
       if (this.again) {
@@ -455,18 +439,7 @@ export class QueuePoller {
     }
   }
 
-  /** The source has no file it trusts (no fresh Bunko marker): show nothing, look again later. */
-  private untrusted(): void {
-    this.seen = new Map();
-    this.offList.clear();
-    this.publishOrHalt();
-  }
-
   private evaluate(file: QueueFile): void {
-    if (this.source.completion === 'done-list') {
-      this.evaluateDoneList(file);
-      return;
-    }
     const inFile = new Map<string, QueueVolume>();
     for (const v of file.volumes) inFile.set(volumeQueueKey(v.series, v.volume), v);
     const watched = this.deps.watchedKeys();
@@ -508,49 +481,6 @@ export class QueuePoller {
     }
   }
 
-  /**
-   * A cloud copy: a volume completes ONLY by appearing in `done[]`. Leaving
-   * `volumes`, or never being listed past a truncated list, is waiting. The
-   * first file read is a baseline — what finished before this device looked
-   * is already in the listing it loaded at start — except for watched
-   * volumes, whose completion is acted on whenever it is first seen.
-   */
-  private evaluateDoneList(file: QueueFile): void {
-    const watched = this.deps.watchedKeys();
-    const watchedSet = new Set(watched);
-    const interesting = new Map<string, QueueVolume>();
-    for (const v of file.volumes) {
-      const key = volumeQueueKey(v.series, v.volume);
-      if (watchedSet.has(key) || this.deps.isShown(key)) interesting.set(key, v);
-    }
-    const previous = this.seen;
-    this.seen = interesting;
-    this.offList.clear();
-
-    const baseline = this.doneSeen === null;
-    const seenDone = this.doneSeen ?? new Set<string>();
-    const fresh: Array<{ key: string; done: QueueDone }> = [];
-    const listedDone = new Set<string>();
-    for (const done of file.done) {
-      const key = volumeQueueKey(done.series, done.volume);
-      const id = `${key}\u0000${done.at}`;
-      listedDone.add(id);
-      if (seenDone.has(id)) continue;
-      seenDone.add(id);
-      if (baseline && !watchedSet.has(key)) continue;
-      fresh.push({ key, done });
-    }
-    // Forget entries the writer dropped (it keeps the last 100 / 24 h).
-    for (const id of [...seenDone]) if (!listedDone.has(id)) seenDone.delete(id);
-    this.doneSeen = seenDone;
-
-    this.publishOrHalt();
-    for (const { key, done } of fresh) {
-      const outcome = this.deps.onDone(key, previous.get(key), done);
-      if (outcome instanceof Promise) void outcome.catch(() => {});
-    }
-  }
-
   /** The manifest's answer for a volume the file stopped listing. */
   private settleDone(key: string, result: boolean | PendingOnServer | void): void {
     if (!isPendingOnServer(result)) {
@@ -581,13 +511,7 @@ export class QueuePoller {
   private publishOrHalt(): void {
     const file = this.lastFile;
     if (!file || (this.seen.size === 0 && this.offList.size === 0)) {
-      if (!this.source.keepAlive) {
-        this.halt();
-        return;
-      }
-      // A cloud source keeps watching the marker: nothing shown, next look later.
-      this.deps.onStatus(null);
-      if (!this.timer) this.schedule(this.intervalMs(file));
+      this.halt();
       return;
     }
     const listed = new Set(file.volumes.map((v) => volumeQueueKey(v.series, v.volume)));
@@ -604,10 +528,9 @@ export class QueuePoller {
     }
   }
 
-  /** `next_check_after` (or the unpriced default), never under the source's floor. */
+  /** `next_check_after` (or the unpriced default), never under 30 s. */
   private intervalMs(file: QueueFile | null): number {
-    const floor = this.source.minIntervalS ?? MIN_INTERVAL_S;
-    return Math.max(floor, file?.next_check_after ?? UNPRICED_INTERVAL_S) * 1000;
+    return Math.max(MIN_INTERVAL_S, file?.next_check_after ?? UNPRICED_INTERVAL_S) * 1000;
   }
 
   /** Nothing of interest: no timer, nothing shown from this file until the next trigger. */
@@ -654,8 +577,9 @@ export interface WatchEntry {
   manifest_url: string;
   /**
    * `webdav` = as the connected WebDAV account (same origin only); `none` =
-   * anonymous; `cloud` = the connected provider's cloud-direct Bunko queue
-   * (`queue_url` is then `cloud:<provider>`, `manifest_url` is empty).
+   * anonymous; `cloud` = a cloud-direct Bunko's series files on the connected
+   * provider (`queue_url` is then `cloud:<provider>`, `manifest_url` is
+   * empty): no poller, the series page's loop reads them (queue file v2).
    */
   auth: 'webdav' | 'none' | 'cloud';
   /** The `cloud.provider` stamp a pulled layer row gets. */
@@ -758,29 +682,33 @@ export async function watchUploadedVolume(input: {
 
 /**
  * A volume this device just uploaded to a CLOUD library (Drive, OneDrive,
- * MEGA, plain WebDAV) while a cloud-direct Bunko's marker is fresh there: the
- * PUT answers nothing about OCR, so the volume is watched by `(series, volume)`
- * on that library's queue file. No fresh marker → no watch.
+ * MEGA, plain WebDAV, a Local Folder) while a cloud-direct Bunko's marker is
+ * fresh there and carries `series_queue`: the PUT answers nothing about OCR,
+ * so the volume is watched by `(series, volume)`; its series file says when
+ * it is done. No such marker → no watch.
  */
 export async function watchCloudUpload(input: {
   volumeUuid: string;
   series: string;
   volume: string;
 }): Promise<void> {
-  const source = await connectedCloudQueueSource();
-  if (!source) return;
+  const providerType = await connectedCloudLibrary();
+  if (!providerType) return;
   const { cloudBunkoHolder } = await import('./cloud-bunko-marker');
-  if (!cloudBunkoHolder(source.providerType)) return;
+  if (!cloudBunkoHolder(providerType)?.series_queue) return;
   watchServerOcr({
     ...input,
-    queueUrl: source.id,
+    queueUrl: `cloud:${providerType}`,
     manifestUrl: '',
     auth: 'cloud',
-    source: source.providerType
+    source: providerType
   });
 }
 
-/** Watch a volume the server is making OCR for, and poll its server at once. */
+/**
+ * Watch a volume the server is making OCR for, and poll its server at once (a
+ * cloud watch has no poller: the series page's loop reads its series file).
+ */
 export function watchServerOcr(input: WatchInput, options: { start?: boolean } = {}): void {
   const key = volumeQueueKey(input.series, input.volume);
   loadWatches().set(key, {
@@ -795,7 +723,7 @@ export function watchServerOcr(input: WatchInput, options: { start?: boolean } =
     added_at: Date.now()
   });
   saveWatches();
-  if (options.start !== false) {
+  if (options.start !== false && input.auth !== 'cloud') {
     pollerFor(input.queueUrl, input.auth, input.source).trigger(
       input.source === 'html-download' ? 'deep-link' : 'upload'
     );
@@ -1149,10 +1077,6 @@ async function requestInitFor(
 function pollerFor(queueUrl: string, auth: WatchEntry['auth'], source: string): QueuePoller {
   const existing = pollers.get(queueUrl);
   if (existing) return existing;
-  if (auth === 'cloud') {
-    const cloud = cloudSourceFor(source as ProviderType);
-    return cloudPollerFor(cloud);
-  }
   const poller = new QueuePoller({
     queueUrl,
     requestInit: () => requestInitFor(queueUrl, auth),
@@ -1198,16 +1122,23 @@ export function queueUrlForArchive(archiveUrl: string): string | null {
   }
 }
 
-/** The connected WebDAV account's queue, when it is a bunko server (`X-Mokuro-Put` recorded). */
+/**
+ * The connected WebDAV account's queue, when it is a bunko server: it answered
+ * `X-Mokuro-Put: verified`, or its identity says it compiles the metadata
+ * (`/login/api/me`) — not merely a fresh cloud-direct marker on plain storage.
+ */
 export async function connectedBunkoQueueUrl(): Promise<string | null> {
   try {
     const provider = await activeWebdavProvider();
     if (!provider) return null;
     const credentials = await provider.getWorkerUploadCredentials!();
-    if (credentials.webdavPutVerified !== true || typeof credentials.webdavUrl !== 'string') {
-      return null;
+    if (typeof credentials.webdavUrl !== 'string' || !credentials.webdavUrl) return null;
+    if (credentials.webdavPutVerified === true) return queueUrlForWebdav(credentials.webdavUrl);
+    const status = (provider as Partial<SyncProvider>).getStatus?.();
+    if (status?.serverCompilesMetadata === true && status.cloudBunko?.fresh !== true) {
+      return queueUrlForWebdav(credentials.webdavUrl);
     }
-    return queueUrlForWebdav(credentials.webdavUrl);
+    return null;
   } catch {
     return null;
   }
@@ -1233,8 +1164,11 @@ export function nudgeForShownVolumes(): void {
 
 /**
  * App start (after providers connect): drop the old recheck entries, poll once
- * for every server with watched volumes and for the connected bunko server,
- * and follow the tab's visibility.
+ * for every server with watched volumes, start the connected cloud library's
+ * marker poll, and follow the tab's visibility. The connected bunko server's
+ * queue is NOT read here: a series page reads its own series file
+ * (`followSeriesQueue`), and only a server older than queue file v2 falls back
+ * to its root file's poller.
  */
 export async function startServerOcrQueue(): Promise<void> {
   if (started) return;
@@ -1242,19 +1176,18 @@ export async function startServerOcrQueue(): Promise<void> {
   cleanupLegacyRecheckEntries();
   setShownListener(nudgeForShownVolumes);
   for (const w of watchedEntries()) {
-    // A cloud watch belongs to whichever provider is connected now (below).
+    // A cloud watch has no poller: its series page reads its series file.
     if (w.auth !== 'cloud') pollerFor(w.queue_url, w.auth, w.source);
   }
-  const connected = await connectedBunkoQueueUrl();
-  if (connected) pollerFor(connected, 'webdav', 'webdav');
-  connectedServer = connected;
+  connectedServer = await connectedBunkoQueueUrl();
   for (const p of pollers.values()) p.trigger('start');
-  // The connected cloud library's queue + marker (and again after every login,
+  // The connected cloud library's marker (and again after every login,
   // switch or logout): created — and given its first look — there.
   await followActiveProvider();
   if (typeof document !== 'undefined') {
     document.addEventListener('visibilitychange', () => {
       for (const p of pollers.values()) p.onVisibilityChange();
+      markerPoller?.onVisibilityChange();
     });
   }
 }
@@ -1262,12 +1195,14 @@ export async function startServerOcrQueue(): Promise<void> {
 // ---------------------------------------------------------------- cloud-direct Bunko
 
 /**
- * Floors between reads of a cloud library's control files (bunko design 0.8
- * §9.1 writes the queue no more often than these). MEGA's reads are answered
- * from the live in-memory tree and re-triggered by its change events, so its
- * floor costs no requests.
+ * Floors between reads of a cloud library's control files. A Bunko writes a
+ * series file at most once per batch window (Drive and OneDrive 120 s, MEGA
+ * 300 s, WebDAV 30 s, a Local Folder 15 s — the marker's `batch_s`), and the
+ * series page never reads faster than the larger of the two. MEGA's reads are
+ * answered from the live in-memory tree and re-triggered by its change events,
+ * so its floor costs no requests.
  */
-const CLOUD_MIN_INTERVAL_S: Record<ProviderType, number> = {
+export const CLOUD_MIN_INTERVAL_S: Record<ProviderType, number> = {
   webdav: 30,
   'google-drive': 60,
   onedrive: 60,
@@ -1281,7 +1216,7 @@ const CLOUD_MIN_INTERVAL_S: Record<ProviderType, number> = {
 let relistHook: (() => Promise<void>) | null = null;
 
 /**
- * How the poller asks for a fresh listing after a cloud Bunko finished
+ * How a completion asks for a fresh listing after a cloud Bunko finished
  * volumes ("pick up new sidecars"): the app passes
  * `unifiedCloudManager.fetchAllCloudVolumes({ refreshIndexes: true })`.
  */
@@ -1300,86 +1235,175 @@ async function activeProvider(): Promise<SyncProvider | null> {
   return providerManager.getActiveProvider();
 }
 
-export interface CloudQueueSource extends QueueSource {
-  providerType: ProviderType;
-}
-
-const cloudSources = new Map<ProviderType, CloudQueueSource>();
-
 /**
- * The queue of a cloud-direct Bunko on `providerType`'s library. Every read:
- * the marker first (it decides `serverCompilesMetadata` for the library and
- * who holds the lease), then the queue file — trusted only when its
- * `instance_id` names the top-ranked fresh marker. No fresh marker, or no
- * holder's file: nothing is shown.
+ * The connected provider when its library may be run by a cloud-direct Bunko
+ * (it reads control files, and it is not a bunko SERVER, which serves its
+ * queue itself): Drive, OneDrive, MEGA, a Local Folder or plain WebDAV. Null
+ * otherwise.
  */
-export function cloudSourceFor(providerType: ProviderType): CloudQueueSource {
-  const existing = cloudSources.get(providerType);
-  if (existing) return existing;
-  let queueEtag: string | undefined;
-  let candidates: QueueFile[] = [];
-  const source: CloudQueueSource = {
-    id: `cloud:${providerType}`,
-    providerType,
-    completion: 'done-list',
-    keepAlive: true,
-    minIntervalS: CLOUD_MIN_INTERVAL_S[providerType] ?? 60,
-    async read() {
-      const provider = await activeProvider();
-      if (!provider || provider.type !== providerType || !provider.readControlFile) {
-        return 'unavailable';
-      }
-      const { refreshCloudBunkoMarker, cloudBunkoHolder } = await import('./cloud-bunko-marker');
-      // One marker etag per scope, shared with the dedup pass's reads.
-      if (!(await refreshCloudBunkoMarker(provider))) {
-        // Back off as for any failed read; the last verdict stands meanwhile.
-        throw new Error('the Bunko marker could not be read');
-      }
-      const holder = cloudBunkoHolder(providerType);
-      if (!holder) {
-        // Nobody is managing the library right now: whatever a queue file
-        // says is stale. Skip reading it until a marker is fresh again.
-        queueEtag = undefined;
-        candidates = [];
-        return { file: null, etag: null };
-      }
-      const queue = await provider.readControlFile(QUEUE_FILE_NAME, { ifNoneMatch: queueEtag });
-      if (queue !== 'not-modified') {
-        queueEtag = queue?.etag;
-        candidates = [];
-        for (const node of queue?.nodes ?? []) {
-          try {
-            const file = parseQueueFile(JSON.parse(await node.blob.text()));
-            if (file) candidates.push(file);
-          } catch {
-            // Half-written or not JSON: this node says nothing.
-          }
-        }
-      }
-      const trusted = candidates.find((f) => f.instance_id === holder.instance_id) ?? null;
-      return { file: trusted, etag: queueEtag ?? null };
-    }
-  };
-  cloudSources.set(providerType, source);
-  return source;
-}
-
-/**
- * The connected provider's cloud queue source: Drive, OneDrive, MEGA, a Local
- * Folder (a Bunko whose library is that folder writes its queue there), or a
- * WebDAV that is NOT a bunko server (a bunko server serves its live queue
- * over HTTP — `connectedBunkoQueueUrl`). Null without a provider that can
- * read control files.
- */
-export async function connectedCloudQueueSource(): Promise<CloudQueueSource | null> {
+export async function connectedCloudLibrary(): Promise<ProviderType | null> {
   try {
     const provider = await activeProvider();
     if (!provider?.readControlFile) return null;
     if (provider.type === 'webdav' && (await connectedBunkoQueueUrl())) return null;
-    return cloudSourceFor(provider.type);
+    return provider.type;
   } catch {
     return null;
   }
+}
+
+/**
+ * The lease marker of the connected cloud library, read every `max(provider
+ * floor, ttl/3)` (300 s for Bunko's 900 s lease) while the tab is visible.
+ * It keeps `serverCompilesMetadata`, the holder's freshness and the queue's
+ * work clock current; MEGA's live tree also pushes its changes. This replaces
+ * the 60 s loop that read a root queue file (queue file v2: none is written).
+ * A failed read backs off as the queue poller does; the last verdict stands
+ * meanwhile, ageing towards stale.
+ */
+export class MarkerPoller {
+  private timer: ReturnType<typeof setTimeout> | null = null;
+  private fetching = false;
+  private again = false;
+  private paused = false;
+  private stopped = false;
+  private errors = 0;
+  private delay: number | null = null;
+
+  constructor(
+    readonly providerType: ProviderType,
+    private readonly deps: {
+      provider: () => Promise<SyncProvider | null>;
+      isHidden: () => boolean;
+    } = { provider: activeProvider, isHidden }
+  ) {}
+
+  get id(): string {
+    return `cloud:${this.providerType}`;
+  }
+
+  /** The wait before the next scheduled read, or null when none is scheduled. */
+  get nextDelayMs(): number | null {
+    return this.timer ? this.delay : null;
+  }
+
+  trigger(): void {
+    if (this.stopped) return;
+    if (this.deps.isHidden()) {
+      this.clearTimer();
+      this.paused = true;
+      return;
+    }
+    if (this.fetching) {
+      this.again = true;
+      return;
+    }
+    this.clearTimer();
+    void this.read();
+  }
+
+  onVisibilityChange(): void {
+    if (this.stopped) return;
+    if (this.deps.isHidden()) {
+      if (this.timer || this.fetching) this.paused = true;
+      this.clearTimer();
+      return;
+    }
+    const wasPaused = this.paused;
+    this.paused = false;
+    if (wasPaused || !this.fetching) this.trigger();
+  }
+
+  stop(): void {
+    this.stopped = true;
+    this.clearTimer();
+  }
+
+  private clearTimer(): void {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+    this.delay = null;
+  }
+
+  private schedule(ms: number): void {
+    this.clearTimer();
+    this.delay = ms;
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      this.delay = null;
+      void this.read();
+    }, ms);
+  }
+
+  private async read(): Promise<void> {
+    if (this.deps.isHidden()) {
+      this.paused = true;
+      return;
+    }
+    this.fetching = true;
+    try {
+      const provider = await this.deps.provider();
+      if (!provider || provider.type !== this.providerType || !provider.readControlFile) {
+        this.stop();
+        return;
+      }
+      const { refreshCloudBunkoMarker, cloudBunkoHolder } = await import('./cloud-bunko-marker');
+      if (!(await refreshCloudBunkoMarker(provider))) {
+        const wait = QUEUE_BACKOFF_MS[Math.min(this.errors, QUEUE_BACKOFF_MS.length - 1)];
+        this.errors++;
+        console.warn(
+          `[OCR queue] the Bunko marker could not be read; next look in ${wait / 1000} s`
+        );
+        if (!this.stopped) this.schedule(wait);
+        return;
+      }
+      this.errors = 0;
+      const ttl = cloudBunkoHolder(this.providerType)?.ttl_s ?? MARKER_DEFAULT_TTL_S;
+      const floor = CLOUD_MIN_INTERVAL_S[this.providerType] ?? 60;
+      if (!this.stopped) this.schedule(Math.max(floor, ttl / 3) * 1000);
+    } finally {
+      this.fetching = false;
+      if (this.again && !this.stopped) {
+        this.again = false;
+        this.clearTimer();
+        void this.read();
+      }
+    }
+  }
+}
+
+/** Bunko's lease TTL when no holder names one: a marker read every 300 s. */
+const MARKER_DEFAULT_TTL_S = 900;
+
+let markerPoller: MarkerPoller | null = null;
+let markerFeedOff: (() => void) | null = null;
+
+/**
+ * The marker poll of the connected cloud library, created (and given its
+ * first look) when the provider can read control files; one for a provider
+ * no longer connected is stopped. MEGA's live tree pushes changes
+ * (`onControlFileChange`): a root control-file event triggers a look.
+ */
+export async function ensureMarkerPoller(): Promise<MarkerPoller | null> {
+  const type = await connectedCloudLibrary();
+  if (markerPoller && markerPoller.providerType !== type) {
+    markerPoller.stop();
+    markerPoller = null;
+    markerFeedOff?.();
+    markerFeedOff = null;
+  }
+  if (!type) return null;
+  if (markerPoller) return markerPoller;
+  const poller = new MarkerPoller(type);
+  markerPoller = poller;
+  const provider = await activeProvider();
+  // Root control files only: a series folder's file is its page's business.
+  markerFeedOff =
+    provider?.onControlFileChange?.((_name, folder) => {
+      if (folder === undefined) poller.trigger();
+    }) ?? null;
+  poller.trigger();
+  return poller;
 }
 
 /**
@@ -1388,17 +1412,24 @@ export async function connectedCloudQueueSource(): Promise<CloudQueueSource | nu
  * volume every few minutes, and a relist is a whole-account listing), then
  * the OCR upgrade pass for their series and a layer pull for each local row.
  * Never `pullCompletedVolume`: a cloud has no manifest — sidecars are found
- * by convention in the fresh listing.
+ * by convention in the fresh listing. Fed by the series page's loop until the
+ * scoped series pull replaces it (queue file v2, §8.6).
  */
 const CLOUD_RELIST_SPACING_MS = 60_000;
 
+/** A finished volume of a cloud library: its series folder and archive stem. */
+interface CloudDone {
+  series: string;
+  volume: string;
+}
+
 class CloudCompletions {
-  private pending = new Map<string, { providerType: ProviderType; done: QueueDone }>();
+  private pending = new Map<string, { providerType: ProviderType; done: CloudDone }>();
   private timer: ReturnType<typeof setTimeout> | null = null;
   private running: Promise<void> | null = null;
   private lastRunAt = 0;
 
-  add(key: string, providerType: ProviderType, done: QueueDone): Promise<void> {
+  add(key: string, providerType: ProviderType, done: CloudDone): Promise<void> {
     this.pending.set(key, { providerType, done });
     return this.kick();
   }
@@ -1432,7 +1463,7 @@ class CloudCompletions {
       for (const [key, value] of batch) if (!this.pending.has(key)) this.pending.set(key, value);
       return;
     }
-    const byProvider = new Map<ProviderType, Array<[string, QueueDone]>>();
+    const byProvider = new Map<ProviderType, Array<[string, CloudDone]>>();
     for (const [key, { providerType, done }] of batch) {
       const list = byProvider.get(providerType) ?? [];
       list.push([key, done]);
@@ -1482,75 +1513,115 @@ export function settleCloudCompletionsForTest(): Promise<void> {
   return cloudCompletions.settle();
 }
 
-const controlFeedUnsubscribers = new Map<string, () => void>();
+// ---------------------------------------------------------------- series pages (queue file v2)
 
-function cloudPollerFor(source: CloudQueueSource): QueuePoller {
-  const existing = pollers.get(source.id);
-  if (existing) return existing;
-  const poller = new QueuePoller({
-    source,
-    watchedKeys: () =>
-      watchedEntries()
-        .filter((w) => w.queue_url === source.id)
-        .map((w) => w.key),
-    isShown: (key) => isVolumeShown(key),
-    onStatus: (file) => publishQueueStatus(source.id, file),
-    onDone: (key, _entry, done) =>
-      done ? cloudCompletions.add(key, source.providerType, done) : undefined,
-    isHidden
-  });
-  pollers.set(source.id, poller);
-  return poller;
+/** Bunko servers that answered 404 for a series they hold: older than v2, read by their v1 poller. */
+const v1Servers = new Set<string>();
+
+/** A Bunko's manifest of one volume, as its v1 queue file named it. */
+function manifestPathFor(series: string, volume: string): string {
+  return `/catalog/api/manifest?series=${encodeURIComponent(series)}&volume=${encodeURIComponent(volume)}`;
 }
 
 /**
- * The poller for the connected provider's cloud queue, created when the
- * provider can read control files; a poller for a provider no longer
- * connected is stopped and its status withdrawn. MEGA's live tree pushes
- * changes (`onControlFileChange`): a control-file event triggers a look.
+ * Volumes of `folder` whose OCR a series file says finished: on a bunko
+ * server each is pulled through its manifest (as the v1 poller does); on a
+ * cloud library they are batched into one relist + upgrade pass + layer pull.
  */
-export async function ensureCloudPoller(): Promise<QueuePoller | null> {
-  const source = await connectedCloudQueueSource();
-  for (const [id, poller] of [...pollers]) {
-    if (!id.startsWith('cloud:') || id === source?.id) continue;
-    poller.stop();
-    pollers.delete(id);
-    publishQueueStatus(id, null);
-    controlFeedUnsubscribers.get(id)?.();
-    controlFeedUnsubscribers.delete(id);
+async function completeSeriesVolumes(c: {
+  provider: SyncProvider;
+  bunkoQueueUrl: string | null;
+  folder: string;
+  stems: string[];
+}): Promise<void> {
+  for (const stem of c.stems) {
+    const key = volumeQueueKey(c.folder, stem);
+    if (c.bunkoQueueUrl) {
+      const queueUrl = c.bunkoQueueUrl;
+      const init = await requestInitFor(queueUrl, 'webdav');
+      if (!init) return;
+      void pullCompletedVolume(
+        key,
+        { series: c.folder, volume: stem, manifest: manifestPathFor(c.folder, stem) },
+        { queueUrl, init, source: 'webdav', auth: 'webdav' }
+      );
+    } else {
+      void cloudCompletions.add(key, c.provider.type, { series: c.folder, volume: stem });
+    }
   }
-  if (!source) return null;
-  const known = pollers.has(source.id);
-  const poller = cloudPollerFor(source);
-  if (!controlFeedUnsubscribers.has(source.id)) {
-    const provider = await activeProvider();
-    // Root control files only: a series folder's queue file is no business
-    // of the root queue's poller.
-    const off = provider?.onControlFileChange?.((_name, folder) => {
-      if (folder === undefined) poller.trigger('changed');
-    });
-    if (off) controlFeedUnsubscribers.set(source.id, off);
-  }
-  if (!known) poller.trigger('start');
-  return poller;
 }
+
+type CloudManager = (typeof import('$lib/util/sync/unified-cloud-manager'))['unifiedCloudManager'];
+
+/** The app's side of the series page loop. */
+function seriesQueueEnv(manager: CloudManager): SeriesQueueEnv {
+  return {
+    provider: activeProvider,
+    async scopeOf(provider) {
+      if (provider.type !== 'webdav') return provider.type;
+      const credentials = (await (
+        provider as { getWorkerUploadCredentials?: () => Promise<Record<string, unknown>> }
+      ).getWorkerUploadCredentials?.()) as Record<string, unknown> | undefined;
+      const url = typeof credentials?.webdavUrl === 'string' ? credentials.webdavUrl : '';
+      return `webdav ${url}`;
+    },
+    async bunkoServer(provider) {
+      return provider.type === 'webdav' ? connectedBunkoQueueUrl() : null;
+    },
+    isV1Server: (queueUrl) => v1Servers.has(queueUrl),
+    fallBackToV1(queueUrl, firstTime) {
+      v1Servers.add(queueUrl);
+      const poller = pollerFor(queueUrl, 'webdav', 'webdav');
+      // The cards already registered as shown: one look now; later pages
+      // nudge it through `nudgeForShownVolumes`.
+      if (firstTime || poller.state === 'idle') poller.trigger('shown');
+    },
+    folderFor: (title) => manager.resolveCloudFolderTitle(title),
+    folderListed: (folder) => manager.getCloudVolumesBySeries(folder).length > 0,
+    holder: (scope) => cloudBunkoHolder(scope),
+    refreshMarker: (provider) => refreshCloudBunkoMarker(provider),
+    watchedKeys: () => watchedEntries().map((w) => w.key),
+    floorS: (type) => CLOUD_MIN_INTERVAL_S[type as ProviderType] ?? 60,
+    onCompleted: (c) => void completeSeriesVolumes(c),
+    isHidden,
+    now: () => Date.now()
+  };
+}
+
+let defaultSeriesQueueEnv: Promise<SeriesQueueEnv> | null = null;
+
+/**
+ * Follow the OCR queue of the series page for `seriesTitle` while it is
+ * mounted (`SeriesView`); returns the stop. The only place the reader reads
+ * queue state for a library it is connected to.
+ */
+export async function followSeriesQueue(
+  seriesTitle: string,
+  env?: SeriesQueueEnv
+): Promise<() => void> {
+  // The folder lookups need the manager (it pulls in every provider): loaded once, lazily.
+  env ??= await (defaultSeriesQueueEnv ??= import('$lib/util/sync/unified-cloud-manager').then(
+    (m) => seriesQueueEnv(m.unifiedCloudManager)
+  ));
+  return followSeriesQueueLoop(seriesTitle, env);
+}
+
+// ---------------------------------------------------------------- following the connected provider
 
 let providerFollow: (() => void) | null = null;
 /** The bunko server the pollers last followed (`ensureServerPoller`). */
 let connectedServer: string | null = null;
 
 /**
- * The connected bunko SERVER's poller, given its first look when it is new. App
- * start makes it for the account connected then; a WebDAV login later in the
- * session needs it too, or a series opened after connecting shows no status
- * until the app restarts.
+ * A server switched or logged away from: its poller would go on reading as
+ * an account no longer connected. Stopped and its status withdrawn, unless
+ * volumes are still watched there (those wait, reading nothing, until that
+ * account is connected again — `requestInitFor`). The server connected now
+ * gets no poller of its own (its series pages read their series files); one
+ * kept for its watched volumes takes one look when it is connected again.
  */
 async function ensureServerPoller(): Promise<void> {
   const connected = await connectedBunkoQueueUrl();
-  // A server switched or logged away from: its poller would go on reading as
-  // an account no longer connected. Stopped and its status withdrawn, unless
-  // volumes are still watched there (those wait, reading nothing, until that
-  // account is connected again — `requestInitFor`).
   for (const id of [...webdavAuthPollers]) {
     if (id === connected || watchedEntries().some((w) => w.queue_url === id)) continue;
     pollers.get(id)?.stop();
@@ -1558,14 +1629,10 @@ async function ensureServerPoller(): Promise<void> {
     webdavAuthPollers.delete(id);
     publishQueueStatus(id, null);
   }
-  // Connected (again): one look, also for a poller kept for its watched
-  // volumes, which read nothing while another account was connected.
   const switched = connected !== connectedServer;
   connectedServer = connected;
-  if (!connected) return;
-  const known = pollers.has(connected);
-  const poller = pollerFor(connected, 'webdav', 'webdav');
-  if (!known || switched) poller.trigger('start');
+  if (!connected || !switched) return;
+  pollers.get(connected)?.trigger('start');
 }
 
 /** Log in / switch / log out after start: keep the pollers on the connected provider. */
@@ -1573,7 +1640,7 @@ async function followActiveProvider(): Promise<void> {
   if (providerFollow) return;
   const { providerManager } = await providerManagerModule();
   if (!providerManager.status) {
-    await ensureCloudPoller();
+    await ensureMarkerPoller();
     return;
   }
   let lastType: string | null | undefined;
@@ -1581,13 +1648,13 @@ async function followActiveProvider(): Promise<void> {
     const type = status.hasAnyAuthenticated ? status.currentProviderType : null;
     if (type === lastType) {
       // A switch from one WebDAV server to another keeps the type.
-      if (type === 'webdav') void ensureServerPoller();
+      if (type === 'webdav') void ensureMarkerPoller().then(ensureServerPoller);
       return;
     }
     lastType = type;
-    // In turn: the cloud check steps aside for a bunko server, which this then
-    // polls (or, connected elsewhere now, the last server's poller is dropped).
-    void ensureCloudPoller().then(ensureServerPoller);
+    // In turn: the marker poll steps aside for a bunko server (or, connected
+    // elsewhere now, the last server's poller is dropped).
+    void ensureMarkerPoller().then(ensureServerPoller);
   });
   providerFollow = unsubscribe;
 }
@@ -1601,16 +1668,21 @@ export function resetServerOcrQueueForTest(): void {
   pulling.clear();
   statusByQueue.clear();
   queueStatusStore.set({});
+  resetSeriesQueueStoreForTest();
   watches = null;
   watchedKeyStore.set({});
   started = false;
   relistHook = null;
-  cloudSources.clear();
   cloudCompletions.reset();
+  markerPoller?.stop();
+  markerPoller = null;
+  markerFeedOff?.();
+  markerFeedOff = null;
+  v1Servers.clear();
+  defaultSeriesQueueEnv = null;
+  resetSeriesQueueLoopForTest();
   providerFollow?.();
   providerFollow = null;
-  for (const off of controlFeedUnsubscribers.values()) off();
-  controlFeedUnsubscribers.clear();
   setShownListener(null);
   if (shownNudge) clearTimeout(shownNudge);
   shownNudge = null;
