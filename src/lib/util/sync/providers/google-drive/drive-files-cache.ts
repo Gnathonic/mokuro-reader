@@ -4,7 +4,7 @@ import { GOOGLE_DRIVE_CONFIG } from './constants';
 import type { CacheAddMetadata, ChangeFeedResult, CloudCache } from '../../cloud-cache-interface';
 import { CoalescedCacheStore } from '../../coalesced-cache-store';
 import type { DriveFileMetadata } from '../../provider-interface';
-import { isRootConfigFile, isSidecarFile } from '../../syncable-file';
+import { foldFolderName, isRootConfigFile, isSidecarFile } from '../../syncable-file';
 import { compareByAge } from '../../folder-deduplicator';
 import type { DriveChange, DriveFile } from './constants';
 import { HISTORY_FOLDER, isHistoryFileName } from '$lib/reading-history/paths';
@@ -1085,6 +1085,31 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
    */
   getListedReaderFolderIds(): string[] | null {
     return this.readerFolderIds ? [...this.readerFolderIds] : null;
+  }
+
+  /**
+   * The Drive ids of every listed folder named like `folder` — every spelling
+   * that folds equal (`foldFolderName`), every copy — taken from the parents
+   * of the files cached directly in it: no request. A series folder's control
+   * file (`SERIES_QUEUE_FILE_NAME`) is looked up under these. Empty when the
+   * listing holds no file in such a folder. Sorted, so the query built from
+   * them is stable.
+   */
+  getListedSeriesFolderIds(folder: string): string[] {
+    const want = foldFolderName(folder);
+    const ids = new Set<string>();
+    for (const [key, files] of this.cache.read()) {
+      if (foldFolderName(key) !== want) continue;
+      for (const file of files) {
+        // Direct children only: `history/<device>/<file>` sits deeper, and a
+        // root config is cached at its bare name.
+        // (A Drive folder name may hold a `/`; the key is the whole name.)
+        if (!file.parentId || !file.path.startsWith(`${key}/`)) continue;
+        if (file.path.slice(key.length + 1).includes('/')) continue;
+        ids.add(file.parentId);
+      }
+    }
+    return [...ids].sort();
   }
 
   /**

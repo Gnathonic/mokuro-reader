@@ -401,8 +401,8 @@ describe('connectedCloudQueueSource', () => {
     getActiveProvider.mockReturnValue(c.provider);
     const source = await connectedCloudQueueSource();
     expect(source?.id).toBe('cloud:filesystem');
-    // As often as Bunko writes it for a folder library: local reads cost no requests.
-    expect(source?.minIntervalS).toBe(30);
+    // As often as Bunko batches a folder library's writes (15 s): local reads cost no requests.
+    expect(source?.minIntervalS).toBe(15);
   });
 
   it('a provider that cannot read control files has none', async () => {
@@ -531,5 +531,25 @@ describe('MEGA: the live tree pushes control-file changes', () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(c.readControlFile.mock.calls.length).toBeGreaterThan(reads);
     expect(provider.onControlFileChange).toHaveBeenCalledTimes(1);
+  });
+
+  it("a series folder's queue file event is not the root poller's business", async () => {
+    const c = cloudProvider('mega');
+    let fire: (name: string, folder?: string) => void = () => {};
+    const provider = {
+      ...c.provider,
+      onControlFileChange: vi.fn((listener: (name: string, folder?: string) => void) => {
+        fire = listener;
+        return () => {};
+      })
+    };
+    getActiveProvider.mockReturnValue(provider);
+    c.files['.mokuro-bunko.json'] = nodes({ id: 'h1', etag: 'h1', body: markerBody() });
+    await ensureCloudPoller();
+    await vi.advanceTimersByTimeAsync(0);
+    const reads = c.readControlFile.mock.calls.length;
+    fire('.mokuro-series-queue.json', 'Example Saga');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(c.readControlFile.mock.calls.length).toBe(reads);
   });
 });

@@ -1272,8 +1272,9 @@ const CLOUD_MIN_INTERVAL_S: Record<ProviderType, number> = {
   'google-drive': 60,
   onedrive: 60,
   mega: 60,
-  // Local reads cost no requests; Bunko's own floor for a folder library is 30 s.
-  filesystem: 30
+  // Local reads cost no requests; Bunko batches a folder library's writes
+  // every 15 s (queue file v2, §6.4).
+  filesystem: 15
 };
 
 /** The relist a completion runs — set by the app shell (`+layout.svelte`). */
@@ -1523,7 +1524,11 @@ export async function ensureCloudPoller(): Promise<QueuePoller | null> {
   const poller = cloudPollerFor(source);
   if (!controlFeedUnsubscribers.has(source.id)) {
     const provider = await activeProvider();
-    const off = provider?.onControlFileChange?.(() => poller.trigger('changed'));
+    // Root control files only: a series folder's queue file is no business
+    // of the root queue's poller.
+    const off = provider?.onControlFileChange?.((_name, folder) => {
+      if (folder === undefined) poller.trigger('changed');
+    });
     if (off) controlFeedUnsubscribers.set(source.id, off);
   }
   if (!known) poller.trigger('start');
