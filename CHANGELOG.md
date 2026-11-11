@@ -12,6 +12,7 @@
 - Server OCR status is read per series, and only while its series page is open: far
   less data, and no more freezes on a long queue (mokuro-bunko needs 0.8)
 - Server OCR says "starting", "soon" and "finishing"
+- Finished server OCR arrives by listing only its series, not the whole library
 
 ## [1.11.0] - 2026-11-07
 

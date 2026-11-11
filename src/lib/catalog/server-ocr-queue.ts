@@ -24,9 +24,20 @@ import {
 import { cloudBunkoHolder, refreshCloudBunkoMarker } from './cloud-bunko-marker';
 import {
   followSeriesQueue as followSeriesQueueLoop,
+  lookSeriesQueue,
   resetSeriesQueueLoopForTest,
+  seriesQueueFollower,
   type SeriesQueueEnv
 } from './series-queue-loop';
+import {
+  parseSeriesQueueFile,
+  pickTrustedCopy,
+  seriesQueueSlice,
+  type SeriesQueueBlock,
+  type SeriesQueueFile
+} from './series-queue';
+import { WatchSchedule, type WatchGroup, type WatchLook } from './series-queue-watch';
+import { SERIES_QUEUE_FILE_NAME } from '$lib/util/sync/syncable-file';
 import {
   isVolumeShown,
   queueStatusStore,
@@ -64,11 +75,13 @@ import {
  *
  * Queue file v2 (bunko `docs/design/queue-file-v2.md`) moved the queue into
  * one file per series folder, read only while that series' page is open
- * (`series-queue-loop.ts`, wired here by `followSeriesQueue`). What stays of
- * this poller is the kept v1 path: a Bunko server older than v2 (a 404 for a
- * series file), watched uploads to a Bunko server and deep-link imports. No
- * queue file is read at app start any more, and none from a cloud library: a
- * cloud-direct Bunko writes no root queue file. Its lease marker
+ * (`series-queue-loop.ts`, wired here by `followSeriesQueue`). A finished
+ * volume is pulled by listing its one series (`SeriesPulls`, §8.6), and the
+ * watched volumes' series files are read on their own schedule
+ * (`series-queue-watch.ts`, §8.7). What stays of this poller is the kept v1
+ * path: a Bunko server older than v2 (a 404 for a series file), for the
+ * session. No queue file is read at app start any more, and none from a
+ * cloud library: a cloud-direct Bunko writes no root queue file. Its lease marker
  * `.mokuro-bunko.json` is still read every `ttl/3` while the tab is visible
  * (`MarkerPoller`): it decides `serverCompilesMetadata`, the lease holder and
  * the queue's work clock.
@@ -101,30 +114,6 @@ export interface QueueFile {
    */
   pending_volumes: number | null;
   volumes: QueueVolume[];
-  /**
-   * A cloud-direct Bunko's copy (bunko design 0.8 §9.1): the writer's
-   * instance id — the file is trusted only when it names the marker's lease
-   * holder. Absent from a bunko server's live file.
-   */
-  instance_id?: string;
-  /** The writer listed only part of the waiting volumes: absence is "waiting", never "done". */
-  truncated: boolean;
-  /**
-   * Recently finished volumes, newest first (cloud copy only). Presence here is
-   * a cloud reader's ONLY completion signal.
-   */
-  done: QueueDone[];
-}
-
-/** One finished volume of a cloud queue file, with where its new sidecars are. */
-export interface QueueDone {
-  series: string;
-  volume: string;
-  /** ISO time the sidecar was committed; '' when the writer gave none. */
-  at: string;
-  /** Library-relative path of the primary sidecar, when it changed. */
-  ocr: string | null;
-  layers: Array<{ id: string; path: string }>;
 }
 
 function isObject(v: unknown): v is Record<string, unknown> {
@@ -149,7 +138,11 @@ function readJob(v: unknown): QueueJob | null {
   };
 }
 
-/** Validate a queue file (version 1). A malformed entry or job is dropped on its own. */
+/**
+ * Validate a queue file (version 1: a Bunko server's root file over HTTP). A
+ * malformed entry or job is dropped on its own. No Bunko stores one in a cloud
+ * library any more (queue file v2): the cloud copy's fields are gone.
+ */
 export function parseQueueFile(json: unknown): QueueFile | null {
   if (!isObject(json) || json.version !== 1 || !Array.isArray(json.volumes)) return null;
   const volumes: QueueVolume[] = [];
@@ -165,27 +158,6 @@ export function parseQueueFile(json: unknown): QueueFile | null {
       jobs: Array.isArray(jobs) ? jobs.map(readJob).filter((j): j is QueueJob => j !== null) : []
     });
   }
-  const done: QueueDone[] = [];
-  if (Array.isArray(json.done)) {
-    for (const d of json.done) {
-      if (!isObject(d)) continue;
-      const { series, volume, at, ocr, layers } = d;
-      if (typeof series !== 'string' || typeof volume !== 'string') continue;
-      done.push({
-        series,
-        volume,
-        at: typeof at === 'string' ? at : '',
-        ocr: typeof ocr === 'string' && ocr ? ocr : null,
-        layers: Array.isArray(layers)
-          ? layers.flatMap((l) =>
-              isObject(l) && typeof l.id === 'string' && typeof l.path === 'string'
-                ? [{ id: l.id, path: l.path }]
-                : []
-            )
-          : []
-      });
-    }
-  }
   const held =
     isObject(json.held) && typeof json.held.reason === 'string'
       ? { reason: json.held.reason }
@@ -199,12 +171,7 @@ export function parseQueueFile(json: unknown): QueueFile | null {
     next_check_after: typeof next === 'number' && Number.isFinite(next) && next >= 0 ? next : null,
     pending_volumes:
       typeof pending === 'number' && Number.isInteger(pending) && pending >= 0 ? pending : null,
-    volumes,
-    ...(typeof json.instance_id === 'string' && json.instance_id
-      ? { instance_id: json.instance_id }
-      : {}),
-    truncated: json.truncated === true,
-    done
+    volumes
   };
 }
 
@@ -579,7 +546,8 @@ export interface WatchEntry {
    * `webdav` = as the connected WebDAV account (same origin only); `none` =
    * anonymous; `cloud` = a cloud-direct Bunko's series files on the connected
    * provider (`queue_url` is then `cloud:<provider>`, `manifest_url` is
-   * empty): no poller, the series page's loop reads them (queue file v2).
+   * empty). Every kind is read on the watch schedule (queue file v2); only a
+   * server older than v2 is polled through its root file.
    */
   auth: 'webdav' | 'none' | 'cloud';
   /** The `cloud.provider` stamp a pulled layer row gets. */
@@ -624,8 +592,34 @@ function loadWatches(): Map<string, WatchEntry> {
   return watches;
 }
 
+/** How long a burst of watch changes (a bulk upload) settles before it is written. */
+export const WATCH_SAVE_DEBOUNCE_MS = 1_000;
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * The watches changed: the cards hear it now, storage within a second. A bulk
+ * upload adds a watch per volume, and writing every watch on every one of
+ * them was quadratic; one write per burst is not. A hidden tab writes at once
+ * (`flushWatches`), so closing it loses nothing.
+ */
 function saveWatches(): void {
   publishWatchedKeys();
+  if (saveTimer) return;
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    writeWatches();
+  }, WATCH_SAVE_DEBOUNCE_MS);
+}
+
+/** Write a pending watch change now (the tab is being hidden or closed). */
+export function flushWatches(): void {
+  if (!saveTimer) return;
+  clearTimeout(saveTimer);
+  saveTimer = null;
+  writeWatches();
+}
+
+function writeWatches(): void {
   try {
     const list = [...(watches?.values() ?? [])];
     if (list.length === 0) globalThis.localStorage?.removeItem(WATCH_KEY);
@@ -641,8 +635,25 @@ function publishWatchedKeys(): void {
   watchedKeyStore.set(byUuid);
 }
 
+/** Every live watch; one past its lifetime lapses here. */
 export function watchedEntries(): WatchEntry[] {
-  return [...loadWatches().values()];
+  const all = loadWatches();
+  const now = Date.now();
+  let lapsed = false;
+  for (const [key, w] of all) {
+    if (now - w.added_at >= WATCH_LIFETIME_MS) {
+      all.delete(key);
+      lapsed = true;
+    }
+  }
+  if (lapsed) saveWatches();
+  return [...all.values()];
+}
+
+/** End a watch (its volume is done, or gone). */
+function dropWatch(key: string): void {
+  if (loadWatches().delete(key)) saveWatches();
+  withdrawLinkStatus(key);
 }
 
 /** The Addendum A per-volume rechecks are gone: drop what they persisted. Idempotent. */
@@ -706,8 +717,10 @@ export async function watchCloudUpload(input: {
 }
 
 /**
- * Watch a volume the server is making OCR for, and poll its server at once (a
- * cloud watch has no poller: the series page's loop reads its series file).
+ * Watch a volume the server is making OCR for. Its series file is read on the
+ * watch schedule (`series-queue-watch.ts`), and by its series page while that
+ * is open; a server already known to be older than queue file v2 is polled
+ * at once instead, through its root file.
  */
 export function watchServerOcr(input: WatchInput, options: { start?: boolean } = {}): void {
   const key = volumeQueueKey(input.series, input.volume);
@@ -723,11 +736,14 @@ export function watchServerOcr(input: WatchInput, options: { start?: boolean } =
     added_at: Date.now()
   });
   saveWatches();
-  if (options.start !== false && input.auth !== 'cloud') {
+  if (options.start === false) return;
+  if (input.auth !== 'cloud' && v1Servers.has(input.queueUrl)) {
     pollerFor(input.queueUrl, input.auth, input.source).trigger(
       input.source === 'html-download' ? 'deep-link' : 'upload'
     );
+    return;
   }
+  watchSchedule().kick();
 }
 
 // ---------------------------------------------------------------- pulling
@@ -960,10 +976,7 @@ export function pullCompletedVolume(
       if (!series || !volume) return false;
       const row = await localRowFor(key, series, volume);
       if (!row) {
-        if (watched) {
-          loadWatches().delete(key); // the volume is gone: nothing left to watch
-          saveWatches();
-        }
+        if (watched) dropWatch(key); // the volume is gone: nothing left to watch
         return false;
       }
       const manifestUrl = entry?.manifest
@@ -1004,7 +1017,7 @@ export function pullCompletedVolume(
         watched?.source ?? target.source,
         allowed !== null
       );
-      if (loadWatches().delete(key)) saveWatches();
+      dropWatch(key);
       return true;
     } catch (error) {
       console.warn('[OCR queue] Pull failed; it is retried on the next look:', error);
@@ -1163,33 +1176,32 @@ export function nudgeForShownVolumes(): void {
 }
 
 /**
- * App start (after providers connect): drop the old recheck entries, poll once
- * for every server with watched volumes, start the connected cloud library's
- * marker poll, and follow the tab's visibility. The connected bunko server's
- * queue is NOT read here: a series page reads its own series file
- * (`followSeriesQueue`), and only a server older than queue file v2 falls back
- * to its root file's poller.
+ * App start (after providers connect): drop the old recheck entries, plan the
+ * watched volumes' reads (`watchSchedule`: their series files, at creation
+ * + 2 W and then by their ETAs), start the connected cloud library's marker
+ * poll, and follow the tab's visibility. No queue file is read here: a series
+ * page reads its own series file (`followSeriesQueue`), and only a server
+ * older than queue file v2 falls back to its root file's poller.
  */
 export async function startServerOcrQueue(): Promise<void> {
   if (started) return;
   started = true;
   cleanupLegacyRecheckEntries();
   setShownListener(nudgeForShownVolumes);
-  for (const w of watchedEntries()) {
-    // A cloud watch has no poller: its series page reads its series file.
-    if (w.auth !== 'cloud') pollerFor(w.queue_url, w.auth, w.source);
-  }
   connectedServer = await connectedBunkoQueueUrl();
-  for (const p of pollers.values()) p.trigger('start');
+  watchSchedule().kick();
   // The connected cloud library's marker (and again after every login,
   // switch or logout): created — and given its first look — there.
   await followActiveProvider();
   if (typeof document !== 'undefined') {
     document.addEventListener('visibilitychange', () => {
+      if (isHidden()) flushWatches();
       for (const p of pollers.values()) p.onVisibilityChange();
       markerPoller?.onVisibilityChange();
+      schedule?.onVisibilityChange();
     });
   }
+  globalThis.addEventListener?.('pagehide', flushWatches);
 }
 
 // ---------------------------------------------------------------- cloud-direct Bunko
@@ -1211,24 +1223,6 @@ export const CLOUD_MIN_INTERVAL_S: Record<ProviderType, number> = {
   // every 15 s (queue file v2, §6.4).
   filesystem: 15
 };
-
-/** The relist a completion runs — set by the app shell (`+layout.svelte`). */
-let relistHook: (() => Promise<void>) | null = null;
-
-/**
- * How a completion asks for a fresh listing after a cloud Bunko finished
- * volumes ("pick up new sidecars"): the app passes
- * `unifiedCloudManager.fetchAllCloudVolumes({ refreshIndexes: true })`.
- */
-export function setQueueRelistHook(hook: (() => Promise<void>) | null): void {
-  relistHook = hook;
-}
-
-async function relist(): Promise<void> {
-  if (relistHook) return relistHook();
-  const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
-  await unifiedCloudManager.fetchAllCloudVolumes({ refreshIndexes: true });
-}
 
 async function activeProvider(): Promise<SyncProvider | null> {
   const { providerManager } = await providerManagerModule();
@@ -1406,152 +1400,238 @@ export async function ensureMarkerPoller(): Promise<MarkerPoller | null> {
   return poller;
 }
 
-/**
- * Completions of a cloud queue, batched: one relist for every volume that
- * finished since the last one (a Bunko working through a backlog finishes a
- * volume every few minutes, and a relist is a whole-account listing), then
- * the OCR upgrade pass for their series and a layer pull for each local row.
- * Never `pullCompletedVolume`: a cloud has no manifest — sidecars are found
- * by convention in the fresh listing. Fed by the series page's loop until the
- * scoped series pull replaces it (queue file v2, §8.6).
- */
-const CLOUD_RELIST_SPACING_MS = 60_000;
-
-/** A finished volume of a cloud library: its series folder and archive stem. */
-interface CloudDone {
-  series: string;
-  volume: string;
-}
-
-class CloudCompletions {
-  private pending = new Map<string, { providerType: ProviderType; done: CloudDone }>();
-  private timer: ReturnType<typeof setTimeout> | null = null;
-  private running: Promise<void> | null = null;
-  private lastRunAt = 0;
-
-  add(key: string, providerType: ProviderType, done: CloudDone): Promise<void> {
-    this.pending.set(key, { providerType, done });
-    return this.kick();
-  }
-
-  private kick(): Promise<void> {
-    if (this.running || this.timer) return this.running ?? Promise.resolve();
-    const wait = Math.max(0, this.lastRunAt + CLOUD_RELIST_SPACING_MS - Date.now());
-    if (wait > 0) {
-      this.timer = setTimeout(() => {
-        this.timer = null;
-        void this.kick();
-      }, wait);
-      return Promise.resolve();
-    }
-    const run = this.run().finally(() => {
-      if (this.running === run) this.running = null;
-      if (this.pending.size > 0) void this.kick();
-    });
-    this.running = run;
-    return run;
-  }
-
-  private async run(): Promise<void> {
-    const batch = [...this.pending.entries()];
-    this.pending.clear();
-    this.lastRunAt = Date.now();
-    try {
-      await relist();
-    } catch (error) {
-      console.warn('[OCR queue] Relist after cloud OCR failed; the next look retries:', error);
-      for (const [key, value] of batch) if (!this.pending.has(key)) this.pending.set(key, value);
-      return;
-    }
-    const byProvider = new Map<ProviderType, Array<[string, CloudDone]>>();
-    for (const [key, { providerType, done }] of batch) {
-      const list = byProvider.get(providerType) ?? [];
-      list.push([key, done]);
-      byProvider.set(providerType, list);
-    }
-    for (const [providerType, entries] of byProvider) {
-      try {
-        const { requestOcrUpgradePass } = await import('./ocr-upgrade-pass');
-        const series = [
-          ...new Map(entries.map(([, d]) => [normalizeSeriesKey(d.series), d.series]))
-        ].map(([, title]) => ({ title }));
-        void requestOcrUpgradePass(providerType, series);
-      } catch (error) {
-        console.debug('[OCR queue] Could not request the OCR upgrade pass:', error);
-      }
-      const { pullLayersForVolume } = await import('$lib/metadata/layer-sync');
-      for (const [key, done] of entries) {
-        try {
-          const row = await localRowFor(key, done.series, done.volume);
-          if (row) await pullLayersForVolume(row.volume_uuid, providerType);
-        } catch (error) {
-          console.debug('[OCR queue] Could not pull layers of a finished volume:', error);
-        }
-        if (loadWatches().delete(key)) saveWatches();
-      }
-    }
-  }
-
-  /** Tests: wait for the batch in flight (a spaced follow-up waits on its timer). */
-  async settle(): Promise<void> {
-    while (this.running) await this.running;
-  }
-
-  reset(): void {
-    if (this.timer) clearTimeout(this.timer);
-    this.timer = null;
-    this.pending.clear();
-    this.running = null;
-    this.lastRunAt = 0;
-  }
-}
-
-const cloudCompletions = new CloudCompletions();
-
-/** Tests: wait for queued cloud completions. */
-export function settleCloudCompletionsForTest(): Promise<void> {
-  return cloudCompletions.settle();
-}
-
 // ---------------------------------------------------------------- series pages (queue file v2)
 
 /** Bunko servers that answered 404 for a series they hold: older than v2, read by their v1 poller. */
 const v1Servers = new Set<string>();
 
-/** A Bunko's manifest of one volume, as its v1 queue file named it. */
-function manifestPathFor(series: string, volume: string): string {
-  return `/catalog/api/manifest?series=${encodeURIComponent(series)}&volume=${encodeURIComponent(volume)}`;
+// ---------------------------------------------------------------- the scoped pull (§8.6)
+
+/** A burst of completions in one series settles this long before its pull. */
+export const SERIES_PULL_DEBOUNCE_MS = 10_000;
+/** Two pulls of one series are at least this far apart. */
+export const SERIES_PULL_SPACING_MS = 60_000;
+/** A pull that found nothing new is tried again after these waits, then left to the next listing. */
+export const SERIES_PULL_RETRY_MS: readonly number[] = [60_000, 120_000, 240_000];
+
+type CloudManager = (typeof import('$lib/util/sync/unified-cloud-manager'))['unifiedCloudManager'];
+type SeriesFolderRefresh = NonNullable<Awaited<ReturnType<CloudManager['refreshSeriesFolder']>>>;
+
+interface PullStem {
+  stem: string;
+  /** End the volume's watch once pulled (its file said it is done). */
+  drop: boolean;
+}
+
+interface PullSlot {
+  providerType: ProviderType;
+  folder: string;
+  stems: Map<string, PullStem>;
+  waiters: Array<(result: SeriesFolderRefresh | null) => void>;
+  timer: ReturnType<typeof setTimeout> | null;
+  timerAt: number;
+  running: boolean;
+  lastRunAt: number;
+  /** Retries taken of a pull that found nothing new. */
+  attempt: number;
+}
+
+/** Is `name` (a basename) the primary sidecar or a layer of `stemKey`'s volume? */
+function isSidecarOf(name: string, stemKey: string): boolean {
+  const folded = normalizeVolumeTitleKey(name);
+  return folded.startsWith(`${stemKey}.`) && /\.mokuro(\.gz)?$/.test(folded);
+}
+
+function basenameOf(path: string): string {
+  return path.slice(path.lastIndexOf('/') + 1);
+}
+
+/** Did the pull bring anything new: the `series.json` stamp, or a sidecar of a finished volume? */
+function pullMoved(result: SeriesFolderRefresh, stems: readonly PullStem[]): boolean {
+  const keys = stems.map((s) => normalizeVolumeTitleKey(s.stem));
+  return result.changed.some((path) => {
+    const name = basenameOf(path);
+    if (name.toLowerCase() === 'series.json') return true;
+    return keys.some((key) => isSidecarOf(name, key));
+  });
 }
 
 /**
- * Volumes of `folder` whose OCR a series file says finished: on a bunko
- * server each is pulled through its manifest (as the v1 poller does); on a
- * cloud library they are batched into one relist + upgrade pass + layer pull.
+ * The scoped pull of a series whose OCR finished (queue file v2, §8.6),
+ * replacing the whole-account relist of a cloud and the manifest pull of the
+ * connected Bunko server:
+ *
+ * 1. `unifiedCloudManager.refreshSeriesFolder` lists that one series (the
+ *    Drive change feed when it is usable) and refreshes its `series.json`;
+ * 2. the OCR upgrade pass runs for the series, with the folder's files — the
+ *    primary sidecar arrives through `series.json`'s `mokuro_sha256`;
+ * 3. the layers of every local row of a finished volume are pulled.
+ *
+ * Per series: debounced {@link SERIES_PULL_DEBOUNCE_MS}, at least
+ * {@link SERIES_PULL_SPACING_MS} apart, one in flight. A pull that moved
+ * neither the `series.json` stamp nor a sidecar of a finished volume is tried
+ * again after {@link SERIES_PULL_RETRY_MS}, then left to the next listing
+ * (Bunko's settle rule makes that rare).
  */
-async function completeSeriesVolumes(c: {
-  provider: SyncProvider;
-  bunkoQueueUrl: string | null;
-  folder: string;
-  stems: string[];
-}): Promise<void> {
-  for (const stem of c.stems) {
-    const key = volumeQueueKey(c.folder, stem);
-    if (c.bunkoQueueUrl) {
-      const queueUrl = c.bunkoQueueUrl;
-      const init = await requestInitFor(queueUrl, 'webdav');
-      if (!init) return;
-      void pullCompletedVolume(
-        key,
-        { series: c.folder, volume: stem, manifest: manifestPathFor(c.folder, stem) },
-        { queueUrl, init, source: 'webdav', auth: 'webdav' }
-      );
-    } else {
-      void cloudCompletions.add(key, c.provider.type, { series: c.folder, volume: stem });
+class SeriesPulls {
+  private slots = new Map<string, PullSlot>();
+  /** The runs in flight, for tests to wait out. */
+  private runs = new Set<Promise<void>>();
+
+  /** Pull `folder` for these finished stems; resolves with the refresh once it ran (null: nothing listed). */
+  request(
+    providerType: ProviderType,
+    folder: string,
+    stems: string[],
+    opts: { drop: boolean }
+  ): Promise<SeriesFolderRefresh | null> {
+    const id = `${providerType}\u0000${normalizeSeriesKey(folder)}`;
+    let slot = this.slots.get(id);
+    if (!slot) {
+      slot = {
+        providerType,
+        folder,
+        stems: new Map(),
+        waiters: [],
+        timer: null,
+        timerAt: Infinity,
+        running: false,
+        lastRunAt: -Infinity,
+        attempt: 0
+      };
+      this.slots.set(id, slot);
     }
+    slot.folder = folder;
+    for (const stem of stems) {
+      const key = normalizeVolumeTitleKey(stem);
+      const held = slot.stems.get(key);
+      slot.stems.set(key, { stem, drop: opts.drop || !!held?.drop });
+    }
+    slot.attempt = 0;
+    const done = new Promise<SeriesFolderRefresh | null>((resolve) => slot.waiters.push(resolve));
+    this.arm(slot, SERIES_PULL_DEBOUNCE_MS);
+    return done;
+  }
+
+  private arm(slot: PullSlot, delayMs: number): void {
+    if (slot.running) return; // the run re-arms when it ends
+    const now = Date.now();
+    const at = Math.max(now + delayMs, slot.lastRunAt + SERIES_PULL_SPACING_MS);
+    if (slot.timer && slot.timerAt <= at) return;
+    if (slot.timer) clearTimeout(slot.timer);
+    slot.timerAt = at;
+    slot.timer = setTimeout(() => {
+      slot.timer = null;
+      slot.timerAt = Infinity;
+      const run = this.run(slot);
+      this.runs.add(run);
+      void run.finally(() => this.runs.delete(run));
+    }, at - now);
+  }
+
+  /** Tests: wait for the pulls in flight (a pull due later waits on its timer). */
+  async settle(): Promise<void> {
+    while (this.runs.size > 0) await Promise.all([...this.runs]);
+  }
+
+  private async run(slot: PullSlot): Promise<void> {
+    const batch = [...slot.stems.values()];
+    const waiters = slot.waiters;
+    slot.stems.clear();
+    slot.waiters = [];
+    slot.running = true;
+    slot.lastRunAt = Date.now();
+    let result: SeriesFolderRefresh | null = null;
+    try {
+      result = await pullSeries(slot.providerType, slot.folder, batch);
+    } catch (error) {
+      console.warn(`[OCR queue] The pull of '${slot.folder}' failed; it is tried again:`, error);
+    } finally {
+      slot.running = false;
+    }
+    for (const resolve of waiters) resolve(result);
+    if (slot.stems.size > 0) {
+      this.arm(slot, SERIES_PULL_DEBOUNCE_MS);
+      return;
+    }
+    if (result && pullMoved(result, batch)) return;
+    if (slot.attempt >= SERIES_PULL_RETRY_MS.length) return; // the next listing has it
+    const wait = SERIES_PULL_RETRY_MS[slot.attempt++];
+    for (const b of batch) slot.stems.set(normalizeVolumeTitleKey(b.stem), { ...b, drop: false });
+    this.arm(slot, wait);
+  }
+
+  /** Tests: how many series have a pull armed or running. */
+  pending(): number {
+    let n = 0;
+    for (const slot of this.slots.values()) if (slot.timer || slot.running) n++;
+    return n;
+  }
+
+  reset(): void {
+    for (const slot of this.slots.values()) if (slot.timer) clearTimeout(slot.timer);
+    this.slots.clear();
   }
 }
 
-type CloudManager = (typeof import('$lib/util/sync/unified-cloud-manager'))['unifiedCloudManager'];
+/** One scoped pull (see {@link SeriesPulls}). */
+async function pullSeries(
+  providerType: ProviderType,
+  folder: string,
+  batch: readonly PullStem[]
+): Promise<SeriesFolderRefresh | null> {
+  const provider = await activeProvider();
+  if (!provider || provider.type !== providerType) return null;
+  const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+  const result = await unifiedCloudManager.refreshSeriesFolder(folder);
+  if (!result) return null;
+  try {
+    const { requestOcrUpgradePass } = await import('./ocr-upgrade-pass');
+    // The folder's own files: a pass reads one level, as the listing's does.
+    const files = result.files.filter((f) => f.path.split('/').filter(Boolean).length === 2);
+    void requestOcrUpgradePass(result.providerType, [{ title: result.folder, files }]);
+  } catch (error) {
+    console.debug('[OCR queue] Could not request the OCR upgrade pass:', error);
+  }
+  const { pullLayersForVolume } = await import('$lib/metadata/layer-sync');
+  for (const { stem, drop } of batch) {
+    const key = volumeQueueKey(result.folder, stem);
+    try {
+      const row = await localRowFor(key, result.folder, stem);
+      if (row) await pullLayersForVolume(row.volume_uuid, result.providerType);
+    } catch (error) {
+      console.debug('[OCR queue] Could not pull layers of a finished volume:', error);
+    }
+    if (drop) dropWatch(key);
+  }
+  return result;
+}
+
+const seriesPulls = new SeriesPulls();
+
+/** Tests: how many series pulls are armed or running. */
+export function pendingSeriesPullsForTest(): number {
+  return seriesPulls.pending();
+}
+
+/** Tests: wait for the series pulls in flight. */
+export function settleSeriesPullsForTest(): Promise<void> {
+  return seriesPulls.settle();
+}
+
+/**
+ * Volumes of `folder` whose OCR a series file says finished: the scoped pull
+ * of that series, on a cloud library and on the connected Bunko server alike
+ * (no manifest: the sidecars are in the listing, `series.json` names the new
+ * primary). Their watches end once it ran.
+ */
+function completeSeriesVolumes(c: {
+  provider: SyncProvider;
+  folder: string;
+  stems: string[];
+}): void {
+  void seriesPulls.request(c.provider.type, c.folder, c.stems, { drop: true });
+}
 
 /** The app's side of the series page loop. */
 function seriesQueueEnv(manager: CloudManager): SeriesQueueEnv {
@@ -1582,13 +1662,20 @@ function seriesQueueEnv(manager: CloudManager): SeriesQueueEnv {
     refreshMarker: (provider) => refreshCloudBunkoMarker(provider),
     watchedKeys: () => watchedEntries().map((w) => w.key),
     floorS: (type) => CLOUD_MIN_INTERVAL_S[type as ProviderType] ?? 60,
-    onCompleted: (c) => void completeSeriesVolumes(c),
+    onCompleted: (c) => completeSeriesVolumes(c),
     isHidden,
     now: () => Date.now()
   };
 }
 
 let defaultSeriesQueueEnv: Promise<SeriesQueueEnv> | null = null;
+
+/** The app's env of the series loop; the folder lookups need the manager (every provider), loaded once, lazily. */
+function seriesEnv(): Promise<SeriesQueueEnv> {
+  return (defaultSeriesQueueEnv ??= import('$lib/util/sync/unified-cloud-manager').then((m) =>
+    seriesQueueEnv(m.unifiedCloudManager)
+  ));
+}
 
 /**
  * Follow the OCR queue of the series page for `seriesTitle` while it is
@@ -1599,11 +1686,255 @@ export async function followSeriesQueue(
   seriesTitle: string,
   env?: SeriesQueueEnv
 ): Promise<() => void> {
-  // The folder lookups need the manager (it pulls in every provider): loaded once, lazily.
-  env ??= await (defaultSeriesQueueEnv ??= import('$lib/util/sync/unified-cloud-manager').then(
-    (m) => seriesQueueEnv(m.unifiedCloudManager)
-  ));
-  return followSeriesQueueLoop(seriesTitle, env);
+  env ??= await seriesEnv();
+  const stop = followSeriesQueueLoop(seriesTitle, env);
+  return () => {
+    stop();
+    // Its watched volumes go back on their own schedule.
+    schedule?.kick();
+  };
+}
+
+// ---------------------------------------------------------------- watched volumes off their page (§8.7)
+
+let schedule: WatchSchedule | null = null;
+
+/** The schedule that reads watched volumes' series files (`series-queue-watch.ts`). */
+function watchSchedule(): WatchSchedule {
+  return (schedule ??= new WatchSchedule({
+    // A server known to be older than v2 polls its own watches (v1 root file).
+    watches: () =>
+      watchedEntries().filter((w) => w.auth === 'cloud' || !v1Servers.has(w.queue_url)),
+    windowMs: (group) => watchWindowMs(group.watches[0], null),
+    look: lookWatchedSeries,
+    pullAbsent: pullAbsentWatch,
+    complete: completeWatch,
+    isHidden,
+    now: () => Date.now()
+  }));
+}
+
+/** W for a watch: the larger of its provider's floor and the store's `batch_s`. */
+function watchWindowMs(w: WatchEntry, block: SeriesQueueBlock | null): number {
+  if (w.auth !== 'cloud') {
+    return Math.max(CLOUD_MIN_INTERVAL_S.webdav, block?.batch_s ?? 0) * 1000;
+  }
+  const type = w.source as ProviderType;
+  const batch = block?.batch_s ?? cloudBunkoHolder(type)?.series_queue?.batch_s ?? 0;
+  return Math.max(CLOUD_MIN_INTERVAL_S[type] ?? 60, batch) * 1000;
+}
+
+/** A queue status's soonest ETA, epoch ms; null when none of its jobs has one. */
+function soonestEtaMs(jobs: readonly QueueJob[]): number | null {
+  let soonest: number | null = null;
+  for (const job of jobs) {
+    const at = job.eta ? Date.parse(job.eta) : NaN;
+    if (Number.isFinite(at) && (soonest === null || at < soonest)) soonest = at;
+  }
+  return soonest;
+}
+
+/** What a series file shows for the watched volumes of `group`. */
+function watchLookOf(
+  group: WatchGroup,
+  file: SeriesQueueFile,
+  block: SeriesQueueBlock | null,
+  windowMs: number
+): WatchLook {
+  const slice = seriesQueueSlice(file, block);
+  const done = new Set([...file.done.keys()].map(normalizeVolumeTitleKey));
+  const look = {
+    kind: 'read' as const,
+    windowMs,
+    present: new Map<string, number | null>(),
+    done: new Set<string>()
+  };
+  for (const w of group.watches) {
+    const stem = normalizeVolumeTitleKey(w.volume);
+    const status = slice.get(stem);
+    if (status) look.present.set(w.key, soonestEtaMs(status.jobs));
+    else if (done.has(stem)) look.done.add(w.key);
+  }
+  return look;
+}
+
+/**
+ * One read for watched volumes: through the connected library (the series
+ * page's own path, memo and completions) for an upload watch, through the
+ * link's origin for a deep link's.
+ */
+async function lookWatchedSeries(group: WatchGroup): Promise<WatchLook> {
+  const w = group.watches[0];
+  if (w.auth === 'none') return lookLinkSeries(group);
+  const provider = await activeProvider();
+  if (!provider?.readControlFile) return { kind: 'wait' };
+  if (w.auth === 'cloud') {
+    // Its library is not the one connected now: nothing to read it with.
+    if (provider.type !== w.source || (await connectedCloudLibrary()) !== provider.type) {
+      return { kind: 'wait' };
+    }
+  } else if ((await connectedBunkoQueueUrl()) !== w.queue_url) {
+    return { kind: 'wait' };
+  }
+  // Its page is open: the page's loop reads it.
+  if (seriesQueueFollower(w.series)) return { kind: 'wait', retryMs: watchWindowMs(w, null) };
+  const look = await lookSeriesQueue(w.series, await seriesEnv());
+  if (look.kind === 'v1') return { kind: 'handed-off' };
+  if (look.kind === 'none' || !look.file) return { kind: 'wait' };
+  return watchLookOf(group, look.file, look.block, watchWindowMs(w, look.block));
+}
+
+/** A link's series file over HTTP, by group: its tag, its file, when it was read. */
+const linkMemos = new Map<string, { etag: string | null; file: SeriesQueueFile | null }>();
+
+/** The series file beside a queue's root file: `<dav root>/<series>/.mokuro-series-queue.json`. */
+export function seriesQueueUrlFor(queueUrl: string, series: string): string | null {
+  const root = '/.mokuro-queue.json';
+  if (!queueUrl.endsWith(root) || !series) return null;
+  return `${queueUrl.slice(0, -root.length)}/${encodeURIComponent(series)}/${SERIES_QUEUE_FILE_NAME}`;
+}
+
+/** The cards' status of a link's watched volumes, by group (`publishQueueStatus` ids). */
+const linkStatusIds = new Set<string>();
+
+/**
+ * A deep link's watch: the series file is read through the link's origin,
+ * anonymously and under the link's redirect rule, like every other fetch of
+ * that link. A 404 means a Bunko older than v2: its root-file poller takes
+ * over. Its watched volumes' jobs are shown on their cards.
+ */
+async function lookLinkSeries(group: WatchGroup): Promise<WatchLook> {
+  const w = group.watches[0];
+  const url = seriesQueueUrlFor(w.queue_url, w.series);
+  if (!url) return { kind: 'handed-off' };
+  const memo = linkMemos.get(group.id) ?? { etag: null, file: null };
+  const init = (await requestInitFor(w.queue_url, 'none')) ?? { cache: 'no-store' as const };
+  const headers: Record<string, string> = {
+    ...((init.headers as Record<string, string> | undefined) ?? {})
+  };
+  if (memo.etag && memo.file) headers['If-None-Match'] = memo.etag;
+  const response = await fetchForPull(
+    url,
+    { ...init, headers },
+    { queueUrl: w.queue_url, auth: 'none' },
+    true
+  );
+  if (response.status === 404) {
+    linkMemos.delete(group.id);
+    v1Servers.add(w.queue_url);
+    pollerFor(w.queue_url, w.auth, w.source).trigger('deep-link');
+    return { kind: 'handed-off' };
+  }
+  let file = memo.file;
+  if (response.status !== 304 || !file) {
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const parsed = parseSeriesQueueFile(await response.json());
+    // Bunko's own virtual file carries `live`: a file without it is no Bunko's word.
+    file = parsed ? pickTrustedCopy([parsed], { kind: 'live' }) : null;
+    if (!file) throw new Error('not a series queue file (v2) of a Bunko server');
+    memo.etag = response.headers.get('ETag');
+  }
+  memo.file = file;
+  linkMemos.set(group.id, memo);
+  const look = watchLookOf(group, file, file.live, watchWindowMs(w, file.live));
+  publishLinkStatus(group, file);
+  return look;
+}
+
+function publishLinkStatus(group: WatchGroup, file: SeriesQueueFile): void {
+  const slice = seriesQueueSlice(file, file.live);
+  const volumes: QueueVolume[] = [];
+  for (const w of group.watches) {
+    const status = slice.get(normalizeVolumeTitleKey(w.volume));
+    if (status) {
+      volumes.push({
+        series: w.series,
+        volume: w.volume,
+        path: '',
+        manifest: '',
+        jobs: status.jobs
+      });
+    }
+  }
+  const id = `series:${group.id}`;
+  linkStatusIds.add(id);
+  publishQueueStatus(id, {
+    version: 1,
+    generated_at: '',
+    held: file.live?.held ?? null,
+    next_check_after: null,
+    pending_volumes: null,
+    volumes
+  });
+}
+
+/** A watch ended: its card no longer shows what a link's series file said of it. */
+function withdrawLinkStatus(key: string): void {
+  let changed = false;
+  for (const id of linkStatusIds) {
+    const part = statusByQueue.get(id);
+    if (part && key in part) {
+      delete part[key];
+      changed = true;
+    }
+  }
+  if (changed) {
+    const merged: Record<string, VolumeQueueStatus> = {};
+    for (const part of statusByQueue.values()) Object.assign(merged, part);
+    queueStatusStore.set(merged);
+  }
+}
+
+function pullTargetFor(w: WatchEntry, init: RequestInit): PullTarget {
+  return { queueUrl: w.queue_url, init, source: w.source, auth: w.auth };
+}
+
+/** Done or vanished: a link's watch pulls through its manifest (which ends it); any other just ends. */
+function completeWatch(_group: WatchGroup, w: WatchEntry): void {
+  if (w.auth !== 'none') {
+    dropWatch(w.key);
+    return;
+  }
+  void (async () => {
+    const init = await requestInitFor(w.queue_url, 'none');
+    if (!init) return;
+    await pullCompletedVolume(
+      w.key,
+      { series: w.series, volume: w.volume, manifest: '' },
+      pullTargetFor(w, init)
+    );
+  })();
+}
+
+/**
+ * A watched volume its series file never listed, after 2 reads: one scoped
+ * pull. A primary `.mokuro` listed newer than the watch completes it (a
+ * link's: its manifest decides, as for any finished volume).
+ */
+async function pullAbsentWatch(_group: WatchGroup, w: WatchEntry): Promise<boolean> {
+  if (w.auth === 'none') {
+    const init = await requestInitFor(w.queue_url, 'none');
+    if (!init) return false;
+    const result = await pullCompletedVolume(
+      w.key,
+      { series: w.series, volume: w.volume, manifest: '' },
+      pullTargetFor(w, init)
+    );
+    return result === true;
+  }
+  const provider = await activeProvider();
+  if (!provider) return false;
+  const result = await seriesPulls.request(provider.type, w.series, [w.volume], { drop: false });
+  if (!result) return false;
+  const stem = normalizeVolumeTitleKey(w.volume);
+  const fresh = result.files.some((f) => {
+    const name = normalizeVolumeTitleKey(basenameOf(f.path));
+    if (name !== `${stem}.mokuro` && name !== `${stem}.mokuro.gz`) return false;
+    const at = Date.parse(f.modifiedTime);
+    return Number.isFinite(at) && at > w.added_at;
+  });
+  if (fresh) dropWatch(w.key);
+  return fresh;
 }
 
 // ---------------------------------------------------------------- following the connected provider
@@ -1631,6 +1962,8 @@ async function ensureServerPoller(): Promise<void> {
   }
   const switched = connected !== connectedServer;
   connectedServer = connected;
+  // Watches that waited for their account may be readable now.
+  schedule?.wake();
   if (!connected || !switched) return;
   pollers.get(connected)?.trigger('start');
 }
@@ -1670,10 +2003,15 @@ export function resetServerOcrQueueForTest(): void {
   queueStatusStore.set({});
   resetSeriesQueueStoreForTest();
   watches = null;
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = null;
   watchedKeyStore.set({});
   started = false;
-  relistHook = null;
-  cloudCompletions.reset();
+  seriesPulls.reset();
+  schedule?.stop();
+  schedule = null;
+  linkMemos.clear();
+  linkStatusIds.clear();
   markerPoller?.stop();
   markerPoller = null;
   markerFeedOff?.();

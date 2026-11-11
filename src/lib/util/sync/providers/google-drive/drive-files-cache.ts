@@ -3,6 +3,7 @@ import { driveApiClient, escapeNameForDriveQuery, isDriveAuthFailure } from './a
 import { GOOGLE_DRIVE_CONFIG } from './constants';
 import type { CacheAddMetadata, ChangeFeedResult, CloudCache } from '../../cloud-cache-interface';
 import { CoalescedCacheStore } from '../../coalesced-cache-store';
+import { replaceFolderInStore } from '../../listing-mutations';
 import type { DriveFileMetadata } from '../../provider-interface';
 import { foldFolderName, isRootConfigFile, isSidecarFile } from '../../syncable-file';
 import { compareByAge } from '../../folder-deduplicator';
@@ -1455,6 +1456,32 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
    */
   removeById(fileId: string): void {
     this.removeDriveFileById(fileId);
+  }
+
+  /**
+   * `CloudCache.replaceFolderEntries`: one folder's entries from a scoped
+   * listing (`listFolder`), recorded like every other mutation so a
+   * whole-account fetch in flight replays it. Only for when the change feed
+   * cannot answer ({@link changeFeedUsable}): the feed is the cheaper way.
+   */
+  replaceFolderEntries(folder: string, list: () => Promise<DriveFileMetadata[]>): Promise<boolean> {
+    return replaceFolderInStore(this.cache, this.isLoaded(), folder, list, (fn) => this.mutate(fn));
+  }
+
+  /**
+   * Would {@link refreshFromChanges} answer from the feed (one `changes.list`)
+   * rather than list the whole account? A caller that only needs ONE folder
+   * current lists that folder instead when it would not.
+   */
+  changeFeedUsable(): boolean {
+    return (
+      !this.feedUnavailable &&
+      this.changesToken !== null &&
+      this.changesTokenGeneration === this.cacheGeneration &&
+      this.isLoaded() &&
+      this.lastFetchTime !== null &&
+      Date.now() - this.lastFetchTime <= CHANGE_FEED_MAX_AGE_MS
+    );
   }
 
   /**

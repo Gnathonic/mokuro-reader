@@ -5521,3 +5521,117 @@ describe('UnifiedCloudManager.fetchAllCloudVolumes({ fromChangeFeed }) (#288)', 
     expect(fetchAll).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('UnifiedCloudManager.refreshSeriesFolder (queue file v2: the scoped pull)', () => {
+  const file = (path: string, modifiedTime = '2026-10-12T10:00:00.000Z'): CloudFileMetadata => ({
+    provider: 'webdav',
+    fileId: `id:${path}`,
+    path,
+    modifiedTime,
+    size: 10
+  });
+  let listing: CloudFileMetadata[];
+  let fresh: CloudFileMetadata[];
+  const listFolder = vi.fn(async (_folder: string) => fresh);
+  const refreshFromChanges = vi.fn(async () => {
+    listing = [...listing.filter((f) => !f.path.startsWith('Saga/')), ...fresh];
+    return 'applied';
+  });
+  const replaceFolderEntries = vi.fn(
+    async (folder: string, list: () => Promise<CloudFileMetadata[]>) => {
+      const entries = await list();
+      listing = [...listing.filter((f) => !f.path.startsWith(`${folder}/`)), ...entries];
+      return true;
+    }
+  );
+  let feedUsable: boolean;
+  let loaded: boolean;
+  const cache = () => ({
+    isLoaded: () => loaded,
+    refreshFromChanges,
+    changeFeedUsable: () => feedUsable,
+    replaceFolderEntries
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    listing = [file('Saga/Saga 01.cbz'), file('Saga/series.json'), file('Other/Other 01.cbz')];
+    fresh = [
+      file('Saga/Saga 01.cbz'),
+      file('Saga/series.json', '2026-10-12T10:05:00.000Z'),
+      file('Saga/Saga 01.mokuro')
+    ];
+    feedUsable = false;
+    loaded = true;
+    getAllFiles.mockImplementation(() => listing);
+    getBySeries.mockImplementation((series: string) =>
+      listing.filter((f) => f.path.startsWith(`${series}/`))
+    );
+    getCache.mockImplementation(() => cache());
+  });
+
+  async function manager() {
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const indexOne = vi
+      .spyOn(unifiedCloudManager, 'refreshSeriesIndexForSeries')
+      .mockResolvedValue(undefined);
+    return { m: unifiedCloudManager, indexOne };
+  }
+
+  it('lists that one folder, replaces only its entries, then refreshes its series.json', async () => {
+    const provider = { type: 'webdav', listFolder };
+    getActiveProvider.mockReturnValue(provider);
+    const { m, indexOne } = await manager();
+    const result = await m.refreshSeriesFolder('Saga');
+    expect(listFolder).toHaveBeenCalledExactlyOnceWith('Saga');
+    expect(replaceFolderEntries).toHaveBeenCalledTimes(1);
+    expect(listing.map((f) => f.path)).toContain('Other/Other 01.cbz');
+    expect(result?.folder).toBe('Saga');
+    expect(result?.changed.sort()).toEqual(['Saga/Saga 01.mokuro', 'Saga/series.json']);
+    expect(indexOne).toHaveBeenCalledWith('Saga');
+    // Never the whole account, never the listing-wide index pass with a partial map.
+    expect(fetchAll).not.toHaveBeenCalled();
+    expect(refreshFromChanges).not.toHaveBeenCalled();
+    expect(refreshSeriesIndexes).not.toHaveBeenCalled();
+  });
+
+  it('Google Drive with a usable change feed reads the feed instead of listing', async () => {
+    feedUsable = true;
+    getActiveProvider.mockReturnValue({ type: 'google-drive', listFolder });
+    const { m } = await manager();
+    const result = await m.refreshSeriesFolder('Saga');
+    expect(refreshFromChanges).toHaveBeenCalledTimes(1);
+    expect(listFolder).not.toHaveBeenCalled();
+    expect(fetchAll).not.toHaveBeenCalled();
+    expect(result?.changed).toContain('Saga/Saga 01.mokuro');
+  });
+
+  it('Google Drive without a usable feed lists the folder', async () => {
+    getActiveProvider.mockReturnValue({ type: 'google-drive', listFolder });
+    const { m } = await manager();
+    await m.refreshSeriesFolder('Saga');
+    expect(refreshFromChanges).not.toHaveBeenCalled();
+    expect(listFolder).toHaveBeenCalledExactlyOnceWith('Saga');
+  });
+
+  it('nothing before the first listing, or without a scoped listing', async () => {
+    getActiveProvider.mockReturnValue({ type: 'webdav', listFolder });
+    const { m, indexOne } = await manager();
+    loaded = false;
+    expect(await m.refreshSeriesFolder('Saga')).toBeNull();
+    loaded = true;
+    getActiveProvider.mockReturnValue({ type: 'webdav' });
+    expect(await m.refreshSeriesFolder('Saga')).toBeNull();
+    expect(listFolder).not.toHaveBeenCalled();
+    expect(indexOne).not.toHaveBeenCalled();
+    expect(fetchAll).not.toHaveBeenCalled();
+  });
+
+  it('a replacement a whole-account listing overtook answers null', async () => {
+    getActiveProvider.mockReturnValue({ type: 'webdav', listFolder });
+    replaceFolderEntries.mockResolvedValueOnce(false);
+    const { m, indexOne } = await manager();
+    expect(await m.refreshSeriesFolder('Saga')).toBeNull();
+    expect(indexOne).not.toHaveBeenCalled();
+  });
+});

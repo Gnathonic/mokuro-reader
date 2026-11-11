@@ -2,7 +2,7 @@ import { writable } from 'svelte/store';
 import type { CacheAddMetadata, CloudCache } from '../../cloud-cache-interface';
 import type { CloudFileMetadata } from '../../provider-interface';
 import { CoalescedCacheStore } from '../../coalesced-cache-store';
-import { addMutations, removeMutations } from '../../listing-mutations';
+import { addMutations, removeMutations, replaceFolderInStore } from '../../listing-mutations';
 import { webdavProvider } from './webdav-provider';
 
 /**
@@ -159,6 +159,10 @@ class WebDAVCacheManager implements CloudCache<CloudFileMetadata> {
 
   removeById(fileId: string): void {
     this.cache.update(...removeMutations(fileId));
+  }
+
+  replaceFolderEntries(folder: string, list: () => Promise<CloudFileMetadata[]>): Promise<boolean> {
+    return replaceFolderInStore(this.cache, this.isLoaded(), folder, list);
   }
 
   update(fileId: string, updates: Partial<CloudFileMetadata>): void {

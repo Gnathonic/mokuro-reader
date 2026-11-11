@@ -363,51 +363,17 @@ describeContract('the OCR queue file as Bunko writes it', () => {
         jobs: [expect.objectContaining({ kind: 'ocr', state: 'held', eta: null, progress: null })]
       }
     ]);
-    expect(file.done).toEqual([]);
-    expect(file.truncated).toBe(false);
-  });
-
-  it('the cloud copy: done entries with their sidecars and layers', () => {
-    const file = parseQueueFile(fx('queue-file-cloud').body)!;
-    expect(file.instance_id).toBeTruthy();
-    expect(file.truncated).toBe(false);
-    expect(file.done).toEqual([
-      {
-        series: 'Contract Series',
-        volume: 'Volume 01',
-        at: new Date(NOW).toISOString().replace(/\.\d{3}Z$/, 'Z'),
-        ocr: 'Contract Series/Volume 01.mokuro',
-        layers: []
-      },
-      {
-        series: '日本語シリーズ',
-        volume: '第1巻',
-        at: expect.any(String),
-        ocr: '日本語シリーズ/第1巻.mokuro',
-        layers: [{ id: 'hayai', path: '日本語シリーズ/第1巻.hayai.mokuro' }]
-      }
-    ]);
-    expect(file.volumes).toHaveLength(1);
   });
 
   it.skipIf(!hasContract() || !bunkoQueueHasParts())(
     "a job's parts name it as its finished file will be named",
     () => {
-      for (const name of ['queue-file-http', 'queue-file-cloud']) {
-        const file = parseQueueFile(fx(name).body)!;
-        const view = describePendingOcr({ jobs: file.volumes[0].jobs, held: file.held }, NOW)!;
-        expect(view.lines.map((l) => l.fullName)).toEqual(['Hayai Nova 2.5 · PP-OCR Manga 0.3']);
-        expect(view.lines[0].name).toBe('Hayai Nova');
-      }
+      const file = parseQueueFile(fx('queue-file-http').body)!;
+      const view = describePendingOcr({ jobs: file.volumes[0].jobs, held: file.held }, NOW)!;
+      expect(view.lines.map((l) => l.fullName)).toEqual(['Hayai Nova 2.5 · PP-OCR Manga 0.3']);
+      expect(view.lines[0].name).toBe('Hayai Nova');
     }
   );
-
-  it('a truncated cloud copy says so', () => {
-    const file = parseQueueFile(fx('queue-file-cloud-truncated').body)!;
-    expect(file.truncated).toBe(true);
-    expect(file.volumes).toEqual([]);
-    expect(file.done).toHaveLength(2);
-  });
 });
 
 describeContractFile(

@@ -1086,10 +1086,34 @@ min`); `released` at once; rank epoch desc, claimed_at asc, instance_id asc.
   series the listing holds marks that server v1 for the session and hands it
   to its root-file `QueuePoller`. Cards read `seriesQueueStore` (one slice per
   series, set only when what they show changed) before the v1 statuses
-  (`pendingStatusFor`). Completions (a job gone, a newer `done` entry) pull
-  through the manifest on a bunko server, else relist + upgrade pass + layer
-  pull (`CloudCompletions`). Cloud uploads are watched only while the holder
-  carries `series_queue`; nothing polls for them outside their series page.
+  (`pendingStatusFor`). Completions (a job gone, a newer `done` entry) run
+  the SCOPED pull (`SeriesPulls` in `server-ocr-queue.ts`), on a cloud
+  library and on the connected bunko server alike: per series, debounced
+  10 s, ≥ 60 s apart, one in flight, retried at +60/+120/+240 s while
+  neither `series.json` nor a finished volume's sidecar moved.
+  `unifiedCloudManager.refreshSeriesFolder(S)` lists ONLY S (Drive: the
+  change feed when `changeFeedUsable()`, else `listFolder`; others
+  `listFolder`) and swaps only the cached entries under `S/`
+  (`CloudCache.replaceFolderEntries`, which replays writes made meanwhile,
+  `CoalescedCacheStore.beginPartialListing`), then
+  `refreshSeriesIndexForSeries(S)`; then the upgrade pass and
+  `pullLayersForVolume` per finished local row. NEVER `refreshSeriesIndexes`
+  with a partial map (it deletes other series' indexes) and never a
+  whole-account `fetchAllCloudVolumes`. The manifest pull
+  (`pullCompletedVolume`) is kept only for deep links and v1 servers.
+- Watches (uploads to a library a Bunko runs, deep-link imports; 24 h) are
+  read off their page by `WatchSchedule` (`series-queue-watch.ts`): first at
+  creation + 2 W, then at the soonest watched ETA + W (≥ W, ≤ 15 min), at
+  most 20 series in rotation, paused while hidden. An upload watch reads
+  through the connected library (`lookSeriesQueue`: the page loop's memo,
+  trust and completions) and waits while that library is not connected or
+  the page is open; a deep link's reads `<dav root>/<S>/.mokuro-series-queue.json`
+  through the link's origin, anonymously under the link's redirect rule
+  (`fetchForPull`), and its 404 hands the server to its v1 poller. Done or
+  vanished ends the watch (a link's through its manifest); never listed
+  after 2 reads → one scoped pull, and a `.mokuro` newer than the watch
+  completes it. `saveWatches` is debounced 1 s (flushed when the tab hides):
+  a bulk upload no longer rewrites every watch per volume.
 - Folder dedup keeps EVERY copy of both control files when duplicate roots
   merge (`dedupKeepsEveryCopy`, beside the merged root files): trashing the
   older one would pull a marker or queue out from under a running Bunko. A

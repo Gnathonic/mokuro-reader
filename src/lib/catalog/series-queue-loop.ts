@@ -111,6 +111,24 @@ const EMPTY: SeriesQueueFile = {
 const memos = new Map<string, Memo>();
 let lastMarkerReread = -Infinity;
 
+/**
+ * What one look at a series file found (`lookSeriesQueue`): nothing to read
+ * there now (`none`: no provider, or no Bunko writing series files), a Bunko
+ * server older than v2 (`v1`, handed to its v1 poller), or the file — the
+ * trusted copy (with no jobs when the series owes nothing), or null when no
+ * copy is trusted — under its library-wide block, and the window to read again
+ * in.
+ */
+export type SeriesQueueLook =
+  | { kind: 'none' }
+  | { kind: 'v1' }
+  | {
+      kind: 'file';
+      file: SeriesQueueFile | null;
+      block: SeriesQueueBlock | null;
+      intervalMs: number;
+    };
+
 export class SeriesQueueFollower {
   readonly seriesKey: string;
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -128,7 +146,9 @@ export class SeriesQueueFollower {
 
   constructor(
     readonly seriesTitle: string,
-    private readonly env: SeriesQueueEnv
+    private readonly env: SeriesQueueEnv,
+    /** One look and done (`lookSeriesQueue`): no timer, no feed listener. */
+    private readonly oneShot = false
   ) {
     this.seriesKey = normalizeSeriesKey(seriesTitle);
   }
@@ -222,6 +242,11 @@ export class SeriesQueueFollower {
     return memo;
   }
 
+  /** One look, for `lookSeriesQueue`. Throws on a failed read. */
+  look(): Promise<SeriesQueueLook> {
+    return this.readOnce();
+  }
+
   private async read(): Promise<void> {
     if (this.stopped) return;
     if (this.env.isHidden()) {
@@ -251,15 +276,16 @@ export class SeriesQueueFollower {
     }
   }
 
-  private async readOnce(): Promise<void> {
+  private async readOnce(): Promise<SeriesQueueLook> {
+    const NONE = { kind: 'none' } as const;
     const provider = await this.env.provider();
-    if (this.stopped) return;
+    if (this.stopped) return NONE;
     if (!provider?.readControlFile) {
       publishSeriesQueueSlice(this.seriesKey, null);
-      return;
+      return NONE;
     }
     const key = await this.memoKey(provider);
-    if (this.stopped) return;
+    if (this.stopped) return NONE;
     this.scope = key;
     this.providerType = provider.type;
     const memo = this.memo(key);
@@ -268,7 +294,7 @@ export class SeriesQueueFollower {
     if (bunkoQueueUrl && this.env.isV1Server(bunkoQueueUrl)) {
       publishSeriesQueueSlice(this.seriesKey, null);
       this.env.fallBackToV1(bunkoQueueUrl, false);
-      return;
+      return { kind: 'v1' };
     }
     const holder = bunkoQueueUrl ? null : this.env.holder(provider.type);
     if (!bunkoQueueUrl && !holder?.series_queue) {
@@ -276,7 +302,7 @@ export class SeriesQueueFollower {
       // read. A marker change (`rerender`) brings the loop back.
       publishSeriesQueueSlice(this.seriesKey, null);
       memo.intervalMs = this.intervalMs(provider, null);
-      return;
+      return NONE;
     }
 
     const folder = this.env.folderFor(this.seriesTitle);
@@ -285,7 +311,7 @@ export class SeriesQueueFollower {
       folder,
       ifNoneMatch: memo.token
     });
-    if (this.stopped) return;
+    if (this.stopped) return NONE;
     const previous = memo.file;
     const sinceS = memo.readAt > 0 ? Math.floor(memo.readAt / 1000) : null;
     memo.readAt = this.env.now();
@@ -301,13 +327,13 @@ export class SeriesQueueFollower {
         // A Bunko that answers 404 for a series it holds is older than v2.
         publishSeriesQueueSlice(this.seriesKey, null);
         this.env.fallBackToV1(bunkoQueueUrl, true);
-        return;
+        return { kind: 'v1' };
       }
       next = EMPTY;
     } else {
       memo.token = result.etag;
       const texts = await Promise.all(result.nodes.map((n) => n.blob.text()));
-      if (this.stopped) return;
+      if (this.stopped) return NONE;
       const bytes = JSON.stringify(texts);
       if (bytes !== memo.bytes) {
         memo.bytes = bytes;
@@ -346,7 +372,7 @@ export class SeriesQueueFollower {
     memo.file = next;
 
     const block = await this.blockFor(provider, next, holder);
-    if (this.stopped) return;
+    if (this.stopped) return NONE;
     this.publish(next, block);
     memo.intervalMs = this.intervalMs(provider, block);
 
@@ -365,7 +391,8 @@ export class SeriesQueueFollower {
         this.env.onCompleted({ provider, bunkoQueueUrl, folder, stems });
       }
     }
-    if (this.wantsMore(memo)) this.schedule(memo.intervalMs);
+    if (!this.oneShot && this.wantsMore(memo)) this.schedule(memo.intervalMs);
+    return { kind: 'file', file: next, block, intervalMs: memo.intervalMs };
   }
 
   /**
@@ -429,7 +456,7 @@ export class SeriesQueueFollower {
 
   /** MEGA's live tree pushes series-file changes: a look at once (debounced) for ours. */
   private followFeed(provider: SyncProvider, folder: string): void {
-    if (this.offFeed || !provider.onControlFileChange) {
+    if (this.oneShot || this.offFeed || !provider.onControlFileChange) {
       this.folder = folder;
       return;
     }
@@ -527,6 +554,25 @@ export function followSeriesQueue(seriesTitle: string, env: SeriesQueueEnv): () 
       if (followers.get(key) === held) followers.delete(key);
     }
   };
+}
+
+/**
+ * One look at the series file of `seriesTitle` outside its page (a watched
+ * volume's schedule, §8.7), through the same memo, trust, publish and
+ * completion path as the page's loop: a page opened afterwards within the
+ * interval costs no read. Throws on a failed read.
+ */
+export async function lookSeriesQueue(
+  seriesTitle: string,
+  env: SeriesQueueEnv
+): Promise<SeriesQueueLook> {
+  if (!normalizeSeriesKey(seriesTitle)) return { kind: 'none' };
+  const follower = new SeriesQueueFollower(seriesTitle, env, true);
+  try {
+    return await follower.look();
+  } finally {
+    follower.stop();
+  }
 }
 
 /** Tests: is a series page's loop running? */

@@ -1,7 +1,9 @@
 /**
  * A cloud-direct Bunko (queue file v2): no root queue file is read. The lease
  * marker is polled every ttl/3, and a series page reads its own series file
- * through the provider, trusted only when the marker's holder wrote it.
+ * through the provider, trusted only when the marker's holder wrote it. A
+ * finished volume is pulled by listing its one series (§8.6), and a watched
+ * upload's series file is read on the watch schedule (§8.7).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import 'fake-indexeddb/auto';
@@ -24,10 +26,14 @@ vi.mock('$lib/util/sync/provider-manager', () => ({
   providerManager: { getActiveProvider: () => getActiveProvider() }
 }));
 // The folder lookups of the series page: the listing holds the series as spelled.
+const refreshSeriesFolder = vi.hoisted(() => vi.fn());
+const fetchAllCloudVolumes = vi.hoisted(() => vi.fn(async () => {}));
 vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
   unifiedCloudManager: {
     resolveCloudFolderTitle: (title: string) => title,
-    getCloudVolumesBySeries: () => [{}]
+    getCloudVolumesBySeries: () => [{}],
+    refreshSeriesFolder,
+    fetchAllCloudVolumes
   }
 }));
 
@@ -39,12 +45,16 @@ import {
   connectedCloudLibrary,
   ensureMarkerPoller,
   followSeriesQueue,
-  parseQueueFile,
+  flushWatches,
+  pendingSeriesPullsForTest,
   resetServerOcrQueueForTest,
-  setQueueRelistHook,
-  settleCloudCompletionsForTest,
+  SERIES_PULL_DEBOUNCE_MS,
+  SERIES_PULL_RETRY_MS,
+  settleSeriesPullsForTest,
+  startServerOcrQueue,
   watchCloudUpload,
-  watchedEntries
+  watchedEntries,
+  watchServerOcr
 } from './server-ocr-queue';
 
 const NOW = Date.parse('2026-10-12T10:00:00Z');
@@ -130,6 +140,41 @@ const sliceOf = (series = SERIES) => get(seriesQueueStore).get(series.toLowerCas
 const reads = (c: ReturnType<typeof cloudProvider>, name: string) =>
   c.readControlFile.mock.calls.filter((call) => call[0] === name).length;
 
+async function putVolume3(): Promise<void> {
+  await db.volumes.put({
+    volume_uuid: 'v3',
+    series_uuid: 's',
+    series_title: SERIES,
+    volume_title: 'Example Saga 03',
+    mokuro_version: '',
+    page_count: 1,
+    character_count: 0,
+    page_char_counts: [0]
+  } as never);
+}
+
+/** A file of the series as the listing holds it. */
+function listed(name: string, modified: number) {
+  return {
+    provider: 'google-drive' as const,
+    fileId: `id-${name}`,
+    path: `${SERIES}/${name}`,
+    modifiedTime: new Date(modified).toISOString(),
+    size: 10
+  };
+}
+
+/** Advance the clock, then wait out the pulls that came due. */
+async function advance(ms: number): Promise<void> {
+  await vi.advanceTimersByTimeAsync(ms);
+  await settleSeriesPullsForTest();
+}
+
+/** What `refreshSeriesFolder` answers: the folder's files now, and the paths that moved. */
+function refreshed(files: ReturnType<typeof listed>[], changed: string[]) {
+  return { providerType: 'google-drive', folder: SERIES, files, changed };
+}
+
 beforeEach(async () => {
   // setImmediate stays real: fake-indexeddb runs on it.
   vi.useFakeTimers({ now: NOW, toFake: ['setTimeout', 'clearTimeout', 'Date'] });
@@ -138,21 +183,13 @@ beforeEach(async () => {
   resetCloudBunkoMarkersForTest();
   vi.clearAllMocks();
   getActiveProvider.mockReturnValue(null);
+  refreshSeriesFolder.mockResolvedValue(null);
   await db.volumes.clear();
 });
 
 afterEach(() => {
   resetServerOcrQueueForTest();
   vi.useRealTimers();
-});
-
-describe('parseQueueFile (cloud copy, from a 0.8 pre-release)', () => {
-  it('still reads instance_id, truncated and done[]; a bunko server file has none', () => {
-    const plain = parseQueueFile({ version: 1, volumes: [] });
-    expect(plain?.instance_id).toBeUndefined();
-    expect(plain?.truncated).toBe(false);
-    expect(plain?.done).toEqual([]);
-  });
 });
 
 describe('the marker poll (no root queue file any more)', () => {
@@ -294,24 +331,14 @@ describe('a series page on a cloud library', () => {
     stop();
   });
 
-  it('a finished volume: relist, upgrade pass and layer pull for its series', async () => {
-    await db.volumes.put({
-      volume_uuid: 'v3',
-      series_uuid: 's',
-      series_title: SERIES,
-      volume_title: 'Example Saga 03',
-      mokuro_version: '',
-      page_count: 1,
-      character_count: 0,
-      page_char_counts: [0]
-    } as never);
-    const relist = vi.fn(async () => {});
-    setQueueRelistHook(relist);
+  it('a finished volume: its series is listed, then the upgrade pass and its layer pull', async () => {
+    await putVolume3();
+    const sidecar = listed('Example Saga 03.mokuro', NOW + 60_000);
+    refreshSeriesFolder.mockResolvedValue(refreshed([sidecar], [sidecar.path]));
     const c = await connect();
     c.files[seriesPath] = nodes({ id: 's1', etag: '1', body: seriesBody() });
     const stop = await followSeriesQueue(SERIES);
     await vi.advanceTimersByTimeAsync(0);
-    expect(relist).not.toHaveBeenCalled();
 
     c.files[seriesPath] = nodes({
       id: 's1',
@@ -319,13 +346,88 @@ describe('a series page on a cloud library', () => {
       body: seriesBody({ rev: 11, vols: {}, done: { 'Example Saga 03': NOW_S + 60 } })
     });
     await vi.advanceTimersByTimeAsync(120_000);
-    await settleCloudCompletionsForTest();
-    expect(relist).toHaveBeenCalledTimes(1);
-    expect(requestOcrUpgradePass).toHaveBeenCalledWith('google-drive', [{ title: SERIES }]);
-    expect(pullLayersForVolume).toHaveBeenCalledWith('v3', 'google-drive');
-    expect(loadVolumeManifest).not.toHaveBeenCalled();
     expect(sliceOf()?.size).toBe(0);
+    expect(refreshSeriesFolder).not.toHaveBeenCalled(); // debounced
+    await vi.advanceTimersByTimeAsync(SERIES_PULL_DEBOUNCE_MS);
+    await vi.waitFor(() => expect(pullLayersForVolume).toHaveBeenCalledWith('v3', 'google-drive'));
+    expect(refreshSeriesFolder).toHaveBeenCalledExactlyOnceWith(SERIES);
+    expect(requestOcrUpgradePass).toHaveBeenCalledWith('google-drive', [
+      { title: SERIES, files: [sidecar] }
+    ]);
+    // Never the whole account, never a manifest.
+    expect(fetchAllCloudVolumes).not.toHaveBeenCalled();
+    expect(loadVolumeManifest).not.toHaveBeenCalled();
     stop();
+  });
+
+  it('a pull that brought nothing new is tried again at +60 s, +120 s and +240 s, then left', async () => {
+    refreshSeriesFolder.mockResolvedValue(refreshed([], []));
+    const c = await connect();
+    c.files[seriesPath] = nodes({ id: 's1', etag: '1', body: seriesBody() });
+    const stop = await followSeriesQueue(SERIES);
+    await vi.advanceTimersByTimeAsync(0);
+    c.files[seriesPath] = nodes({ id: 's1', etag: '2', body: seriesBody({ rev: 11, vols: {} }) });
+    await vi.advanceTimersByTimeAsync(120_000);
+    await advance(SERIES_PULL_DEBOUNCE_MS);
+    expect(refreshSeriesFolder).toHaveBeenCalledTimes(1);
+    stop();
+    for (const [i, wait] of SERIES_PULL_RETRY_MS.entries()) {
+      await advance(wait - 1);
+      expect(refreshSeriesFolder).toHaveBeenCalledTimes(1 + i);
+      await advance(1);
+      expect(refreshSeriesFolder).toHaveBeenCalledTimes(2 + i);
+    }
+    await advance(3_600_000);
+    expect(refreshSeriesFolder).toHaveBeenCalledTimes(1 + SERIES_PULL_RETRY_MS.length);
+    expect(pendingSeriesPullsForTest()).toBe(0);
+  });
+
+  it('a retry stops once series.json or a sidecar of the finished volume moved', async () => {
+    const seriesJson = listed('series.json', NOW + 90_000);
+    refreshSeriesFolder
+      .mockResolvedValueOnce(refreshed([], []))
+      .mockResolvedValueOnce(refreshed([seriesJson], [seriesJson.path]));
+    const c = await connect();
+    c.files[seriesPath] = nodes({ id: 's1', etag: '1', body: seriesBody() });
+    const stop = await followSeriesQueue(SERIES);
+    await vi.advanceTimersByTimeAsync(0);
+    c.files[seriesPath] = nodes({ id: 's1', etag: '2', body: seriesBody({ rev: 11, vols: {} }) });
+    await vi.advanceTimersByTimeAsync(120_000);
+    stop();
+    await advance(SERIES_PULL_DEBOUNCE_MS);
+    expect(refreshSeriesFolder).toHaveBeenCalledTimes(1);
+    await advance(SERIES_PULL_RETRY_MS[0]);
+    expect(refreshSeriesFolder).toHaveBeenCalledTimes(2);
+    await advance(3_600_000);
+    expect(refreshSeriesFolder).toHaveBeenCalledTimes(2);
+  });
+
+  it('two series finishing at once are each pulled on their own', async () => {
+    refreshSeriesFolder.mockImplementation(async (title: string) => ({
+      ...refreshed([], [`${title}/series.json`]),
+      folder: title
+    }));
+    const c = await connect();
+    const other = 'Other Saga';
+    c.files[seriesPath] = nodes({ id: 's1', etag: '1', body: seriesBody() });
+    c.files[`${other}/.mokuro-series-queue.json`] = nodes({
+      id: 'o1',
+      etag: '1',
+      body: seriesBody({ series: other, vols: { 'Other Saga 01': [[0, 'q', NOW_S + 600]] } })
+    });
+    const stopA = await followSeriesQueue(SERIES);
+    const stopB = await followSeriesQueue(other);
+    await vi.advanceTimersByTimeAsync(0);
+    c.files[seriesPath] = nodes({ id: 's1', etag: '2', body: seriesBody({ rev: 11, vols: {} }) });
+    c.files[`${other}/.mokuro-series-queue.json`] = nodes({
+      id: 'o1',
+      etag: '2',
+      body: seriesBody({ series: other, rev: 11, vols: {} })
+    });
+    await vi.advanceTimersByTimeAsync(120_000 + SERIES_PULL_DEBOUNCE_MS);
+    expect(refreshSeriesFolder.mock.calls.map((call) => call[0]).sort()).toEqual([SERIES, other]);
+    stopA();
+    stopB();
   });
 
   it('a refit in the marker moves the ETAs without reading the series file again', async () => {
@@ -360,17 +462,32 @@ describe('a series page on a cloud library', () => {
 });
 
 describe('a cloud upload is watched', () => {
-  it('by (series, volume), only while a holder with series_queue is fresh; no poller', async () => {
+  async function connect(marker = markerBody()) {
     const c = cloudProvider();
     getActiveProvider.mockReturnValue(c.provider);
-    await watchCloudUpload({ volumeUuid: 'v3', series: SERIES, volume: 'Example Saga 03' });
+    c.files['.mokuro-bunko.json'] = nodes({ id: 'm1', etag: '1', body: marker });
+    await ensureMarkerPoller();
+    await vi.advanceTimersByTimeAsync(0);
+    return c;
+  }
+  const watch3 = () =>
+    watchCloudUpload({ volumeUuid: 'v3', series: SERIES, volume: 'Example Saga 03' });
+  const seriesReads = (c: ReturnType<typeof cloudProvider>) =>
+    c.readControlFile.mock.calls.filter((call) => call[1]?.folder === SERIES).length;
+  /** Drive's floor is 60 s, the marker's batch_s 120 s: W = 120 s. */
+  const W = 120_000;
+
+  it('by (series, volume), only while a holder with series_queue is fresh', async () => {
+    const c = cloudProvider();
+    getActiveProvider.mockReturnValue(c.provider);
+    await watch3();
     expect(watchedEntries()).toEqual([]);
 
     c.files['.mokuro-bunko.json'] = nodes({ id: 'm1', etag: '1', body: markerBody() });
     await ensureMarkerPoller();
     await vi.advanceTimersByTimeAsync(0);
     const before = c.readControlFile.mock.calls.length;
-    await watchCloudUpload({ volumeUuid: 'v3', series: SERIES, volume: 'Example Saga 03' });
+    await watch3();
     await vi.advanceTimersByTimeAsync(0);
     expect(watchedEntries()).toEqual([
       expect.objectContaining({
@@ -381,19 +498,171 @@ describe('a cloud upload is watched', () => {
         source: 'google-drive'
       })
     ]);
-    // Nothing is read for it outside its series page.
+    // Nothing is read for it at once.
     expect(c.readControlFile.mock.calls.length).toBe(before);
   });
 
   it('a marker from a Bunko without series files watches nothing', async () => {
-    const c = cloudProvider();
-    getActiveProvider.mockReturnValue(c.provider);
     const marker = markerBody();
     delete (marker as Record<string, unknown>).series_queue;
-    c.files['.mokuro-bunko.json'] = nodes({ id: 'm1', etag: '1', body: marker });
-    await ensureMarkerPoller();
-    await vi.advanceTimersByTimeAsync(0);
-    await watchCloudUpload({ volumeUuid: 'v3', series: SERIES, volume: 'Example Saga 03' });
+    await connect(marker);
+    await watch3();
     expect(watchedEntries()).toEqual([]);
+  });
+
+  it('its series file is read at creation + 2 W, then at its ETA + W; done ends the watch', async () => {
+    await putVolume3();
+    const sidecar = listed('Example Saga 03.mokuro', NOW + 700_000);
+    refreshSeriesFolder.mockResolvedValue(refreshed([sidecar], [sidecar.path]));
+    const c = await connect();
+    // Queued, ETA NOW + 600 s under the identity clock.
+    c.files[seriesPath] = nodes({ id: 's1', etag: '1', body: seriesBody() });
+    await watch3();
+    await vi.advanceTimersByTimeAsync(2 * W - 1);
+    expect(seriesReads(c)).toBe(0);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(seriesReads(c)).toBe(1);
+    // The card of the volume, though its page is not open, shows its job.
+    expect(sliceOf()?.get('example saga 03')?.jobs[0].state).toBe('queued');
+
+    c.files[seriesPath] = nodes({
+      id: 's1',
+      etag: '2',
+      body: seriesBody({ rev: 11, vols: {}, done: { 'Example Saga 03': NOW_S + 650 } })
+    });
+    // Next: the ETA (NOW + 600 s) + W = NOW + 720 s.
+    await vi.advanceTimersByTimeAsync(720_000 - 2 * W - 1);
+    expect(seriesReads(c)).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(seriesReads(c)).toBe(2);
+    expect(watchedEntries()).toEqual([]);
+    await advance(SERIES_PULL_DEBOUNCE_MS);
+    expect(refreshSeriesFolder).toHaveBeenCalledExactlyOnceWith(SERIES);
+    expect(pullLayersForVolume).toHaveBeenCalledWith('v3', 'google-drive');
+    // Nothing left to watch: no more reads.
+    await advance(3_600_000);
+    expect(seriesReads(c)).toBe(2);
+  });
+
+  it('never listed after 2 reads: one scoped pull; a .mokuro newer than the watch completes it', async () => {
+    const c = await connect();
+    c.files[seriesPath] = nodes({
+      id: 's1',
+      etag: '1',
+      body: seriesBody({ vols: { 'Example Saga 04': [[0, 'q', NOW_S + 600]] } })
+    });
+    const sidecar = listed('Example Saga 03.mokuro', NOW + 100_000);
+    refreshSeriesFolder.mockResolvedValue(refreshed([sidecar], [sidecar.path]));
+    await watch3();
+    await vi.advanceTimersByTimeAsync(2 * W);
+    expect(seriesReads(c)).toBe(1);
+    expect(refreshSeriesFolder).not.toHaveBeenCalled();
+    // A second read 2 W later, then the pull.
+    await vi.advanceTimersByTimeAsync(2 * W);
+    expect(seriesReads(c)).toBe(2);
+    await advance(SERIES_PULL_DEBOUNCE_MS);
+    expect(refreshSeriesFolder).toHaveBeenCalledTimes(1);
+    expect(watchedEntries()).toEqual([]);
+  });
+
+  it('never listed, and nothing newer in the listing: the watch stays, read every 15 min', async () => {
+    // A lease long enough that the marker stays fresh through the test.
+    const c = await connect(markerBody({ ttl_s: 7_200 }));
+    c.files[seriesPath] = nodes({ id: 's1', etag: '1', body: seriesBody({ vols: {} }) });
+    const old = listed('Example Saga 03.mokuro', NOW - 3_600_000);
+    refreshSeriesFolder.mockResolvedValue(refreshed([old], []));
+    await watch3();
+    await vi.advanceTimersByTimeAsync(4 * W);
+    await advance(SERIES_PULL_DEBOUNCE_MS);
+    expect(refreshSeriesFolder).toHaveBeenCalledTimes(1);
+    expect(watchedEntries()).toHaveLength(1);
+    const reads = seriesReads(c);
+    await vi.advanceTimersByTimeAsync(15 * 60_000);
+    expect(seriesReads(c)).toBe(reads + 1);
+    // One absent pull per watch: its retries aside, the later reads pull nothing.
+    for (let i = 0; i < 60; i++) await advance(60_000);
+    expect(refreshSeriesFolder).toHaveBeenCalledTimes(1 + SERIES_PULL_RETRY_MS.length);
+    expect(watchedEntries()).toHaveLength(1);
+  });
+
+  it('its open series page reads it; the schedule does not', async () => {
+    const c = await connect();
+    c.files[seriesPath] = nodes({ id: 's1', etag: '1', body: seriesBody() });
+    await watch3();
+    const stop = await followSeriesQueue(SERIES);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(seriesReads(c)).toBe(1);
+    // The page reads every W; the schedule (due at 2 W) adds nothing.
+    await vi.advanceTimersByTimeAsync(2 * W);
+    expect(seriesReads(c)).toBe(3);
+    stop();
+  });
+
+  it('nothing is read while another library is connected', async () => {
+    const c = await connect();
+    c.files[seriesPath] = nodes({ id: 's1', etag: '1', body: seriesBody() });
+    await watch3();
+    const other = cloudProvider('onedrive');
+    getActiveProvider.mockReturnValue(other.provider);
+    await vi.advanceTimersByTimeAsync(3_600_000);
+    expect(seriesReads(c)).toBe(0);
+    expect(other.readControlFile.mock.calls.filter((call) => call[1]?.folder)).toEqual([]);
+  });
+
+  it('a burst of watches is written once, within a second; a hidden tab writes at once', async () => {
+    const setItem = vi.spyOn(localStorage, 'setItem');
+    try {
+      for (let i = 0; i < 50; i++) {
+        watchServerOcr(
+          {
+            volumeUuid: `v${i}`,
+            series: SERIES,
+            volume: `Example Saga ${i}`,
+            queueUrl: 'cloud:google-drive',
+            manifestUrl: '',
+            auth: 'cloud',
+            source: 'google-drive'
+          },
+          { start: false }
+        );
+      }
+      expect(watchedEntries()).toHaveLength(50);
+      const writes = () => setItem.mock.calls.filter((call) => call[0] === 'server-ocr-watch:v1');
+      expect(writes()).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(writes()).toHaveLength(1);
+      expect(JSON.parse(writes()[0][1])).toHaveLength(50);
+
+      watchServerOcr(
+        {
+          volumeUuid: 'v50',
+          series: SERIES,
+          volume: 'Example Saga 50',
+          queueUrl: 'cloud:google-drive',
+          manifestUrl: '',
+          auth: 'cloud',
+          source: 'google-drive'
+        },
+        { start: false }
+      );
+      flushWatches();
+      expect(writes()).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(writes()).toHaveLength(2);
+    } finally {
+      setItem.mockRestore();
+    }
+  });
+
+  it('app start plans the persisted watches', async () => {
+    const c = await connect();
+    c.files[seriesPath] = nodes({ id: 's1', etag: '1', body: seriesBody() });
+    await watch3();
+    flushWatches();
+    resetServerOcrQueueForTest(); // a new session: the watch comes back from storage
+    getActiveProvider.mockReturnValue(c.provider);
+    await startServerOcrQueue();
+    await vi.advanceTimersByTimeAsync(2 * W);
+    expect(seriesReads(c)).toBe(1);
   });
 });
