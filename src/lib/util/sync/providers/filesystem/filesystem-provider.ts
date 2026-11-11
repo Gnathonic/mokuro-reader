@@ -19,6 +19,7 @@ import {
 } from '../../control-file-read';
 import { foldFolderName } from '../../syncable-file';
 import { clearCloudBunkoMarkers, withCloudBunkoStatus } from '$lib/catalog/cloud-bunko-marker';
+import { folderTestHandle } from '../../cloud-test-hooks';
 import { setActiveProviderKey, clearActiveProviderKey } from '../../provider-detection';
 import { isFilesystemProviderSupported } from './feature-detect';
 import { saveRootHandle, loadRootHandle, clearRootHandle } from './handle-store';
@@ -90,14 +91,21 @@ export class FilesystemProvider implements SyncProvider {
       );
     }
 
+    // A test build may be handed the folder instead (the interop rig, which
+    // cannot answer the picker); never in a production build.
+    const given = folderTestHandle();
     let handle: FileSystemDirectoryHandle;
-    try {
-      // @ts-expect-error — File System Access API is Chromium-only, no lib.dom typing in all TS targets
-      handle = await window.showDirectoryPicker({ mode: 'readwrite' });
-    } catch (error) {
-      // User cancelled the picker or permission dismissed
-      const message = error instanceof Error ? error.message : 'Folder selection cancelled';
-      throw new ProviderError(message, 'filesystem', 'PICKER_CANCELLED');
+    if (given) {
+      handle = given;
+    } else {
+      try {
+        // @ts-expect-error — File System Access API is Chromium-only, no lib.dom typing in all TS targets
+        handle = await window.showDirectoryPicker({ mode: 'readwrite' });
+      } catch (error) {
+        // User cancelled the picker or permission dismissed
+        const message = error instanceof Error ? error.message : 'Folder selection cancelled';
+        throw new ProviderError(message, 'filesystem', 'PICKER_CANCELLED');
+      }
     }
 
     // @ts-expect-error — requestPermission is Chromium-only, not in all TS lib.dom targets
