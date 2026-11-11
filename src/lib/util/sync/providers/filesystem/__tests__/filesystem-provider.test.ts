@@ -5,6 +5,11 @@ vi.mock('$app/environment', () => ({ browser: false }));
 
 import { FilesystemProvider } from '../filesystem-provider';
 import { ProviderError } from '../../../provider-interface';
+import {
+  refreshCloudBunkoMarker,
+  resetCloudBunkoMarkersForTest
+} from '$lib/catalog/cloud-bunko-marker';
+import { servedMarker } from '$lib/catalog/__fixtures__/bunko-marker';
 
 // ---------------------------------------------------------------------------
 // Minimal in-memory File System Access API fake (just enough for the provider:
@@ -15,6 +20,12 @@ let clock = 1000;
 function notFound(name: string): Error {
   const e = new Error(`A requested entry was not found: ${name}`);
   e.name = 'NotFoundError';
+  return e;
+}
+
+function typeMismatch(message: string): Error {
+  const e = new Error(`TypeMismatch: ${message}`);
+  e.name = 'TypeMismatchError';
   return e;
 }
 
@@ -56,7 +67,7 @@ class FakeDirHandle {
       h = new FakeDirHandle(name);
       this.children.set(name, h);
     }
-    if (h.kind !== 'directory') throw new Error(`TypeMismatch: ${name} is a file`);
+    if (h.kind !== 'directory') throw typeMismatch(`${name} is a file`);
     return h;
   }
   async getFileHandle(name: string, opts?: { create?: boolean }) {
@@ -66,7 +77,7 @@ class FakeDirHandle {
       h = new FakeFileHandle(name);
       this.children.set(name, h);
     }
-    if (h.kind !== 'file') throw new Error(`TypeMismatch: ${name} is a directory`);
+    if (h.kind !== 'file') throw typeMismatch(`${name} is a directory`);
     return h;
   }
   async removeEntry(name: string, _opts?: { recursive?: boolean }) {
@@ -373,5 +384,93 @@ describe('FilesystemProvider.statFile (conditional root-file reads)', () => {
 
     await provider.deleteFile(listed);
     expect(await provider.statFile(listed)).toBeNull();
+  });
+});
+
+describe('FilesystemProvider.readControlFile (a Bunko managing the folder)', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    resetCloudBunkoMarkersForTest();
+  });
+
+  it('is null when the folder has no such file, or a folder of that name', async () => {
+    const root = new FakeDirHandle('manga');
+    const provider = makeProvider(root);
+    expect(await provider.readControlFile('.mokuro-bunko.json')).toBeNull();
+    await root.getDirectoryHandle('.mokuro-queue.json', { create: true });
+    expect(await provider.readControlFile('.mokuro-queue.json')).toBeNull();
+  });
+
+  it('reads the root file as one node, versioned by lastModified and size', async () => {
+    const root = new FakeDirHandle('manga');
+    await seedFile(root, '.mokuro-queue.json', '{"version":1}');
+    const provider = makeProvider(root);
+    const result = await provider.readControlFile('.mokuro-queue.json');
+    if (!result || result === 'not-modified') throw new Error('expected nodes');
+    const file = await (await root.getFileHandle('.mokuro-queue.json')).getFile();
+    expect(result.nodes).toHaveLength(1);
+    expect(result.nodes[0]).toMatchObject({
+      id: '.mokuro-queue.json',
+      etag: `${file.lastModified}:${file.size}`,
+      modified: new Date(file.lastModified).toISOString()
+    });
+    expect(await result.nodes[0].blob.text()).toBe('{"version":1}');
+  });
+
+  it("answers 'not-modified' while lastModified:size is unchanged, without reading the bytes", async () => {
+    const root = new FakeDirHandle('manga');
+    await seedFile(root, '.mokuro-queue.json', '{"version":1}');
+    const provider = makeProvider(root);
+    const first = await provider.readControlFile('.mokuro-queue.json');
+    if (!first || first === 'not-modified') throw new Error('expected nodes');
+    const arrayBuffer = vi.spyOn(Blob.prototype, 'arrayBuffer');
+    try {
+      expect(
+        await provider.readControlFile('.mokuro-queue.json', { ifNoneMatch: first.etag })
+      ).toBe('not-modified');
+      // A stat only: the bytes are not read again.
+      expect(arrayBuffer).not.toHaveBeenCalled();
+    } finally {
+      arrayBuffer.mockRestore();
+    }
+  });
+
+  it('reads again after the file changed', async () => {
+    const root = new FakeDirHandle('manga');
+    await seedFile(root, '.mokuro-queue.json', '{"version":1}');
+    const provider = makeProvider(root);
+    const first = await provider.readControlFile('.mokuro-queue.json');
+    if (!first || first === 'not-modified') throw new Error('expected nodes');
+    // Bunko writes its next version (a rename over the old one: new mtime).
+    await seedFile(root, '.mokuro-queue.json', '{"version":1,"held":null}');
+    const second = await provider.readControlFile('.mokuro-queue.json', {
+      ifNoneMatch: first.etag
+    });
+    if (!second || second === 'not-modified') throw new Error('expected nodes');
+    expect(second.etag).not.toBe(first.etag);
+    expect(await second.nodes[0].blob.text()).toBe('{"version":1,"held":null}');
+  });
+
+  it('a revoked permission is an auth error', async () => {
+    const root = new FakeDirHandle('manga');
+    const provider = makeProvider(root);
+    vi.spyOn(root, 'getFileHandle').mockRejectedValue(notAllowed());
+    const error = await provider.readControlFile('.mokuro-bunko.json').catch((e) => e);
+    expect(error).toBeInstanceOf(ProviderError);
+    expect((error as ProviderError).isAuthError).toBe(true);
+  });
+
+  it('a fresh marker in the folder turns serverCompilesMetadata on, as on Drive', async () => {
+    const now = Date.now();
+    const root = new FakeDirHandle('manga');
+    await seedFile(root, '.mokuro-bunko.json', JSON.stringify(servedMarker(now)));
+    const provider = makeProvider(root);
+    expect(provider.getStatus().serverCompilesMetadata).toBe(false);
+
+    expect(await refreshCloudBunkoMarker(provider)).toBe(true);
+
+    const status = provider.getStatus();
+    expect(status.serverCompilesMetadata).toBe(true);
+    expect(status.cloudBunko?.fresh).toBe(true);
   });
 });

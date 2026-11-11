@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Local Folder: see the OCR queue of a mokuro-bunko that manages the folder, and leave
+  series.json and catalog.json to it (mokuro-bunko needs 0.8)
+
 ## [1.11.0] - 2026-11-07
 
 ### Added
