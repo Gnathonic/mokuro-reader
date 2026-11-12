@@ -69,6 +69,26 @@ export class ScrollAnimator {
     this.yAnim.setTarget(y);
   }
 
+  /**
+   * Where the view will come to rest: the running animation's target on an
+   * axis that is animating, else the container's live position — adopted as
+   * the animator's state, so a following scrollBy starts from it rather than
+   * from a stale target (programmatic writes report their scroll events
+   * asynchronously). A held page key (#283) measures its next step from here:
+   * re-measuring a half-finished glide would stall, or turn twice.
+   */
+  restingTarget(): { x: number; y: number } {
+    if (!this.xAnim.isAnimating) {
+      this.xAnim.current = this.container.scrollLeft;
+      this.xAnim.target = this.container.scrollLeft;
+    }
+    if (!this.yAnim.isAnimating) {
+      this.yAnim.current = this.container.scrollTop;
+      this.yAnim.target = this.container.scrollTop;
+    }
+    return { x: this.xAnim.target, y: this.yAnim.target };
+  }
+
   /** Animate by a relative offset from current target */
   scrollBy(dx: number, dy: number): void {
     this.xAnim.setTarget(this.xAnim.target + dx);
