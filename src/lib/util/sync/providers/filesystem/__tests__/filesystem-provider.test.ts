@@ -451,6 +451,80 @@ describe('FilesystemProvider.readControlFile (a Bunko managing the folder)', () 
     expect(await second.nodes[0].blob.text()).toBe('{"version":1,"held":null}');
   });
 
+  describe('in a series folder ({ folder })', () => {
+    const SQ = '.mokuro-series-queue.json';
+
+    it('reads <folder>/<name> by handle: one node, its id the path, versioned by lastModified:size', async () => {
+      const root = new FakeDirHandle('manga');
+      await seedFile(root, `Example Saga/${SQ}`, '{"v":2}');
+      await seedFile(root, SQ, '{"root":true}');
+      const provider = makeProvider(root);
+
+      const result = await provider.readControlFile(SQ, { folder: 'Example Saga' });
+      if (!result || result === 'not-modified') throw new Error('expected nodes');
+      const dir = await root.getDirectoryHandle('Example Saga');
+      const file = await (await dir.getFileHandle(SQ)).getFile();
+      expect(result.nodes).toHaveLength(1);
+      expect(result.nodes[0]).toMatchObject({
+        id: `Example Saga/${SQ}`,
+        etag: `${file.lastModified}:${file.size}`
+      });
+      expect(await result.nodes[0].blob.text()).toBe('{"v":2}');
+
+      // The root file of the same name is its own read.
+      const atRoot = await provider.readControlFile(SQ);
+      if (!atRoot || atRoot === 'not-modified') throw new Error('expected nodes');
+      expect(await atRoot.nodes[0].blob.text()).toBe('{"root":true}');
+
+      const arrayBuffer = vi.spyOn(Blob.prototype, 'arrayBuffer');
+      try {
+        expect(
+          await provider.readControlFile(SQ, { folder: 'Example Saga', ifNoneMatch: result.etag })
+        ).toBe('not-modified');
+        expect(arrayBuffer).not.toHaveBeenCalled();
+      } finally {
+        arrayBuffer.mockRestore();
+      }
+    });
+
+    it('finds the folder by its folded name when no folder has the exact one — every match', async () => {
+      const root = new FakeDirHandle('manga');
+      await seedFile(root, `Example Saga/${SQ}`, '{"rev":1}');
+      await seedFile(root, `EXAMPLE SAGA/${SQ}`, '{"rev":2}');
+      await seedFile(root, `Other Saga/${SQ}`, '{"rev":3}');
+      const provider = makeProvider(root);
+
+      const result = await provider.readControlFile(SQ, { folder: 'example saga' });
+      if (!result || result === 'not-modified') throw new Error('expected nodes');
+      expect(result.nodes.map((n) => n.id).sort()).toEqual([
+        `EXAMPLE SAGA/${SQ}`,
+        `Example Saga/${SQ}`
+      ]);
+
+      // An exact name is the one lookup (a case-insensitive disk has no other).
+      const exact = await provider.readControlFile(SQ, { folder: 'Example Saga' });
+      if (!exact || exact === 'not-modified') throw new Error('expected nodes');
+      expect(exact.nodes.map((n) => n.id)).toEqual([`Example Saga/${SQ}`]);
+    });
+
+    it('is null for a missing folder or file, a file in the folder’s place, and a name that is no one folder', async () => {
+      const root = new FakeDirHandle('manga');
+      await seedFile(root, 'Empty Saga/Vol 1.cbz', 'CBZ');
+      await seedFile(root, 'Not A Folder', 'x');
+      await seedFile(root, `Example Saga/${SQ}`, '{"v":2}');
+      const provider = makeProvider(root);
+
+      expect(await provider.readControlFile(SQ, { folder: 'Missing' })).toBeNull();
+      expect(await provider.readControlFile(SQ, { folder: 'Empty Saga' })).toBeNull();
+      expect(await provider.readControlFile(SQ, { folder: 'Not A Folder' })).toBeNull();
+      const lookups = vi.spyOn(root, 'getDirectoryHandle');
+      for (const folder of ['', '.', '..', 'Example Saga/..', 'Example Saga/Sub']) {
+        expect(await provider.readControlFile(SQ, { folder })).toBeNull();
+      }
+      expect(lookups).not.toHaveBeenCalled();
+    });
+  });
+
   it('a revoked permission is an auth error', async () => {
     const root = new FakeDirHandle('manga');
     const provider = makeProvider(root);

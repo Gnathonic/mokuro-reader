@@ -81,7 +81,13 @@ import {
   _resetOcrUpgradePassForTests,
   requestOcrUpgradePass
 } from './ocr-upgrade-pass';
-import { UPDATED_OCR_LAYER_ID, isUntouchedUpgradeLayer } from './cloud-ocr-upgrade';
+import {
+  UPDATED_OCR_LAYER_ID,
+  attestationOfListedFile,
+  isUntouchedUpgradeLayer,
+  upgradeOcrFromSidecarBlob
+} from './cloud-ocr-upgrade';
+import { buildPrimaryMokuroMetadata } from '$lib/util/mokuro-metadata';
 import { primaryLayerName } from '$lib/reader/edit/ocr-label';
 
 const SERIES = 'Cloud Series';
@@ -1071,5 +1077,92 @@ describe('OCR provenance (ocr_engine) flows from the download to the row', () =>
 
     expect(await primaryTexts()).toEqual(['か', 'き']);
     expect((await db.volumes.get('vol-1'))!.ocr_provenance).toEqual([older(1)]);
+  });
+});
+
+describe("an image-only volume's FIRST OCR: one row, whichever installer reaches it first", () => {
+  // A server OCRs an image-only upload. Its main names the images as the
+  // server stored them (`001.png` here; this device has `Vol 1/001.jpg`),
+  // names the series by the server's uuid, and carries a sealed block. Two
+  // installers can take it: the image-only queue (`upgradeOcrFromSidecarBlob`,
+  // once the listing cache shows the sidecar) and this pass (once `series.json`
+  // names its hash). Queue file v2's scoped pull runs this pass before the
+  // listing cache has published the sidecar, so the pass gets there first.
+  const ENGINE = { id: 'hayai-nova', revision: 2, generator: 'mokuro-bunko', precision: 'fp32' };
+
+  async function serverMain(): Promise<{ body: string; engine: Record<string, unknown> }> {
+    const doc = { ...JSON.parse(mokuro(['かき', 'くけこ'])), title_uuid: 'server-series-uuid' };
+    const engine = { ...ENGINE, seal: await contentDigest(ENGINE, doc.pages) };
+    return { body: JSON.stringify({ ...doc, ocr_engine: engine }), engine };
+  }
+
+  /** An imported archive with no OCR: blank pages under its own image names. */
+  async function installImageOnly(): Promise<void> {
+    await db.volumes.put({
+      volume_uuid: 'vol-1',
+      series_uuid: 'reader-series-uuid',
+      series_title: SERIES,
+      volume_title: 'Vol 1',
+      mokuro_version: '',
+      page_count: 2,
+      character_count: 0,
+      page_char_counts: [0, 0]
+    });
+    await db.volume_ocr.put({
+      volume_uuid: 'vol-1',
+      pages: ['Vol 1/001.jpg', 'Vol 1/002.jpg'].map((p) => ({ ...page(p, ''), blocks: [] }))
+    });
+  }
+
+  async function installed() {
+    return { row: await db.volumes.get('vol-1'), ocr: await db.volume_ocr.get('vol-1') };
+  }
+
+  it('the pass writes exactly what the image-only installer writes', async () => {
+    const { body } = await serverMain();
+    await installImageOnly();
+    listSidecar('Vol 1', body);
+    await cacheIndex([{ mokuro_sha256: await hashOf(body) }]);
+
+    await pass();
+    expect(_lastOcrUpgradeResultForTests()).toMatchObject({ upgraded: 1 });
+    const byPass = await installed();
+
+    await Promise.all([db.volumes.clear(), db.volume_ocr.clear()]);
+    await installImageOnly();
+    const sidecar = cloud.state.files.find((f) => f.path.endsWith('.mokuro'))!;
+    expect(
+      await upgradeOcrFromSidecarBlob(
+        'vol-1',
+        sidecar.path,
+        new Blob([body]),
+        attestationOfListedFile('webdav', sidecar)
+      )
+    ).toBe(true);
+
+    expect(byPass).toEqual(await installed());
+  });
+
+  async function installedByPass(body: string) {
+    await installImageOnly();
+    listSidecar('Vol 1', body);
+    await cacheIndex([{ mokuro_sha256: await hashOf(body) }]);
+    await pass();
+    return installed();
+  }
+
+  it("joins the server's series: the volumes it OCRed are one series to rename", async () => {
+    const { body } = await serverMain();
+    const { row } = await installedByPass(body);
+    expect(row!.series_uuid).toBe('server-series-uuid');
+  });
+
+  it('a main rebuilt from it under a new name (a rename) carries the block, seal and all', async () => {
+    const { body, engine } = await serverMain();
+    const { row, ocr } = await installedByPass(body);
+    const main = await buildPrimaryMokuroMetadata(row!, ocr!.pages, {
+      volumeTitle: 'Vol 1 renamed'
+    });
+    expect(main.ocr_engine).toEqual(engine);
   });
 });

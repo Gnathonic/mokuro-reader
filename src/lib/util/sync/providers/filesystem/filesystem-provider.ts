@@ -11,8 +11,15 @@ import type {
   ControlFileResult
 } from '../../provider-interface';
 import { ProviderError } from '../../provider-interface';
-import { ControlNodeCache, readControlNodes } from '../../control-file-read';
+import {
+  ControlNodeCache,
+  controlReadKey,
+  isPathSafeFolderName,
+  readControlNodes
+} from '../../control-file-read';
+import { foldFolderName } from '../../syncable-file';
 import { clearCloudBunkoMarkers, withCloudBunkoStatus } from '$lib/catalog/cloud-bunko-marker';
+import { folderTestHandle } from '../../cloud-test-hooks';
 import { setActiveProviderKey, clearActiveProviderKey } from '../../provider-detection';
 import { isFilesystemProviderSupported } from './feature-detect';
 import { saveRootHandle, loadRootHandle, clearRootHandle } from './handle-store';
@@ -84,14 +91,21 @@ export class FilesystemProvider implements SyncProvider {
       );
     }
 
+    // A test build may be handed the folder instead (the interop rig, which
+    // cannot answer the picker); never in a production build.
+    const given = folderTestHandle();
     let handle: FileSystemDirectoryHandle;
-    try {
-      // @ts-expect-error — File System Access API is Chromium-only, no lib.dom typing in all TS targets
-      handle = await window.showDirectoryPicker({ mode: 'readwrite' });
-    } catch (error) {
-      // User cancelled the picker or permission dismissed
-      const message = error instanceof Error ? error.message : 'Folder selection cancelled';
-      throw new ProviderError(message, 'filesystem', 'PICKER_CANCELLED');
+    if (given) {
+      handle = given;
+    } else {
+      try {
+        // @ts-expect-error — File System Access API is Chromium-only, no lib.dom typing in all TS targets
+        handle = await window.showDirectoryPicker({ mode: 'readwrite' });
+      } catch (error) {
+        // User cancelled the picker or permission dismissed
+        const message = error instanceof Error ? error.message : 'Folder selection cancelled';
+        throw new ProviderError(message, 'filesystem', 'PICKER_CANCELLED');
+      }
     }
 
     // @ts-expect-error — requestPermission is Chromium-only, not in all TS lib.dom targets
@@ -454,48 +468,83 @@ export class FilesystemProvider implements SyncProvider {
     }
   }
 
-  // CONTROL FILES (cloud-direct Bunko marker, queue)
+  // CONTROL FILES (cloud-direct Bunko marker, queue; a series folder's queue)
 
   /**
-   * Read a control file at the library root: the picked folder, which plays
-   * the part of Drive's `mokuro-reader` folder. One local stat per read; names
-   * are unique in a folder, so there is at most one node. Its version is
-   * `lastModified:size`: unchanged means the bytes are not read again. Never
-   * creates anything; a missing file (or a folder of that name) is null.
+   * Read a control file at the library root — the picked folder, which plays
+   * the part of Drive's `mokuro-reader` folder — or, with `opts.folder`, in
+   * that series folder. No network: one local stat per node, versioned by
+   * `lastModified:size`, so an unchanged file answers without reading its
+   * bytes. The series folder is found by name (`getDirectoryHandle`), and
+   * only when no folder has that exact name, among the root's entries by
+   * folded name (`foldFolderName`) — every match. Never creates anything; a
+   * missing file (or a folder of that name) is null.
    */
-  async readControlFile(name: string, opts?: { ifNoneMatch?: string }): Promise<ControlFileResult> {
+  async readControlFile(
+    name: string,
+    opts?: { ifNoneMatch?: string; folder?: string }
+  ): Promise<ControlFileResult> {
+    const folder = opts?.folder;
+    const key = controlReadKey(name, folder);
     try {
       const root = this.requireRoot();
-      let file: File;
-      try {
-        file = await (await root.getFileHandle(name, { create: false })).getFile();
-      } catch (error) {
-        const errorName = (error as { name?: string })?.name;
-        if (errorName === 'NotFoundError' || errorName === 'TypeMismatchError') {
-          this.controlCache.retain(name, []);
-          return null;
-        }
-        throw error;
+      const dirs: { prefix: string; dir: FileSystemDirectoryHandle }[] =
+        folder === undefined
+          ? [{ prefix: '', dir: root }]
+          : isPathSafeFolderName(folder)
+            ? await this.seriesFolderHandles(root, folder)
+            : [];
+      const found: { id: string; file: File }[] = [];
+      for (const { prefix, dir } of dirs) {
+        const file = await controlFileIn(dir, name);
+        if (file) found.push({ id: `${prefix}${name}`, file });
       }
-      const listed = [
-        {
-          id: name,
-          etag: `${file.lastModified}:${file.size}`,
-          modified: new Date(file.lastModified).toISOString()
-        }
-      ];
+      const files = new Map(found.map((f) => [f.id, f.file]));
+      const listed = found.map(({ id, file }) => ({
+        id,
+        etag: `${file.lastModified}:${file.size}`,
+        modified: new Date(file.lastModified).toISOString()
+      }));
       // A copy of the bytes, not the `File`: a cached `File` becomes
       // unreadable once Bunko renames its next version over it.
       return await readControlNodes(
-        name,
+        key,
         listed,
-        async () => new Blob([await file.arrayBuffer()]),
+        async (node) => new Blob([await files.get(node.id)!.arrayBuffer()]),
         this.controlCache,
         opts?.ifNoneMatch
       );
     } catch (error) {
-      throw this.toProviderError(error, 'Read', name);
+      throw this.toProviderError(error, 'Read', folder === undefined ? name : `${folder}/${name}`);
     }
+  }
+
+  /**
+   * The root's folders named `folder`: the exact name when there is one (the
+   * one lookup a case-insensitive disk ever needs), else every entry whose
+   * name folds equal to it.
+   */
+  private async seriesFolderHandles(
+    root: FileSystemDirectoryHandle,
+    folder: string
+  ): Promise<{ prefix: string; dir: FileSystemDirectoryHandle }[]> {
+    try {
+      return [
+        { prefix: `${folder}/`, dir: await root.getDirectoryHandle(folder, { create: false }) }
+      ];
+    } catch (error) {
+      // A TypeError: a name this browser will not look up (`\\` on Windows);
+      // a listed folder of that spelling can still turn up in the scan.
+      if (!isAbsentEntry(error) && !(error instanceof TypeError)) throw error;
+    }
+    const want = foldFolderName(folder);
+    const dirs: { prefix: string; dir: FileSystemDirectoryHandle }[] = [];
+    for await (const entry of root.values()) {
+      if (entry.kind === 'directory' && foldFolderName(entry.name) === want) {
+        dirs.push({ prefix: `${entry.name}/`, dir: entry as FileSystemDirectoryHandle });
+      }
+    }
+    return dirs;
   }
 
   async deleteFile(file: CloudFileMetadata): Promise<void> {
@@ -720,3 +769,19 @@ export const filesystemProvider = new FilesystemProvider();
 import { cacheManager } from '../../cache-manager';
 import { filesystemCache } from './filesystem-cache';
 cacheManager.registerCache('filesystem', filesystemCache);
+
+/** No entry of that name, or one of the other kind: either way, not there. */
+function isAbsentEntry(error: unknown): boolean {
+  const name = (error as { name?: string })?.name;
+  return name === 'NotFoundError' || name === 'TypeMismatchError';
+}
+
+/** The file `name` directly in `dir`, or null when there is none. */
+async function controlFileIn(dir: FileSystemDirectoryHandle, name: string): Promise<File | null> {
+  try {
+    return await (await dir.getFileHandle(name, { create: false })).getFile();
+  } catch (error) {
+    if (isAbsentEntry(error)) return null;
+    throw error;
+  }
+}

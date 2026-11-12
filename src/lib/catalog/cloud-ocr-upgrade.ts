@@ -34,6 +34,9 @@ import { layerNameOnWrite, mainMakerOfFile } from '$lib/reader/edit/ocr-label';
  *   primary was installed from takes the new file — or, when the user edited
  *   that primary, gets it as the `updated-ocr` layer instead
  *   (`applyCloudPrimaryOcr`).
+ *
+ * A volume with no OCR yet can be reached by both (a server's finished job):
+ * either way it takes its first OCR through the one write `writeFirstOcr`.
  */
 
 type CloudUpgradeTask = {
@@ -150,6 +153,58 @@ async function applyUpgrade(task: CloudUpgradeTask): Promise<void> {
   );
 }
 
+/** A sidecar as read for the FIRST OCR of a volume (`writeFirstOcr`). */
+interface FirstOcrFile {
+  /** The file's pages, as parsed. */
+  pages: Page[];
+  /** The file's mokuro `version`. */
+  version: string | undefined;
+  /** The file's `title_uuid`. */
+  seriesUuid?: string;
+  /** `mokuro_sha256` of the decoded bytes. */
+  sha256: string | undefined;
+  /** The listed file the bytes came from (see `MokuroCloudAttestation`). */
+  cloud?: MokuroCloudAttestation;
+  /** The file's block and the digest of its pages, when it carried one. */
+  provenance?: OcrProvenance;
+}
+
+/**
+ * The FIRST OCR of a volume that has none (`upgradeSkipReason` null: an
+ * image-only import nobody has typed into), inside the caller's write
+ * transaction. The one write both installers make — the image-only queue
+ * (`upgradeOcrFromSidecarBlob`) and the hash-driven pass
+ * (`applyCloudPrimaryOcr`) — so the volume ends up the same whichever reaches
+ * it first. A server's finished job reaches both: the queue once the listing
+ * cache shows the sidecar, the pass once `series.json` names its hash (queue
+ * file v2's scoped pull runs the pass before the cache publishes the folder).
+ *
+ * - The file's pages VERBATIM, `img_path` included: the block recorded below
+ *   is carried by a main rebuilt from exactly these pages (a rename,
+ *   `carriedProvenance`). Pages fitted onto this device's image names would
+ *   digest differently, and every rebuilt main would lose the block.
+ * - The file's series uuid (`title_uuid`): the volumes a server OCRed share
+ *   one uuid, the one a series rename goes by.
+ */
+async function writeFirstOcr(current: VolumeMetadata, file: FirstOcrFile): Promise<void> {
+  const { totalChars, cumulative } = buildPageCharCounts(file.pages);
+  await db.volume_ocr.put({ volume_uuid: current.volume_uuid, pages: file.pages });
+  await db.volumes.update(current.volume_uuid, {
+    mokuro_version: file.version || '0.0.0',
+    series_uuid: file.seriesUuid || current.series_uuid,
+    page_count: file.pages.length,
+    character_count: totalChars,
+    page_char_counts: cumulative,
+    // The primary now IS these bytes (`mokuro_sha256` = its base revision).
+    mokuro_sha256: file.sha256,
+    mokuro_sha256_cloud: file.sha256 ? file.cloud : undefined,
+    // The primary is this file now: its block or none (like the hash).
+    ocr_provenance: file.provenance ? [file.provenance] : undefined,
+    // ...and its maker (unknown for an EDITED file).
+    ocr_maker: mainMakerOfFile(file.provenance, file.version)
+  });
+}
+
 /**
  * Upgrade one image-only volume from sidecar bytes already in hand — the write
  * half of every upgrade, also used for a sidecar fetched outside any provider
@@ -180,8 +235,7 @@ export async function upgradeOcrFromSidecarBlob(
     'pages=',
     Array.isArray(parsed.pages) ? parsed.pages.length : 0
   );
-  const pages = Array.isArray(parsed.pages) ? parsed.pages : [];
-  const { totalChars, cumulative } = buildPageCharCounts(pages);
+  const pages = (Array.isArray(parsed.pages) ? parsed.pages : []) as unknown as Page[];
   const provenance = await provenanceOfFile(parsed, pages);
 
   // The row is re-read INSIDE the write transaction: the snapshot this task was
@@ -195,25 +249,13 @@ export async function upgradeOcrFromSidecarBlob(
       console.log('[Cloud OCR Upgrade] Skipping task:', volumeUuid, skip);
       return null;
     }
-
-    await db.volume_ocr.put({
-      volume_uuid: current.volume_uuid,
-      pages: pages as any
-    });
-
-    await db.volumes.update(current.volume_uuid, {
-      mokuro_version: parsed.version || '0.0.0',
-      series_uuid: parsed.seriesUuid || current.series_uuid,
-      page_count: pages.length,
-      character_count: totalChars,
-      page_char_counts: cumulative,
-      // The primary now IS these bytes (`mokuro_sha256` = its base revision).
-      mokuro_sha256: sha256,
-      mokuro_sha256_cloud: sha256 ? cloud : undefined,
-      // The primary is this file now: its block or none (like the hash).
-      ocr_provenance: provenance ? [provenance] : undefined,
-      // ...and its maker (unknown for an EDITED file).
-      ocr_maker: mainMakerOfFile(provenance, parsed.version)
+    await writeFirstOcr(current, {
+      pages,
+      version: parsed.version,
+      seriesUuid: parsed.seriesUuid,
+      sha256,
+      cloud,
+      provenance
     });
     return current;
   });
@@ -325,6 +367,8 @@ export interface CloudPrimaryOcr {
   pages: Page[];
   /** The sidecar's mokuro `version`. */
   version: string;
+  /** The sidecar's `title_uuid`: a volume with no OCR yet joins it (`writeFirstOcr`). */
+  seriesUuid?: string;
   /** `mokuro_sha256` of the decoded bytes the pages were parsed from. */
   sha256: string;
   /** The listed file the bytes came from (see `MokuroCloudAttestation`). */
@@ -380,6 +424,13 @@ export async function applyCloudPrimaryOcr(
           'OCR made for other images'
       );
       return 'mismatch';
+    }
+
+    // No OCR here yet (an image-only volume): its FIRST OCR, written as the
+    // image-only queue writes it — whichever of the two gets here first.
+    if (!upgradeSkipReason(current)) {
+      await writeFirstOcr(current, ocr);
+      return 'upgraded';
     }
 
     const pages = fitPagesToVolume(ocr.pages, local.pages);

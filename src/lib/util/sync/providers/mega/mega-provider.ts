@@ -19,11 +19,14 @@ import {
   isSidecarFile,
   isRootConfigFile,
   isBunkoControlFile,
+  foldFolderName,
   BUNKO_MARKER_NAME,
-  QUEUE_FILE_NAME
+  QUEUE_FILE_NAME,
+  SERIES_QUEUE_FILE_NAME
 } from '../../syncable-file';
 import {
   ControlNodeCache,
+  controlReadKey,
   readControlNodes,
   type ListedControlNode
 } from '../../control-file-read';
@@ -182,6 +185,16 @@ function sameNode(a: any, b: any): boolean {
   return a === b || (!!a?.nodeId && a.nodeId === b?.nodeId);
 }
 
+/**
+ * The name of `folder` when it is a SERIES folder — a folder directly inside a
+ * `mokuro-reader` folder — else null. Where a series queue file sits.
+ */
+function seriesFolderNameOf(folder: any): string | null {
+  if (!folder?.directory || typeof folder.name !== 'string' || folder.name === '') return null;
+  const root = folder.parent;
+  return root?.directory && root.name === MOKURO_FOLDER ? folder.name : null;
+}
+
 /** How often a dead server-change poll is retried (1 s, 2 s, 4 s, …) before waiting for the next load. */
 const SC_RECOVERY_ATTEMPTS = 6;
 
@@ -287,13 +300,15 @@ export class MegaProvider implements SyncProvider {
    */
   private scRecoveryAttempt = 0;
 
-  // Control files (`.mokuro-bunko.json`, `.mokuro-queue.json`) are read from the
-  // live tree: bodies cached per node handle, change listeners fed by the same
-  // sc events as the reactive cache (provider-level, so they survive
-  // reinitialize() and re-attachment), and handles whose download hit ENOENT.
+  // Control files (`.mokuro-bunko.json`, `.mokuro-queue.json` at the root, a
+  // series folder's `.mokuro-series-queue.json`) are read from the live tree:
+  // bodies cached per node handle, change listeners fed by the same sc events
+  // as the reactive cache (provider-level, so they survive reinitialize() and
+  // re-attachment), and handles whose download hit ENOENT.
   private controlCache = new ControlNodeCache();
-  private controlListeners = new Set<(name: string) => void>();
-  private controlPendingNames = new Set<string>();
+  private controlListeners = new Set<(name: string, folder?: string) => void>();
+  /** Pending notifications, one per (name, folder), coalesced over 500 ms. */
+  private controlPending = new Map<string, { name: string; folder?: string }>();
   private controlNotifyTimer: ReturnType<typeof setTimeout> | null = null;
   private vanishedControlHandles = new Set<string>();
 
@@ -318,11 +333,24 @@ export class MegaProvider implements SyncProvider {
     };
     // Control-file changes (add/update/delete/move of a node named like one):
     // the live tree already holds the new state, so subscribers just re-read.
-    const onNode = (node: any) => {
+    // A series queue file names its series folder — both folders, for a move
+    // between two — so a subscriber re-reads only the series it shows.
+    const onNode = (node: any, oldParent?: any) => {
       const name = typeof node?.name === 'string' ? node.name : '';
-      if (!isBunkoControlFile(name)) return;
-      this.vanishedControlHandles.clear(); // give a skipped node another chance
-      this.scheduleControlNotify(name, storage);
+      if (isBunkoControlFile(name)) {
+        this.vanishedControlHandles.clear(); // give a skipped node another chance
+        this.scheduleControlNotify(name, undefined, storage);
+        return;
+      }
+      if (name !== SERIES_QUEUE_FILE_NAME) return;
+      const folders = new Set<string>();
+      for (const parent of [node?.parent, oldParent]) {
+        const folder = seriesFolderNameOf(parent);
+        if (folder !== null) folders.add(folder);
+      }
+      if (folders.size === 0) return;
+      this.vanishedControlHandles.clear();
+      for (const folder of folders) this.scheduleControlNotify(name, folder, storage);
     };
     for (const event of ['add', 'move', 'delete', 'update']) {
       storage.on(event, schedule);
@@ -330,19 +358,23 @@ export class MegaProvider implements SyncProvider {
     }
   }
 
-  private scheduleControlNotify(name: string, storage: any): void {
+  private scheduleControlNotify(name: string, folder: string | undefined, storage: any): void {
     if (this.controlListeners.size === 0) return;
-    this.controlPendingNames.add(name);
+    this.controlPending.set(`${name}\u0000${folder ?? ''}`, {
+      name,
+      ...(folder !== undefined ? { folder } : {})
+    });
     if (this.controlNotifyTimer) clearTimeout(this.controlNotifyTimer);
     this.controlNotifyTimer = setTimeout(() => {
       this.controlNotifyTimer = null;
-      const names = [...this.controlPendingNames];
-      this.controlPendingNames.clear();
+      const pending = [...this.controlPending.values()];
+      this.controlPending.clear();
       if (this.storage !== storage) return; // logged out / replaced
-      for (const n of names) {
+      for (const n of pending) {
         for (const listener of [...this.controlListeners]) {
           try {
-            listener(n);
+            if (n.folder === undefined) listener(n.name);
+            else listener(n.name, n.folder);
           } catch (err) {
             console.error('[MEGA] control-file listener failed:', err);
           }
@@ -353,9 +385,10 @@ export class MegaProvider implements SyncProvider {
 
   /**
    * Subscribe to changes of control files in the live tree (MEGA's sc stream) —
-   * the push feed that replaces polling. Returns the unsubscribe.
+   * the push feed that replaces polling. A series folder's queue file comes
+   * with that folder's name as the tree spells it. Returns the unsubscribe.
    */
-  onControlFileChange(listener: (name: string) => void): () => void {
+  onControlFileChange(listener: (name: string, folder?: string) => void): () => void {
     this.controlListeners.add(listener);
     return () => {
       this.controlListeners.delete(listener);
@@ -445,7 +478,7 @@ export class MegaProvider implements SyncProvider {
     // tree; logout and expiry both end here, so neither leaks into the next.
     this.controlCache.clear();
     this.vanishedControlHandles.clear();
-    this.controlPendingNames.clear();
+    this.controlPending.clear();
     if (this.controlNotifyTimer) clearTimeout(this.controlNotifyTimer);
     this.controlNotifyTimer = null;
   }
@@ -795,12 +828,35 @@ export class MegaProvider implements SyncProvider {
     return this.treeRefresh;
   }
 
-  /** The listed node handles of each control file, keyed by name. */
-  private controlHandleSets(): Map<string, string> {
-    const sets = new Map<string, string>();
+  /**
+   * The listed node handles of each control file: the root files keyed by
+   * name, every series folder's queue file by `<name>\0<folded folder>` (with
+   * the folder as the tree spells it).
+   */
+  private controlHandleSets(): Map<string, { name: string; folder?: string; ids: string }> {
+    const sets = new Map<string, { name: string; folder?: string; ids: string }>();
     for (const name of [BUNKO_MARKER_NAME, QUEUE_FILE_NAME]) {
       const ids = this.listControlNodes(name).map((l) => l.listed.id);
-      sets.set(name, ids.sort().join(','));
+      sets.set(name, { name, ids: ids.sort().join(',') });
+    }
+    const series = new Map<string, { folder: string; ids: string[] }>();
+    for (const f of Object.values(this.storage?.files || {}) as any[]) {
+      if (!f || f.directory || f.name !== SERIES_QUEUE_FILE_NAME) continue;
+      const folder = seriesFolderNameOf(f.parent);
+      if (folder === null || !this.isLiveNode(f)) continue;
+      const id = this.getFileNodeId(f);
+      if (!id) continue;
+      const fold = foldFolderName(folder);
+      const entry = series.get(fold) ?? { folder, ids: [] };
+      entry.ids.push(id);
+      series.set(fold, entry);
+    }
+    for (const [fold, { folder, ids }] of series) {
+      sets.set(`${SERIES_QUEUE_FILE_NAME}\u0000${fold}`, {
+        name: SERIES_QUEUE_FILE_NAME,
+        folder,
+        ids: ids.sort().join(',')
+      });
     }
     return sets;
   }
@@ -808,14 +864,20 @@ export class MegaProvider implements SyncProvider {
   /**
    * A full load swaps the tree in without sc events (after an sc outage too),
    * so a control file rewritten meanwhile would never reach the listeners:
-   * notify every name whose handle set the load changed.
+   * notify every control file whose handle set the load changed — appeared,
+   * changed or gone.
    */
-  private notifyControlSwaps(before: Map<string, string>, storage: any): void {
+  private notifyControlSwaps(
+    before: Map<string, { name: string; folder?: string; ids: string }>,
+    storage: any
+  ): void {
     const after = this.controlHandleSets();
-    const changed = [...after].filter(([name, ids]) => before.get(name) !== ids);
+    const changed = [...new Set([...before.keys(), ...after.keys()])]
+      .filter((key) => before.get(key)?.ids !== after.get(key)?.ids)
+      .map((key) => (after.get(key) ?? before.get(key))!);
     if (changed.length === 0) return;
     this.vanishedControlHandles.clear(); // give a skipped node another chance
-    for (const [name] of changed) this.scheduleControlNotify(name, storage);
+    for (const { name, folder } of changed) this.scheduleControlNotify(name, folder, storage);
   }
 
   /**
@@ -1405,14 +1467,21 @@ export class MegaProvider implements SyncProvider {
    * reinitialize/reload (the sc stream keeps `storage.files` current). A file
    * rewrite is a new node (new handle), so the handle is the version and a
    * download only happens for a handle not seen before. A node whose download
-   * reports it vanished (a just-deleted node) is skipped, not fatal.
+   * reports it vanished (a just-deleted node) is skipped, not fatal. With
+   * `folder`, the nodes in every series folder whose name folds equal to it,
+   * under every `mokuro-reader` folder: still zero requests until a body
+   * changes.
    */
-  async readControlFile(name: string, opts?: { ifNoneMatch?: string }): Promise<ControlFileResult> {
+  async readControlFile(
+    name: string,
+    opts?: { ifNoneMatch?: string; folder?: string }
+  ): Promise<ControlFileResult> {
     if (!this.isAuthenticated()) {
       throw new ProviderError('Not authenticated', 'mega', 'NOT_AUTHENTICATED', true);
     }
 
-    const listed = this.listControlNodes(name);
+    const key = controlReadKey(name, opts?.folder);
+    const listed = this.listControlNodes(name, opts?.folder);
     const handles = new Map<string, any>(listed.map((l) => [l.node.nodeId as string, l.node]));
     let nodes: ListedControlNode[] = listed.map((l) => l.listed);
 
@@ -1422,7 +1491,7 @@ export class MegaProvider implements SyncProvider {
       const gone: { id: string | null } = { id: null };
       try {
         return await readControlNodes(
-          name,
+          key,
           nodes,
           async (n) => {
             try {
@@ -1465,14 +1534,28 @@ export class MegaProvider implements SyncProvider {
     }
   }
 
-  /** Control-file nodes of `name` directly inside any `mokuro-reader` folder, newest first. */
-  private listControlNodes(name: string): { node: any; listed: ListedControlNode }[] {
+  /**
+   * Control-file nodes of `name` directly inside any `mokuro-reader` folder —
+   * or, with `folder`, inside any series folder of one whose name folds equal
+   * to `folder` — newest first.
+   */
+  private listControlNodes(
+    name: string,
+    folder?: string
+  ): { node: any; listed: ListedControlNode }[] {
     const files = Object.values(this.storage?.files || {}) as any[];
     const found: { node: any; listed: ListedControlNode; ts: number }[] = [];
+    const want = folder === undefined ? null : foldFolderName(folder);
+    if (want === '') return [];
     for (const f of files) {
       if (!f || f.directory || f.name !== name) continue;
       const parent = f.parent;
-      if (!parent || !parent.directory || parent.name !== MOKURO_FOLDER) continue;
+      if (want === null) {
+        if (!parent || !parent.directory || parent.name !== MOKURO_FOLDER) continue;
+      } else {
+        const series = seriesFolderNameOf(parent);
+        if (series === null || foldFolderName(series) !== want) continue;
+      }
       // A deleted node lingers in storage.files (megajs only unlinks it), and a
       // library in the Rubbish Bin is not the library: both are gone.
       if (!this.isLiveNode(f)) continue;

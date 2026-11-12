@@ -786,12 +786,12 @@ describe('VolumeItem server OCR status', () => {
       await pending(jobs.slice(0, 1));
       const { container } = render(VolumeItem, { props: { volume: volume(), variant } });
       expect(status(container).textContent).toContain('in ~3 min');
-      vi.advanceTimersByTime(2 * 60_000);
+      vi.advanceTimersByTime(60_000);
       await tick();
-      expect(status(container).textContent).toContain('in ~1 min');
-      vi.advanceTimersByTime(2 * 60_000);
+      expect(status(container).textContent).toContain('in ~2 min');
+      vi.advanceTimersByTime(3 * 60_000);
       await tick();
-      expect(status(container).textContent).toContain('any moment');
+      expect(status(container).textContent).toContain('soon');
     });
   }
 
