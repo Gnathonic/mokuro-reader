@@ -1446,6 +1446,7 @@ Rules:
 | Reading goals, custom goals, closed-period snapshots               | `goals.json`                              | `lastUpdated` per key; snapshots union |
 | Per-volume reading deadlines                                       | `goals.json` → `volumeDeadlines`          | `lastUpdated` per volume uuid          |
 | Idle cutoff (automatic / manual override, `k`), long-pause default | `volume-data.json` → `tracking` section   | `lastUpdated` per key                  |
+| Mark-as-read policy (`tracking.markRead`: ask / count / skip)      | `volume-data.json` → `tracking` section   | `lastUpdated` per key                  |
 | Pre-history reading snapshot (`legacyStats`)                       | `volume-data.json` (volume uuid keys)     | later `before` wins                    |
 | Device names, class corrections, merges                            | `volume-data.json` → `tracking.devices`   | `lastUpdated` per device id            |
 | Newest reading position (30 days)                                  | `positions.json`                          | newest `t` per volume                  |
@@ -1667,7 +1668,8 @@ uncapped `dwell_ms`, emitted when the view ends via `ViewTracker`; a hidden
 tab has no view), `adjust` (volume editor time/chars edits), `restart`
 ("restart series"), `forget` (delete stats), `position` (an answer to a
 cross-device position offer — see below), `resolve` (an answer about a long
-pause — see below). Record through `recordEvent` (`recordView` for a view and
+pause — see below), `credit` / `retract` (pages counted by "Mark as read" —
+see below). Record through `recordEvent` (`recordView` for a view and
 its answer in one transaction, `recordResolve` for a later answer), which
 never throw and load the DB module lazily (`volume-data.ts` imports it; many
 suites mock `dexie` bare).
@@ -1860,6 +1862,27 @@ merged_into?, lastUpdated}`, `tracking-data.ts`) — never in `device.json`,
   a device this one knows nothing about keeps "on another device".
 - `e2e/devices.spec.ts` drives the offer's device name: browser contexts on
   the WebDAV stub (`device.json` + an encoded month).
+
+**Mark as read credits (#224).** "Mark as read" may count the pages this app
+never saw read (spec `2026-11-07-mark-as-read-credit-design.md`;
+`mark-read-flow.ts`, `credit.ts`, `MarkReadSheet.svelte`). Rules that must hold:
+
+- The mark itself is the same either way; the count is a `credit` event
+  beside it (`pages`, `page_chars`, `time_ms`), and Undo, un-read and the
+  editor's Remove take it back with a `retract` aimed at `[device, seq]`.
+  Nothing is ever edited.
+- Real reading always wins (`stats-engine.ts`): a credit claims only the pages
+  no counting view read in its pass and no earlier credit claimed. Credits
+  never feed samples, the pace or any speed — an estimate uses measured
+  reading only, and a speed that rounds below 1 char/min is no speed.
+- A `credit` or `retract` makes its month segment format 2; every other
+  segment stays format 1 byte for byte. Because every other device refuses
+  a whole device-month over one bad row, forever, `appendEvent` refuses a
+  credit no segment could carry (`creditRuns`: finite non-negative time and
+  page chars, ascending pages, runs under `MAX_CREDIT_RUN`) before storing it.
+- The sheet appears only from the mark actions, never from reader completion,
+  sync or position adoption. While the Undo shows the completion is held from
+  AniList (`markVolumesRead`); hiding or closing the tab hands it on.
 
 **Cloud (phase 2a).** Each device uploads ONLY its own events, one file per UTC
 month, `history/<device>/<YYYY-MM>.events` (deflated, versioned rows —

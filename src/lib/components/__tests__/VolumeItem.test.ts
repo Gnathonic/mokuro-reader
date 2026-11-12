@@ -5,7 +5,7 @@ import { tick } from 'svelte';
 // VolumeItem sits on top of the whole app (Dexie, the sync stack, the download queue,
 // the reading-speed model). None of that decides whether the "not on this device" badge
 // is drawn, so it is all stubbed here — the component under test is the template.
-const { routeParams, catalogVolumes } = vi.hoisted(() => {
+const { routeParams, catalogVolumes, readStates, seriesVolumes } = vi.hoisted(() => {
   function createStore<T>(initial: T) {
     const subs = new Set<(v: T) => void>();
     let current = initial;
@@ -23,7 +23,9 @@ const { routeParams, catalogVolumes } = vi.hoisted(() => {
   }
   return {
     routeParams: createStore<Record<string, string | undefined>>({ manga: 'One Piece' }),
-    catalogVolumes: createStore<Record<string, unknown>>({})
+    catalogVolumes: createStore<Record<string, unknown>>({}),
+    readStates: createStore<Record<string, unknown>>({}),
+    seriesVolumes: createStore<unknown[]>([])
   };
 });
 
@@ -39,15 +41,20 @@ function emptyStore<T>(value: T) {
 vi.mock('$lib/settings', () => ({
   deleteVolume: vi.fn(),
   progress: emptyStore<Record<string, number>>({}),
-  volumes: emptyStore<Record<string, unknown>>({}),
-  settings: emptyStore({}),
-  markVolumeAsComplete: vi.fn(),
-  markVolumeAsUnread: vi.fn()
+  volumes: readStates,
+  settings: emptyStore({})
 }));
+// "Mark as read" asks about pages not read here (#224): the flow is its own suite.
+const markFlow = vi.hoisted(() => ({
+  markRead: vi.fn(async () => {}),
+  markUnread: vi.fn(async () => {}),
+  markReadBulk: vi.fn(async () => {})
+}));
+vi.mock('$lib/reading-history/mark-read-flow', () => markFlow);
 vi.mock('$lib/settings/reading-speed', () => ({
   personalizedReadingSpeed: emptyStore({ isPersonalized: false, charsPerMinute: 0 })
 }));
-vi.mock('$lib/catalog', () => ({ volumes: catalogVolumes }));
+vi.mock('$lib/catalog', () => ({ volumes: catalogVolumes, currentSeries: seriesVolumes }));
 vi.mock('$lib/catalog/db', () => ({
   db: {
     volumes: { get: vi.fn(async () => undefined) },
@@ -609,6 +616,67 @@ describe('VolumeItem completion', () => {
 
     expect(container.querySelector('[title="Mark as read"]')).not.toBeNull();
     expect(container.querySelector('[title="Mark as unread"]')).toBeNull();
+  });
+
+  it('keeps its check when the page is lowered under a stored "finished" (#224 bug 2)', async () => {
+    // Marked read, then the editor moved the page back: the stored flag still says
+    // finished, and so does the catalog (`isVolumeFinished`) — so must the row.
+    readStates.set({ 'uuid-1': { progress: 3, completed: true } });
+    try {
+      const { container } = render(VolumeItem, { props: { volume: volume(), variant: 'list' } });
+      expect(container.querySelector('[title="Mark as unread"]')).not.toBeNull();
+      await fireEvent.click(container.querySelector('[title="Mark as unread"]')!);
+      expect(markFlow.markUnread).toHaveBeenCalledWith(
+        expect.objectContaining({ volume_uuid: 'uuid-1' })
+      );
+    } finally {
+      readStates.set({});
+    }
+  });
+
+  it('"Mark as read" goes through the flow that asks about pages not read here', async () => {
+    const { container } = render(VolumeItem, { props: { volume: volume(), variant: 'list' } });
+    await fireEvent.click(container.querySelector('[title="Mark as read"]')!);
+    expect(markFlow.markRead).toHaveBeenCalledWith(
+      expect.objectContaining({ volume_uuid: 'uuid-1', page_count: 10 })
+    );
+  });
+});
+
+describe('VolumeItem menu "Mark as read up to here" (#224)', () => {
+  const popoverMethods = ['showPopover', 'hidePopover', 'togglePopover'] as const;
+  const stubbed: (typeof popoverMethods)[number][] = [];
+  beforeAll(() => {
+    for (const name of popoverMethods) {
+      if (typeof HTMLElement.prototype[name] === 'function') continue;
+      Object.defineProperty(HTMLElement.prototype, name, {
+        configurable: true,
+        writable: true,
+        value: () => {}
+      });
+      stubbed.push(name);
+    }
+  });
+  afterAll(() => {
+    for (const name of stubbed.splice(0)) {
+      delete (HTMLElement.prototype as unknown as Record<string, unknown>)[name];
+    }
+  });
+  afterEach(() => cleanup());
+
+  it('hands the series and this volume to the bulk sheet', async () => {
+    const series = [volume(), volume({ volume_uuid: 'uuid-2', volume_title: 'Vol 2' })];
+    seriesVolumes.set(series);
+    try {
+      const { container, findByText } = render(VolumeItem, {
+        props: { volume: volume(), variant: 'grid' }
+      });
+      await fireEvent.mouseDown(container.querySelector('#volume-menu-uuid-1') as HTMLElement);
+      await fireEvent.click(await findByText('Mark as read up to here', {}, { timeout: 5000 }));
+      expect(markFlow.markReadBulk).toHaveBeenCalledWith(series, 'uuid-1');
+    } finally {
+      seriesVolumes.set([]);
+    }
   });
 });
 

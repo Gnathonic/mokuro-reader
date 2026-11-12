@@ -16,6 +16,7 @@
   import MissingFilesModal from '$lib/components/MissingFilesModal.svelte';
   import VolumeEditorModal from '$lib/components/VolumeEditorModal.svelte';
   import SeriesEditorModal from '$lib/components/Series/SeriesEditorModal.svelte';
+  import MarkReadSheet from '$lib/components/MarkReadSheet.svelte';
   import AnkiFieldModal from '$lib/components/Reader/AnkiFieldModal.svelte';
   import ImportPreparingModal from '$lib/components/ImportPreparingModal.svelte';
   import ProgressTracker from '$lib/components/ProgressTracker.svelte';
@@ -257,6 +258,7 @@
     <MissingFilesModal />
     <VolumeEditorModal />
     <SeriesEditorModal />
+    <MarkReadSheet />
     <AnkiFieldModal />
     <ImportPreparingModal />
     <ProgressTracker />

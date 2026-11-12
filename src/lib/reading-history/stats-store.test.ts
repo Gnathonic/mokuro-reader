@@ -22,6 +22,8 @@ import {
   freezeLegacyBaselines,
   flushReadingStats,
   initReadingStats,
+  measuredFigures,
+  pagesNotReadHere,
   readingStats,
   readingStatsReady,
   recentReadingSpeed,
@@ -151,6 +153,66 @@ describe('figuresFor', () => {
       timeMs: 0,
       chars: 0
     });
+  });
+});
+
+describe('credits (#224)', () => {
+  const credit = (volume: string, t: number, pages: number[], chars: number[], ms: number) =>
+    ({
+      device: 'dev-a',
+      seq: ++seq,
+      t,
+      kind: 'credit',
+      volume,
+      pages,
+      page_chars: chars,
+      time_ms: ms
+    }) as ReadingEvent;
+
+  it('figures carry what credits counted, inside the totals; measured figures leave it out', async () => {
+    await record([view('v1', 0, 1, 300, 3 * MIN), credit('v1', MIN, [2, 3], [200, 100], 10 * MIN)]);
+    const figures = figuresFor(get(readingStats), 'v1');
+    expect(figures).toMatchObject({
+      timeMs: 13 * MIN,
+      chars: 600,
+      credit: { timeMs: 10 * MIN, chars: 300 }
+    });
+    expect(measuredFigures(figures)).toEqual({ timeMs: 3 * MIN, chars: 300 });
+    expect(figuresFor(get(readingStats), 'none').credit).toEqual({ timeMs: 0, chars: 0 });
+  });
+
+  it('pages not read here: every page no view read and no credit claimed in this pass', async () => {
+    await record([
+      view('v1', 0, 2, 300, 3 * MIN),
+      view('v1', 5 * MIN, 3, 300, 3 * MIN),
+      credit('v1', 10 * MIN, [5], [100], MIN)
+    ]);
+    expect(pagesNotReadHere(get(readingStats), 'v1', 6)).toEqual([1, 4, 6]);
+    expect(pagesNotReadHere(get(readingStats), 'never-read', 3)).toEqual([1, 2, 3]);
+  });
+
+  it('a volume with unexplained pre-history reading counts pages up to its position as read', async () => {
+    const legacyStats = { time_ms: 30 * MIN, chars: 5000, before: 1 };
+    // No events: the old lump covers pages 1..4 (its position before the mark).
+    expect(pagesNotReadHere(get(readingStats), 'old', 6, { legacyStats, progress: 4 })).toEqual([
+      5, 6
+    ]);
+    // Nothing unexplained: the position says nothing about what was read here.
+    expect(pagesNotReadHere(get(readingStats), 'old', 6, { progress: 4 })).toEqual([
+      1, 2, 3, 4, 5, 6
+    ]);
+    // After a restart the old lump belongs to an earlier pass.
+    const restart: ReadingEvent = {
+      device: 'dev-a',
+      seq: ++seq,
+      t: 5,
+      kind: 'restart',
+      volume: 'old'
+    };
+    await record([restart]);
+    expect(pagesNotReadHere(get(readingStats), 'old', 6, { legacyStats, progress: 4 })).toEqual([
+      1, 2, 3, 4, 5, 6
+    ]);
   });
 });
 

@@ -32,6 +32,11 @@ export type { DeviceLabel };
  *   rename and a merge of the same device on two devices between syncs keep
  *   only the newer edit. The stamp is `lastUpdated` like every sibling here
  *   (the spec's `updated_at` was renamed to match).
+ * - `markRead`: what "Mark as read" does with pages this app never saw read
+ *   (#224) — `ask` (the default, also when absent), `count` them, or `skip`
+ *   them. A stats policy, so the user's and not a profile's: switching
+ *   profile must not change whether marks count. Its own key, merged like
+ *   `pauses`.
  */
 
 export const TRACKING_SECTION_KEY = 'tracking';
@@ -50,15 +55,26 @@ export interface PausesEntry {
   lastUpdated: string;
 }
 
+/** What "Mark as read" does with pages not read here. */
+export type MarkReadPolicy = 'ask' | 'count' | 'skip';
+const MARK_READ_POLICIES: readonly MarkReadPolicy[] = ['ask', 'count', 'skip'];
+
+export interface MarkReadEntry {
+  /** Pages of the volume this app never saw read. Written either way, so a return to Ask wins. */
+  unread: MarkReadPolicy;
+  lastUpdated: string;
+}
+
 export interface TrackingState {
   idle?: IdleEntry;
   pauses?: PausesEntry;
+  markRead?: MarkReadEntry;
   devices?: Record<string, DeviceLabel>;
 }
 
 /** The single-entry keys; `devices` is a map and merges per id. */
 type EntryKey = Exclude<keyof TrackingState, 'devices'>;
-const ENTRY_KEYS: readonly EntryKey[] = ['idle', 'pauses'];
+const ENTRY_KEYS: readonly EntryKey[] = ['idle', 'pauses', 'markRead'];
 
 /** Bogus-set id of a device label: `devices/<id>` (`/` is never in a device id). */
 export const DEVICE_BOGUS_PREFIX = 'devices/';
@@ -93,6 +109,18 @@ function parsePauses(value: Record<string, unknown>): PausesEntry {
   // An older build's standing answer (`default`) meant "never ask".
   const ask = typeof value.ask === 'boolean' ? value.ask : !isPauseCount(value.default);
   return { ask, lastUpdated: normalizeUpdatedAt(value.lastUpdated) ?? EPOCH };
+}
+
+export function isMarkReadPolicy(value: unknown): value is MarkReadPolicy {
+  return (MARK_READ_POLICIES as readonly unknown[]).includes(value);
+}
+
+function parseMarkRead(value: Record<string, unknown>): MarkReadEntry {
+  // An unknown policy (a newer build's) reads as the default, Ask.
+  return {
+    unread: isMarkReadPolicy(value.unread) ? value.unread : 'ask',
+    lastUpdated: normalizeUpdatedAt(value.lastUpdated) ?? EPOCH
+  };
 }
 
 /** Trimmed and cut to `DEVICE_NAME_MAX` characters (not UTF-16 units); `undefined` when empty. */
@@ -132,6 +160,7 @@ export function parseTrackingSection(raw: unknown): TrackingState {
   if (!isRecord(raw)) return state;
   if (isRecord(raw.idle)) state.idle = parseIdle(raw.idle);
   if (isRecord(raw.pauses)) state.pauses = parsePauses(raw.pauses);
+  if (isRecord(raw.markRead)) state.markRead = parseMarkRead(raw.markRead);
   if (isRecord(raw.devices)) {
     const devices = parseDeviceLabels(raw.devices);
     if (Object.keys(devices).length > 0) state.devices = devices;
@@ -147,7 +176,7 @@ function isFutureStamp(value: Record<string, unknown>, now: number): boolean {
 
 /**
  * Keys whose RAW stamp is too far in the future (before the parse clamps it):
- * `idle` / `pauses` by name, a device label as `devices/<id>`.
+ * `idle` / `pauses` / `markRead` by name, a device label as `devices/<id>`.
  */
 export function detectBogusTrackingKeys(raw: unknown, now: number = Date.now()): Set<string> {
   const bogus = new Set<string>();
@@ -330,6 +359,16 @@ export function setAskOnLongPause(ask: boolean): void {
   });
 }
 
+/** What "Mark as read" does with pages not read here: ask, count them, or not. */
+export function setMarkReadPolicy(unread: MarkReadPolicy): void {
+  if (!isMarkReadPolicy(unread)) return;
+  const state = get(trackingState);
+  trackingState.set({
+    ...state,
+    markRead: { unread, lastUpdated: nextStamp(state.markRead?.lastUpdated) }
+  });
+}
+
 /**
  * Change one device's label under a new stamp, keeping its other fields. A
  * field patched to `undefined` is removed, so the cleared entry still carries
@@ -421,6 +460,12 @@ export const idleSettings: Readable<IdleSettings> = derived(trackingState, ($sta
 export const askOnLongPause: Readable<boolean> = derived(
   trackingState,
   ($state) => $state.pauses?.ask ?? true
+);
+
+/** What "Mark as read" does with pages not read here (default: ask). */
+export const markReadPolicy: Readable<MarkReadPolicy> = derived(
+  trackingState,
+  ($state) => $state.markRead?.unread ?? 'ask'
 );
 
 /** The user's device labels by raw device id (merges unresolved: see `resolveDevice`). */

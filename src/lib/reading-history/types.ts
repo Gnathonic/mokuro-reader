@@ -79,8 +79,40 @@ export interface ResolvePayload {
   count: PauseCount;
 }
 
+/**
+ * "Mark as read" (or the volume editor's "Count pages read elsewhere") counted
+ * pages this app never saw read, as read in the current pass (#224). The
+ * stats engine lets it CLAIM only pages no counting view read in that pass and
+ * no earlier credit claimed, so a later in-app read takes its page back. It is
+ * never a speed sample: it feeds totals, not speed or pace.
+ */
+export interface CreditPayload {
+  kind: 'credit';
+  volume: string;
+  /** 1-based, strictly ascending. */
+  pages: number[];
+  /** Each page's characters (the same count a page view records). */
+  page_chars: number[];
+  /** The time the user accepted or typed for these pages; 0 = characters only. */
+  time_ms: number;
+}
+
+/** Undo, un-read or the editor's "Remove": the target credit counts as never made. */
+export interface RetractPayload {
+  kind: 'retract';
+  volume: string;
+  target: [device: string, seq: number];
+}
+
 export type EventPayload =
-  PagePayload | AdjustPayload | RestartPayload | ForgetPayload | PositionPayload | ResolvePayload;
+  | PagePayload
+  | AdjustPayload
+  | RestartPayload
+  | ForgetPayload
+  | PositionPayload
+  | ResolvePayload
+  | CreditPayload
+  | RetractPayload;
 
 /** `t` = epoch ms on the recording device (for `page`: when the view opened). */
 export type ReadingEvent = { device: string; seq: number; t: number } & EventPayload;

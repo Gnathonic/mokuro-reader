@@ -937,3 +937,65 @@ describe('figures come from the accessor, not the record', () => {
     expect(stats.totalSkippedChars).toBe(400);
   });
 });
+
+describe('credits from "mark as read" (#224) never make a speed', () => {
+  const at = '2026-10-01T00:00:00.000Z';
+  // Record fields as before, plus the part "mark as read" counted.
+  const withCredit = (_id: string, d: Record<string, any>) => ({
+    ...recordFigures(_id, d),
+    credit: { timeMs: (d.creditMinutes ?? 0) * 60_000, chars: d.creditChars ?? 0 }
+  });
+  const data = {
+    // 60 min, 12,000 chars read here + 30 min / 9,000 chars counted when marked.
+    partly: {
+      completed: true,
+      completedAt: at,
+      timeReadInMinutes: 90,
+      chars: 21_000,
+      creditMinutes: 30,
+      creditChars: 9_000,
+      volume_title: 'Vol 1',
+      series_title: 'S',
+      series_uuid: 's'
+    },
+    // Counted wholly when marked read: nothing measured.
+    wholly: {
+      completed: true,
+      completedAt: at,
+      timeReadInMinutes: 40,
+      chars: 8_000,
+      creditMinutes: 40,
+      creditChars: 8_000,
+      volume_title: 'Vol 2',
+      series_title: 'S',
+      series_uuid: 's'
+    }
+  };
+
+  it('plots a credited volume by its measured part, and a wholly credited one not at all', () => {
+    const rows = processRows(data, [], withCredit);
+    expect(rows.map((r) => [r.volumeId, r.durationMinutes, r.charsRead, r.charsPerMinute])).toEqual(
+      [['partly', 60, 12_000, 200]]
+    );
+  });
+
+  it('totals include the credit and say how much; speed, count and badges use measured reading', () => {
+    const rows = processRows(data, [], withCredit);
+    const stats = calculateStats(rows, 200, data, withCredit, true);
+    expect(stats.totalTimeMinutes).toBe(130);
+    expect(stats.totalCharsRead).toBe(29_000);
+    expect(stats.creditTimeMinutes).toBe(70);
+    expect(stats.creditChars).toBe(17_000);
+    expect(stats.measuredTimeMinutes).toBe(60);
+    expect(stats.averageSpeed).toBe(200);
+    expect(stats.volumesCompleted).toBe(1);
+    // 12,000 measured characters: not the 29,000 with credits.
+    expect(stats.badges).toContain('10K Characters');
+    expect(stats.badges).not.toContain('50K Characters');
+    // One hour measured, not two.
+    expect(stats.badges).toContain('1 Hour Reader');
+    expect(stats.badges).not.toContain('5 Hour Reader');
+    // Only the volume with measured reading counts toward volume badges.
+    expect(stats.badges).toContain('First Volume');
+  });
+});

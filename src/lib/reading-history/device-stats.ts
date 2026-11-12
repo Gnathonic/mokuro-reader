@@ -26,21 +26,23 @@ import type { DeviceFacts } from './types';
  *   (`VolumeTotals.byDevice`); `resolveDevice` folds them into groups here,
  *   so a merge or an unmerge regroups without recounting anything.
  * - **The rows add up to the page.** Device rows, "Before history" (converted
- *   turns + each record's unexplained pre-history snapshot) and "Edits"
- *   (volume-editor adjusts, plus whatever the zero clamp takes back) sum to
- *   Σ `figuresFor` over the same records — the reading-speed page's totals.
+ *   turns + each record's unexplained pre-history snapshot), "Edits"
+ *   (volume-editor adjusts, plus whatever the zero clamp takes back) and
+ *   "Marked read" (what credits counted, #224) sum to Σ `figuresFor` over the
+ *   same records — the reading-speed page's totals.
  */
 
 /** A device's speed shows from this much of its counted reading. */
 export const SPEED_MIN_SAMPLE_MS = 30 * 60_000;
 export const BEFORE_HISTORY = 'before-history';
 export const EDITS = 'edits';
+export const MARKED_READ = 'marked-read';
 const EPOCH = new Date(0).toISOString();
 
 export interface DeviceStatsRow {
-  /** The group's canonical device id, or `BEFORE_HISTORY` / `EDITS`. */
+  /** The group's canonical device id, or `BEFORE_HISTORY` / `EDITS` / `MARKED_READ`. */
   key: string;
-  kind: 'device' | 'before-history' | 'edits';
+  kind: 'device' | 'before-history' | 'edits' | 'marked-read';
   /** Raw device ids in the group, sorted (device rows only). */
   members: string[];
   /** Edits may be negative: an editor edit can take time away. */
@@ -59,7 +61,10 @@ export interface DeviceStatsRow {
 }
 
 export interface DeviceStats {
-  /** Device groups by first read, then "Before history", then "Edits" (each only when non-zero). */
+  /**
+   * Device groups by first read, then "Before history", "Edits" and "Marked
+   * read" (each only when non-zero).
+   */
   rows: DeviceStatsRow[];
   totalTimeMs: number;
   totalChars: number;
@@ -190,6 +195,7 @@ export function deviceStatsFrom(
   const groups = new Map<string, DeviceStatsRow>();
   const before = emptyRow(BEFORE_HISTORY, 'before-history');
   const edits = emptyRow(EDITS, 'edits');
+  const marked = emptyRow(MARKED_READ, 'marked-read');
   let totalTimeMs = 0;
   let totalChars = 0;
   for (const [volume, record] of Object.entries(records)) {
@@ -210,6 +216,8 @@ export function deviceStatsFrom(
     for (const [id, part] of totals.byDevice) {
       edits.timeMs += part.adjustMs;
       edits.readChars += part.adjustChars;
+      marked.timeMs += part.creditMs;
+      marked.readChars += part.creditChars;
       if (part.firstReadAt === null) continue;
       if (!isDeviceId(id)) {
         addViews(before, part);
@@ -235,6 +243,7 @@ export function deviceStatsFrom(
   const rows = [...deviceRows];
   if (before.timeMs !== 0 || before.readChars !== 0 || before.skippedChars !== 0) rows.push(before);
   if (edits.timeMs !== 0 || edits.readChars !== 0) rows.push(edits);
+  if (marked.timeMs !== 0 || marked.readChars !== 0) rows.push(marked);
   for (const row of rows) {
     row.share = totalTimeMs > 0 ? Math.min(1, Math.max(0, row.timeMs / totalTimeMs)) : 0;
   }

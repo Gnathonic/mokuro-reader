@@ -54,6 +54,11 @@ export interface VolumeFigures {
   lastReadAt: number | null;
   /** The pre-history snapshot's share of the above (`unexplainedBaseline`). */
   baseline: { timeMs: number; chars: number };
+  /**
+   * What "mark as read" counted (#224) — inside `timeMs` and `chars`, never
+   * measured reading: speed figures subtract it (`measuredFigures`).
+   */
+  credit: { timeMs: number; chars: number };
 }
 
 const RECOMPUTE_DELAY_MS = 500;
@@ -263,8 +268,50 @@ export function figuresFor(
     chars: Math.max(0, chars),
     skippedChars: totals?.skippedChars ?? 0,
     lastReadAt: totals?.lastReadAt ?? null,
-    baseline
+    baseline,
+    credit: { timeMs: totals?.creditMs ?? 0, chars: totals?.creditChars ?? 0 }
   };
+}
+
+/**
+ * A volume's figures without what "mark as read" counted: the reading this
+ * app measured (plus the pre-history baseline and editor edits, as before).
+ * What every speed figure is made of.
+ */
+export function measuredFigures(figures: Pick<VolumeFigures, 'timeMs' | 'chars' | 'credit'>): {
+  timeMs: number;
+  chars: number;
+} {
+  return {
+    timeMs: Math.max(0, figures.timeMs - figures.credit.timeMs),
+    chars: Math.max(0, figures.chars - figures.credit.chars)
+  };
+}
+
+/**
+ * The pages of a volume this app never saw read in its current pass (#224):
+ * 1..`pageCount` minus the pass's pages read by a counting view or claimed by
+ * a live credit. A volume with an unexplained pre-history baseline and no
+ * restart also counts pages 1..`record.progress` as read — its old reading
+ * is a lump with no pages, and up to its position is what it covered.
+ */
+export function pagesNotReadHere(
+  stats: ReadingStatsState,
+  volume: string,
+  pageCount: number,
+  record?: BaselineSource & { progress?: number }
+): number[] {
+  const totals = stats.byVolume.get(volume);
+  const read = totals?.passRead;
+  const baseline = unexplainedBaseline(stats, volume, record);
+  const coveredBefore =
+    baseline.chars > 0 && (totals?.pass ?? 0) === 0 ? Math.max(0, record?.progress ?? 0) : 0;
+  const pages: number[] = [];
+  for (let page = 1; page <= pageCount; page++) {
+    if (page <= coveredBefore || read?.has(page)) continue;
+    pages.push(page);
+  }
+  return pages;
 }
 
 /** A series' own speed, once it has an hour of reading; else `null`. */

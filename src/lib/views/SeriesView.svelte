@@ -9,6 +9,7 @@
   import { progressTrackerStore } from '$lib/util/progress-tracker';
   import { volumes, progress, settings } from '$lib/settings';
   import { figuresFor, readingStats } from '$lib/reading-history/stats-store';
+  import { markReadBulk } from '$lib/reading-history/mark-read-flow';
   import { seriesSpeeds } from '$lib/reading-history/series-speeds';
   import { nav, routeParams, navigateBack } from '$lib/util/hash-router';
   import { personalizedReadingSpeed } from '$lib/settings/reading-speed';
@@ -21,7 +22,8 @@
     GridOutline,
     ListOutline,
     DotsVerticalOutline,
-    EditOutline
+    EditOutline,
+    CheckCircleOutline
   } from 'flowbite-svelte-icons';
   import { backupQueue } from '$lib/util/backup-queue';
   import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
@@ -147,6 +149,9 @@
     maximumSignificantDigits: 3
   });
   const formatCharCount = (chars: number) => charFormatter.format(chars || 0);
+
+  /** The series "more options" menu; closed by an item that opens a sheet over it. */
+  let seriesMenuOpen = $state(false);
 
   // View mode state (persisted to localStorage)
   type ViewMode = 'list' | 'grid';
@@ -744,7 +749,7 @@
       <Button id="series-menu" color="light" class="!min-w-0 !p-2.5">
         <DotsVerticalOutline class="h-5 w-5" />
       </Button>
-      <Dropdown triggeredBy="#series-menu" placement="bottom-end">
+      <Dropdown triggeredBy="#series-menu" placement="bottom-end" bind:isOpen={seriesMenuOpen}>
         {#if isCloudReady && anyBackedUp && !isReadOnlyMode}
           <DropdownItem
             onclick={onDeleteFromCloud}
@@ -768,6 +773,16 @@
         >
           <FileLinesOutline class="me-2 h-5 w-5 flex-shrink-0" />
           <span class="flex-1 text-left">View Series Text</span>
+        </DropdownItem>
+        <DropdownItem
+          onclick={() => {
+            seriesMenuOpen = false;
+            void markReadBulk(allVolumes ?? []);
+          }}
+          class="flex w-full items-center text-gray-700 dark:text-gray-200"
+        >
+          <CheckCircleOutline class="me-2 h-5 w-5 flex-shrink-0" />
+          <span class="flex-1 text-left">Mark volumes as read…</span>
         </DropdownItem>
       </Dropdown>
     </div>
