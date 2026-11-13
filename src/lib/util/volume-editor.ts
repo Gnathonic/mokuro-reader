@@ -234,6 +234,12 @@ export function updateVolumeStats(
      */
     timeRead?: { from: number; to: number };
     completed?: boolean;
+    /**
+     * When the current pass was finished, as the user corrected it (#304). An
+     * edit of a date, not of the finish: it applies only to a record that is
+     * finished or already dated, and `completed` (above) still decides that.
+     */
+    completedAt?: string;
     series_uuid?: string;
     series_title?: string;
     volume_title?: string;
@@ -262,9 +268,18 @@ export function updateVolumeStats(
     // (chars as a linear re-estimate), and a rename on a device that missed a
     // sync must not outrank reading done elsewhere. A time edit is history
     // (an `adjust` event), not record state, so it needs no stamp.
+    const datable = currentVolume.completed || !!currentVolume.completedAt;
+    const completedAtEdit =
+      updates.completedAt !== undefined &&
+      datable &&
+      !Number.isNaN(Date.parse(updates.completedAt)) &&
+      updates.completedAt !== currentVolume.completedAt
+        ? updates.completedAt
+        : undefined;
     const statChanged =
       (updates.progress !== undefined && updates.progress !== currentVolume.progress) ||
-      (updates.completed !== undefined && updates.completed !== currentVolume.completed);
+      (updates.completed !== undefined && updates.completed !== currentVolume.completed) ||
+      completedAtEdit !== undefined;
 
     return {
       ...prev,
@@ -283,6 +298,10 @@ export function updateVolumeStats(
         ...(updates.completed === true &&
           !currentVolume.completedAt && { completedAt: new Date().toISOString() }),
         ...(updates.completed === false && { completedAt: undefined }),
+        ...(completedAtEdit !== undefined &&
+          updates.completed !== false && {
+            completedAt: completedAtEdit
+          }),
         ...(updates.series_uuid !== undefined && { series_uuid: updates.series_uuid }),
         ...(updates.series_title !== undefined && { series_title: updates.series_title }),
         ...(updates.volume_title !== undefined && { volume_title: updates.volume_title })
@@ -299,6 +318,49 @@ export function updateVolumeStats(
       chars_delta: charsDelta
     });
   }
+}
+
+/** A stored completion date as the editor's `<input type="date">` value (local day). */
+export function completionDateInputValue(completedAt: string | undefined): string {
+  if (!completedAt) return '';
+  const date = new Date(completedAt);
+  if (Number.isNaN(date.getTime())) return '';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+/**
+ * The completion date the editor's day stands for: that local day at the
+ * previous date's time of day (midday when there was none), never later than
+ * now. `null` for an empty or malformed value, or a day still to come — a
+ * finish cannot be dated in the future, and goal periods would ignore one.
+ */
+export function completedAtFromDateInput(
+  value: string,
+  previous: string | undefined,
+  now: number = Date.now()
+): string | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return null;
+  const [year, month, day] = match.slice(1).map(Number);
+  const base = previous ? new Date(previous) : null;
+  const keep = base && !Number.isNaN(base.getTime()) ? base : null;
+  const date = new Date(
+    year,
+    month - 1,
+    day,
+    keep ? keep.getHours() : 12,
+    keep ? keep.getMinutes() : 0,
+    keep ? keep.getSeconds() : 0,
+    keep ? keep.getMilliseconds() : 0
+  );
+  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) {
+    return null;
+  }
+  const today = new Date(now);
+  const startOfTomorrow = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
+  if (date.getTime() >= startOfTomorrow.getTime()) return null;
+  return new Date(Math.min(date.getTime(), now)).toISOString();
 }
 
 /**

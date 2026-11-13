@@ -107,8 +107,23 @@ export const lastReadTimes: Readable<ReadonlyMap<string, LastRead>> = readable<
  * (a look-up's restore, a cover toggle), never a read. Either way, another
  * device's adopted read that history does not hold yet counts (`remote`):
  * it IS reading, and its events may come only with the slow sync, or never.
+ *
+ * A FINISHED volume was last read when it was finished (#304). Paging back in
+ * it to check a scene keeps it finished (`updateProgress`), and must not move
+ * its series to the front of the catalog either. A re-read that finishes
+ * dates the volume again, and so moves it; one under way has dropped the flag.
  */
 export function lastReadTime(
+  volume: string,
+  record: { lastProgressUpdate?: string; completed?: boolean; completedAt?: string } | undefined,
+  times: ReadonlyMap<string, LastRead>
+): number {
+  const read = readTime(volume, record, times);
+  const finishedAt = record?.completed ? stampMs(record.completedAt) : 0;
+  return finishedAt > 0 ? Math.min(read, finishedAt) : read;
+}
+
+function readTime(
   volume: string,
   record: { lastProgressUpdate?: string } | undefined,
   times: ReadonlyMap<string, LastRead>
@@ -124,7 +139,10 @@ export function lastReadTime(
 /** Smart sort's recency: the newest last read over the series' volumes past page 1. */
 export function seriesLastRead(
   volumeIds: string[],
-  records: Record<string, { progress?: number; lastProgressUpdate?: string }>,
+  records: Record<
+    string,
+    { progress?: number; lastProgressUpdate?: string; completed?: boolean; completedAt?: string }
+  >,
   times: ReadonlyMap<string, LastRead>
 ): number {
   let newest = 0;

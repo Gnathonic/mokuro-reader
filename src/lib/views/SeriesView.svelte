@@ -188,6 +188,27 @@
     });
   });
 
+  // Server OCR on this page: the series' own queue file (queue file v2), read
+  // only while the page is mounted and the tab visible. Nothing else in the
+  // app reads queue state for the connected library.
+  $effect(() => {
+    const title = $routeParams.manga;
+    if (!browser || !title) return;
+    let stop: (() => void) | null = null;
+    let gone = false;
+    void import('$lib/catalog/server-ocr-queue')
+      .then((m) => m.followSeriesQueue(title))
+      .then((s) => {
+        if (gone) s();
+        else stop = s;
+      })
+      .catch((error) => console.debug('[OCR queue] series queue skipped:', error));
+    return () => {
+      gone = true;
+      stop?.();
+    };
+  });
+
   function toggleViewMode() {
     viewMode = viewMode === 'list' ? 'grid' : 'list';
   }
