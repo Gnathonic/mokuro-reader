@@ -12,7 +12,7 @@ npm run dev -- --port 5199 --strictPort   # dedicated port; NEVER bare 5173 (oth
 ```
 
 Browser: Playwright from `node_modules`, executablePath
-`~/.cache/ms-playwright/chromium-1208/chrome-linux64/chrome` (note `chrome-linux64`, not `chrome-linux`).
+`~/.cache/ms-playwright/chromium-1248/chrome-linux64/chrome` (note `chrome-linux64`, not `chrome-linux`).
 Headless is fine. Don't drive the user's Chrome (stale service worker, port collisions, hidden-window rAF freeze).
 
 ## Synthetic volume fixture
@@ -26,7 +26,7 @@ The import needs a `.mokuro` + matching `.cbz` (same basename):
 
 ## Import through the real UI
 
-1. Navbar icon cluster: `div.flex.gap-5 > button` — nth(2) is the upload icon → opens the Import modal (`<dialog>`).
+1. Navbar: `nav button` — nth(4) is the upload icon (0 = mobile menu toggle, 1 reading speed, 2 progress tracker, 3 settings) → opens the Import modal (`<dialog>`).
 2. **Gotcha:** `getByRole()` fails to match buttons inside the flowbite modal `<dialog>` — use CSS locators (`page.locator('dialog button', { hasText: ... })`) or `page.evaluate` with `textContent.trim()` matching.
 3. `waitForEvent('filechooser')` + click the `choose files` button, `setFiles([vol1.mokuro, vol1.cbz])`, then click the exact-text `Import` button.
 4. Wait for `text=GapTest` in the catalog, click series → volume → reader (`#/reader/<title>/<uuid>`).

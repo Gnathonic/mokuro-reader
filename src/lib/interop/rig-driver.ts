@@ -24,8 +24,10 @@ import {
 } from '$lib/catalog/placeholders';
 import {
   describePendingOcr,
+  pendingStatusFor,
   queueKeyForVolume,
   serverOcrQueueStatus,
+  seriesQueueStore,
   watchedKeyStore
 } from '$lib/catalog/server-ocr-pending';
 import { isMetadataOnly, isVolumeInstalled } from '$lib/catalog/volume-state';
@@ -75,6 +77,7 @@ import { waitFor } from '$lib/util/store-wait';
 import { generateDeterministicUUID } from '$lib/util/series-extraction';
 import { executeRenameSeries } from '$lib/util/series-rename';
 import { activeProviderStatus } from '$lib/util/sync/active-provider-status';
+import { setFolderTestHandle } from '$lib/util/sync/cloud-test-hooks';
 import { canDeleteSeriesOnServer } from '$lib/util/sync/metadata-permissions';
 import type { ProviderStatus, ProviderType } from '$lib/util/sync/provider-interface';
 import { providerManager } from '$lib/util/sync/provider-manager';
@@ -105,6 +108,15 @@ export const RIG_DRIVER_API_VERSION = 1;
  *   locally (`util/sync/cloud-spelling-adoption.ts`).
  * - `dedup`: duplicate-folder merges, stepping aside for a Bunko holder that
  *   merges itself (`util/sync/folder-deduplicator.ts`, `cloudBunkoMergesDuplicates`).
+ * - `series-queue-v2`: the OCR queue read per series, only on the series page
+ *   and for watched volumes (`<Series>/.mokuro-series-queue.json`, bunko
+ *   `docs/design/queue-file-v2.md`; `catalog/series-queue-loop.ts`,
+ *   `series-queue-watch.ts`), no root queue file on a cloud library, and a
+ *   finished volume pulled by listing its one series (`refreshSeriesFolder`).
+ * - `local-folder`: `connectFolder`, the Local Folder provider signed in to a
+ *   folder on the rig's disk that the rig drops on the page, in place of the
+ *   picker (`setFolderTestHandle`); a Bunko that keeps its library in that
+ *   folder is seen as on Drive (`filesystem-provider.ts` `readControlFile`).
  */
 export const RIG_CAPABILITIES: readonly string[] = [
   'history',
@@ -113,7 +125,9 @@ export const RIG_CAPABILITIES: readonly string[] = [
   'edit-layers-curated',
   'provenance',
   'case-merge-rename',
-  'dedup'
+  'dedup',
+  'series-queue-v2',
+  'local-folder'
 ];
 
 export interface RigVolume {
@@ -152,6 +166,79 @@ async function connect(type: ProviderType, credentials?: Record<string, unknown>
   if (type !== 'webdav') providerManager.updateStatus();
   const synced = await sync();
   return { status: providerStatus(), sync: synced };
+}
+
+/** A dropped item's File System Access handle: Chromium-only, not in lib.dom. */
+type DroppedItem = DataTransferItem & {
+  getAsFileSystemHandle?: () => Promise<FileSystemHandle | null>;
+};
+
+/** How long `connectFolder` waits for the rig's drop. */
+const FOLDER_DROP_WAIT_MS = 30_000;
+
+/**
+ * The next folder dropped anywhere on the page, as a File System Access
+ * handle (`DataTransferItem.getAsFileSystemHandle`). The listeners are on the
+ * window, in the capture phase, from the moment this is called until the
+ * drop (or `waitMs`): the drop goes to nothing else, so the app's own import
+ * never sees it. A drop of anything but one folder rejects.
+ */
+function nextDroppedFolder(waitMs: number): Promise<FileSystemDirectoryHandle> {
+  return new Promise((resolve, reject) => {
+    const take = (e: DragEvent) => {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    };
+    const done = () => {
+      clearTimeout(timer);
+      window.removeEventListener('dragenter', take, true);
+      window.removeEventListener('dragover', take, true);
+      window.removeEventListener('drop', drop, true);
+    };
+    const drop = (e: DragEvent) => {
+      take(e);
+      done();
+      // Asked during the event: its data is gone once the event ends.
+      const items = [...(e.dataTransfer?.items ?? [])] as DroppedItem[];
+      const handle = items.length === 1 ? items[0].getAsFileSystemHandle?.() : undefined;
+      if (!handle) {
+        reject(new Error(`connectFolder: the drop held ${items.length} items, not one folder`));
+        return;
+      }
+      handle.then((h) => {
+        if (h?.kind === 'directory') resolve(h as FileSystemDirectoryHandle);
+        else
+          reject(new Error(`connectFolder: the drop held a ${h?.kind ?? 'nothing'}, not a folder`));
+      }, reject);
+    };
+    const timer = setTimeout(() => {
+      done();
+      reject(new Error(`connectFolder: no folder was dropped within ${waitMs} ms`));
+    }, waitMs);
+    window.addEventListener('dragenter', take, true);
+    window.addEventListener('dragover', take, true);
+    window.addEventListener('drop', drop, true);
+  });
+}
+
+/**
+ * The cloud screen's Local Folder connect, on the folder the rig drops on
+ * the page next (CDP `Input.dispatchDragEvent` with the folder's path): the
+ * provider opens it in place of the picker, which a rig cannot answer. The
+ * drop listener is in place once this returns, so the rig calls it, drops,
+ * then awaits it. The folder must already let this origin write to it (the
+ * rig's browser profile allows it; a user's would ask).
+ */
+function connectFolder(): Promise<Awaited<ReturnType<typeof connect>>> {
+  const dropped = nextDroppedFolder(FOLDER_DROP_WAIT_MS);
+  return (async () => {
+    setFolderTestHandle(await dropped);
+    try {
+      return await connect('filesystem');
+    } finally {
+      setFolderTestHandle(null);
+    }
+  })();
 }
 
 /** A sync as on app start or after a connect: the listing, then the progress round trip. */
@@ -466,7 +553,12 @@ async function pendingOcr(volumeId: string) {
   const volume = (await db.volumes.get(volumeId)) ?? (await cardVolume(volumeId));
   if (!volume) throw new Error(`No volume ${volumeId} on this device`);
   const key = queueKeyForVolume(volume, get(watchedKeyStore));
-  return plain(describePendingOcr(get(serverOcrQueueStatus)[key], Date.now()));
+  return plain(
+    describePendingOcr(
+      pendingStatusFor(key, get(seriesQueueStore), get(serverOcrQueueStatus)),
+      Date.now()
+    )
+  );
 }
 
 /** The reader's page turn (paged mode), against the volume's primary pages. */
@@ -702,6 +794,8 @@ export function createRigDriver() {
       connect('mega', { email: o.email, password: o.password }),
     connectDrive: () => connect('google-drive'),
     connectOneDrive: () => connect('onedrive'),
+    // Capability `local-folder` (not one of the v1 methods every reader has).
+    connectFolder,
     logout: () => providerManager.logout(),
     sync,
     library,

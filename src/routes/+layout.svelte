@@ -36,6 +36,7 @@
   import { checkMigrationNeeded } from '$lib/catalog/migration';
   import { startThumbnailProcessing } from '$lib/catalog/db';
   import { retirePreviousOcrLayers } from '$lib/catalog/retired-previous-ocr';
+  import { fillSetAsideLayerVersions } from '$lib/catalog/set-aside-versions';
   import { historyDb } from '$lib/reading-history/history-db';
   import { loadHistoryTurns } from '$lib/reading-history/turns-store';
   import { getOrCreateDeviceId } from '$lib/reading-history/record';
@@ -190,9 +191,12 @@
 
     // v1.10.0's "Previous OCR" keepsakes nobody claimed (the OCR upgrade no
     // longer keeps one): removed once per browser, from metadata rows alone.
-    retirePreviousOcrLayers().catch((error) =>
-      console.debug('[layers] previous-ocr cleanup skipped:', error)
-    );
+    // Then the set-aside mains that are left learn the mokuro version their
+    // pages name, once per browser (they are named by it — `ocr-label.ts`).
+    retirePreviousOcrLayers()
+      .catch((error) => console.debug('[layers] previous-ocr cleanup skipped:', error))
+      .then(() => fillSetAsideLayerVersions())
+      .catch((error) => console.debug('[layers] set-aside version fill skipped:', error));
 
     // Prune expired cloud cover cache, fire-and-forget
     void import('$lib/catalog/cloud-covers')
@@ -204,20 +208,13 @@
       .catch((error) => {
         console.error('Failed to initialize providers:', error);
       })
-      // Server OCR queues (one poller per bunko server): one look now, then
-      // only while a volume of interest is pending. After the providers, so
-      // the connected server is known and can authenticate.
+      // Server OCR queues: the watched volumes' schedule and the cloud
+      // library's marker poll (series pages read their own series files).
+      // After the providers, so the connected server is known and can
+      // authenticate.
       .finally(() => {
         void import('$lib/catalog/server-ocr-queue')
-          .then((m) => {
-            // A cloud Bunko finished volumes: pick up their new sidecars
-            // (the listing's index refresh runs the OCR upgrade + layer pull).
-            m.setQueueRelistHook(async () => {
-              const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
-              await unifiedCloudManager.fetchAllCloudVolumes({ refreshIndexes: true });
-            });
-            return m.startServerOcrQueue();
-          })
+          .then((m) => m.startServerOcrQueue())
           .catch((error) => console.debug('[OCR queue] start skipped:', error));
       });
 

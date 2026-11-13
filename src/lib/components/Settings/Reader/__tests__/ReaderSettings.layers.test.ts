@@ -31,14 +31,20 @@ vi.mock('$lib/settings', async () => {
 });
 vi.mock('$lib/util', () => ({ isReader: () => true, showSnackbar: vi.fn() }));
 vi.mock('$lib/util/hash-router', () => ({ routeParams: readable({ volume: 'v1' }) }));
+const volumeRow = vi.hoisted(() => ({
+  current: { mokuro_version: '0.2.2' } as Record<string, unknown>
+}));
 vi.mock('$lib/catalog/db', () => ({
   db: {
     volume_ocr: { get: vi.fn(async () => undefined) },
-    volumes: { get: vi.fn(async () => ({ mokuro_version: '0.2.2' })) }
+    volumes: { get: vi.fn(async () => volumeRow.current) }
   }
 }));
-vi.mock('$lib/reader/edit/layer-list', () => ({
-  primaryLayerName: (v: string | undefined) => (v ? `mokuro ${v}` : 'mokuro'),
+vi.mock('$lib/reader/edit/layer-list', async () => ({
+  // The real naming (pure): the option must read what made the primary.
+  primaryLayerName: (
+    await vi.importActual<typeof import('$lib/reader/edit/ocr-label')>('$lib/reader/edit/ocr-label')
+  ).primaryLayerName,
   layerSummaries: () =>
     readable([
       { layer_id: 'original', name: 'Original', kind: 'original', updated_at: 'x' },
@@ -103,6 +109,32 @@ describe('ReaderSettings — OCR layers', () => {
     );
     expect(queryByLabelText('New layer')).toBeTruthy();
     expect(queryByLabelText('Rename layer')).toBeTruthy();
+  });
+
+  it('names a primary a server made by its parts, not by the mokuro version it writes', async () => {
+    volumeRow.current = {
+      mokuro_version: '0.2.5',
+      ocr_provenance: [
+        {
+          engine: {
+            id: 'hayai-nova',
+            parts: [
+              { role: 'recognizer', name: 'Hayai Nova', version: '2.5' },
+              { role: 'detector', name: 'PP-OCR Manga', version: '0.3' }
+            ]
+          },
+          digest: `v1:${'0'.repeat(64)}`
+        }
+      ]
+    };
+    try {
+      const { getByLabelText } = render(ReaderSettings);
+      const select = getByLabelText('OCR layer') as HTMLSelectElement;
+      await flushTasks();
+      expect(select.options[0].textContent?.trim()).toBe('Hayai Nova 2.5 · PP-OCR Manga 0.3');
+    } finally {
+      volumeRow.current = { mokuro_version: '0.2.2' };
+    }
   });
 
   it('a displayed TRANSLATION layer cannot be promoted: the button is disabled and says why', async () => {

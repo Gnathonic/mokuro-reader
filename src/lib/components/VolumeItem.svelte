@@ -24,7 +24,7 @@
   import { promptConfirmation, showSnackbar } from '$lib/util';
   import { promptExtraction } from '$lib/util/modals';
   import { zipManga } from '$lib/util/zip';
-  import { getCurrentPage, getProgressDisplay, isVolumeComplete } from '$lib/util/volume-helpers';
+  import { getCurrentPage, getProgressDisplay, isVolumeFinished } from '$lib/util/volume-helpers';
   import { ListgroupItem, Dropdown, DropdownItem, Badge, Button, Spinner } from 'flowbite-svelte';
   import {
     CheckCircleSolid,
@@ -63,8 +63,10 @@
     describePendingOcr,
     markVolumeShown,
     pendingOcrClock,
+    pendingStatusFor,
     queueKeyForVolume,
     serverOcrQueueStatus,
+    seriesQueueStore,
     watchedKeyStore
   } from '$lib/catalog/server-ocr-pending';
   import { uploadFailures } from '$lib/util/upload-failures';
@@ -118,11 +120,11 @@
   });
   let currentPage = $derived(getCurrentPage(volume.volume_uuid, $progress));
   let progressDisplay = $derived(getProgressDisplay(currentPage, volume.page_count));
-  // Completion reads the RAW page, not the display default of 1: "page 1 of 1" with no
-  // progress record at all is a volume nobody has opened (see isVolumeComplete).
-  let isComplete = $derived(
-    isVolumeComplete($progress?.[volume.volume_uuid] ?? 0, volume.page_count)
-  );
+  // The app's one completion rule (isVolumeFinished): the stored flag, or the RAW page —
+  // not the display default of 1, since "page 1 of 1" with no progress record at all is a
+  // volume nobody has opened. The flag matters here: a finished volume the reader paged
+  // back in keeps it (#304), and the row must not offer "Mark as read" for it.
+  let isComplete = $derived(isVolumeFinished(volume, volumeData));
 
   // Check if this is an image-only volume (no mokuro OCR data)
   let isImageOnly = $derived(volume.mokuro_version === '');
@@ -134,13 +136,17 @@
   // the one `volumesWithPlaceholders` decorated with the current listing, while
   // `liveVolume` is the raw stored row.
   let isNotInstalled = $derived(needsDownload(liveVolume));
-  // OCR the server is still making for this volume, from its server's queue
-  // file (`server-ocr-queue.ts`), one line per job. The shared clock re-derives
-  // only this text, about twice a minute.
+  // OCR the server is still making for this volume, one line per job: its
+  // series' slice of the v2 series queue file (`series-queue-loop.ts`), else
+  // the v1 root file (`server-ocr-queue.ts`). The status is its own derived,
+  // so a read that leaves this volume's jobs as they were (the same object)
+  // redraws nothing here; the shared clock re-derives only the text, about
+  // twice a minute.
   let serverOcrKey = $derived(queueKeyForVolume(liveVolume, $watchedKeyStore));
-  let serverOcr = $derived(
-    describePendingOcr($serverOcrQueueStatus[serverOcrKey], $pendingOcrClock)
+  let serverOcrStatus = $derived(
+    pendingStatusFor(serverOcrKey, $seriesQueueStore, $serverOcrQueueStatus)
   );
+  let serverOcr = $derived(describePendingOcr(serverOcrStatus, $pendingOcrClock));
   // A volume the catalog is showing is one the queue poller keeps an eye on.
   $effect(() => markVolumeShown(serverOcrKey));
   // The last cloud upload of this volume failed for good (persisted until one succeeds).
