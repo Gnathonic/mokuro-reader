@@ -44,12 +44,12 @@ jobs:
       # pass with every test skipped.
       REQUIRE_CLOUDSIM: '1'
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Check out Bunko (for cloudsim)
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: Gnathonic/mokuro-bunko
           # The default moves to `main` once 0.8 is merged there.
@@ -127,7 +127,7 @@ jobs:
       targets: ${{ steps.targets.outputs.targets }}
     steps:
       # The schedule's `git fetch` below reads this public repository anonymously.
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -186,7 +186,7 @@ jobs:
       BUNKO_REF: ${{ vars.BUNKO_REF || '0.8/remote-storage' }}
     steps:
       - name: Check out the reader
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ matrix.target.ref }}
           path: reader
@@ -225,7 +225,7 @@ jobs:
       # At the commit the nightly was built from, so the rig's runner and specs are
       # the ones its binaries were built with.
       - name: Check out Bunko
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: Gnathonic/mokuro-bunko
           ref: ${{ steps.nightly.outputs.sha || env.BUNKO_REF }}
