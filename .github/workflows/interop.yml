@@ -106,7 +106,7 @@ jobs:
 
       - name: Upload the cloudsim log
         if: failure()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: cloudsim-log
           path: |
@@ -280,7 +280,7 @@ jobs:
 
       - name: Upload the rig results
         if: always()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: rig-${{ matrix.target.name }}-${{ matrix.leg.name }}
           path: bunko/target/interop/rig/
