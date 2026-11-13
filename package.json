@@ -69,7 +69,7 @@
   "dependencies": {
     "@azure/msal-browser": "^5.27.0",
     "@types/gapi": "^0.0.47",
-    "@vercel/analytics": "^1.5.0",
+    "@vercel/analytics": "^2.0.1",
     "@zip.js/zip.js": "^2.24.0",
     "chart.js": "^4.6.1",
     "cropperjs": "^2.3.1",
