@@ -1222,6 +1222,73 @@ describe('WebDAVProvider.readControlFile()', () => {
     expect(await provider.readControlFile(MARKER)).toBeNull();
   });
 
+  describe('in a series folder ({ folder })', () => {
+    const SERIES_QUEUE = '.mokuro-series-queue.json';
+
+    it('GETs <base>/mokuro-reader/<folder>/<name>, each segment encoded on its own', async () => {
+      const provider = await plainConnected();
+      fetchMock.mockResolvedValueOnce(
+        new Response('{"v":2}', { status: 200, headers: { ETag: '"s1"' } })
+      );
+
+      const result = (await provider.readControlFile(SERIES_QUEUE, {
+        folder: 'Example Saga #2: 50% ?'
+      })) as any;
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const { url, init } = lastGet();
+      // `#`, `?`, `%` and `:` inside the folder name are its own characters,
+      // never a fragment, a query, an escape or a scheme — and the `/` between
+      // folder and file is the only separator.
+      expect(url).toBe(
+        'https://host/mokuro-reader/Example%20Saga%20%232%3A%2050%25%20%3F/.mokuro-series-queue.json'
+      );
+      expect(init.cache).toBe('no-store');
+      expect(result.nodes).toHaveLength(1);
+      expect(result.nodes[0]).toMatchObject({ id: url, etag: '"s1"' });
+    });
+
+    it('keeps versions per folder: one folder’s ETag is never sent for another', async () => {
+      const provider = await plainConnected();
+      fetchMock.mockResolvedValueOnce(
+        new Response('{"v":2}', { status: 200, headers: { ETag: '"a1"' } })
+      );
+      const a = (await provider.readControlFile(SERIES_QUEUE, { folder: 'Saga A' })) as any;
+
+      fetchMock.mockResolvedValueOnce(
+        new Response('{"v":2}', { status: 200, headers: { ETag: '"b1"' } })
+      );
+      const b = (await provider.readControlFile(SERIES_QUEUE, {
+        folder: 'Saga B',
+        ifNoneMatch: a.etag
+      })) as any;
+      expect((lastGet().init.headers as Record<string, string>)['If-None-Match']).toBeUndefined();
+      expect(b.nodes[0].etag).toBe('"b1"');
+
+      // Folder A still revalidates with its own tag.
+      fetchMock.mockResolvedValueOnce(new Response(null, { status: 304 }));
+      expect(
+        await provider.readControlFile(SERIES_QUEUE, { folder: 'Saga A', ifNoneMatch: a.etag })
+      ).toBe('not-modified');
+      expect(lastGet().url).toBe('https://host/mokuro-reader/Saga%20A/.mokuro-series-queue.json');
+      expect((lastGet().init.headers as Record<string, string>)['If-None-Match']).toBe('"a1"');
+    });
+
+    it('maps 404 to null (no such series, or a Bunko that serves no series files)', async () => {
+      const provider = await plainConnected();
+      fetchMock.mockResolvedValueOnce(new Response('', { status: 404 }));
+      expect(await provider.readControlFile(SERIES_QUEUE, { folder: 'Saga A' })).toBeNull();
+    });
+
+    it('answers null without a request for a folder that is no one series folder', async () => {
+      const provider = await plainConnected();
+      for (const folder of ['', '.', '..', 'Saga/..', '../mokuro-reader']) {
+        expect(await provider.readControlFile(SERIES_QUEUE, { folder })).toBeNull();
+      }
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+  });
+
   it('throws an auth ProviderError for 401', async () => {
     const provider = await plainConnected();
     fetchMock.mockResolvedValueOnce(new Response('', { status: 401 }));

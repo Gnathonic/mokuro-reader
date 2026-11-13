@@ -41,7 +41,7 @@ import {
   type FolderItem
 } from '../../folder-deduplicator';
 import { getCloudProviderCore } from '../../core/cloud-provider-core-registry';
-import { ControlNodeCache, readControlNodes } from '../../control-file-read';
+import { ControlNodeCache, controlReadKey, readControlNodes } from '../../control-file-read';
 import { withCloudBunkoStatus } from '$lib/catalog/cloud-bunko-marker';
 import { cloudTestCredentials } from '../../cloud-test-hooks';
 import {
@@ -427,9 +427,10 @@ class GoogleDriveProvider implements SyncProvider {
   }
 
   /**
-   * The control-file nodes named `name` under any root: ONE `files.list` per
-   * CONTROL_ROOTS_PER_QUERY roots (in practice one), so the query string and
-   * the request count stay bounded however many roots an account holds.
+   * The control-file nodes named `name` in any of the folders `rootIds` (the
+   * library roots, or every copy of one series folder): ONE `files.list` per
+   * CONTROL_ROOTS_PER_QUERY folders (in practice one), so the query string
+   * and the request count stay bounded however many copies an account holds.
    */
   private async listControlNodes(name: string, rootIds: string[]) {
     const files = [];
@@ -455,17 +456,47 @@ class GoogleDriveProvider implements SyncProvider {
   }
 
   /**
+   * A series folder's control file: the folders are every listed folder named
+   * like `folder` (the parents of its files in the files cache, no lookup),
+   * so a read is ONE `files.list` for the nodes plus one `alt=media` per node
+   * whose md5 + modifiedTime changed. A folder the listing does not hold has
+   * no file: null, with no request.
+   */
+  private async readSeriesControlFile(
+    name: string,
+    folder: string,
+    ifNoneMatch: string | undefined
+  ): Promise<ControlFileResult> {
+    const key = controlReadKey(name, folder);
+    const folderIds = folder === '' ? [] : driveFilesCache.getListedSeriesFolderIds(folder);
+    const listed = folderIds.length > 0 ? await this.listControlNodes(name, folderIds) : [];
+    return readControlNodes(
+      key,
+      listed,
+      (node) => driveApiClient.downloadFile(node.id),
+      this.controlCache,
+      ifNoneMatch
+    );
+  }
+
+  /**
    * Read a control file from the library root. Requests per read: one
    * `files.list` for the file (plus one for the root folder ids when the
    * cached set is older than 10 minutes, empty, or just yielded no file), and
    * one `alt=media` download per node whose md5 + modifiedTime changed.
    */
-  async readControlFile(name: string, opts?: { ifNoneMatch?: string }): Promise<ControlFileResult> {
+  async readControlFile(
+    name: string,
+    opts?: { ifNoneMatch?: string; folder?: string }
+  ): Promise<ControlFileResult> {
     if (!this.isAuthenticated()) {
       throw new ProviderError('Not authenticated', 'google-drive', 'NOT_AUTHENTICATED', true);
     }
     try {
       await this.ensureInitialized();
+      if (opts?.folder !== undefined) {
+        return await this.readSeriesControlFile(name, opts.folder, opts.ifNoneMatch);
+      }
       let rootIds = await this.resolveControlRoots(false);
       if (rootIds.length === 0) {
         this.controlCache.retain(name, []);

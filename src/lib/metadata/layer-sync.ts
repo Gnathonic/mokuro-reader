@@ -18,9 +18,16 @@ import {
   isCorrectionsLayerId,
   layerKindForId,
   layerNameForId,
-  servedEngineOf,
-  titleCasedLayerId
+  servedEngineOf
 } from '$lib/reader/edit/layers';
+import {
+  autoLayerName,
+  isAutoNamedLayer,
+  layerFileMaker,
+  layerNameOnWrite,
+  makerFieldsOnWrite,
+  type LayerFileMaker
+} from '$lib/reader/edit/ocr-label';
 import { alignLayerPages } from '$lib/reader/edit/layer-page-align';
 import {
   CURATED_LAYER_ID,
@@ -795,6 +802,8 @@ interface PulledLayerFile {
   pages: Page[];
   /** `servedEngineOf` the file: set only for a server's OCR output, never for pushed edits. */
   engine?: string;
+  /** The file's `ocr_engine.parts` and `version` (none for an edited file): name the row (`ocr-label.ts`). */
+  made?: LayerFileMaker;
 }
 
 /** Decode one layer file's bytes into DB-shaped pages; null when unusable (a warning only when it throws). */
@@ -809,7 +818,7 @@ async function decodeLayerBlob(
       if (!plain) return null;
       blob = plain;
     }
-    const json = JSON.parse(await blob.text()) as { pages?: unknown };
+    const json = JSON.parse(await blob.text()) as Record<string, unknown>;
     if (!isPageArray(json.pages)) return null;
     // DB shape: `cumulativeChars` is derived, never stored.
     const pages = json.pages.map((p) => {
@@ -817,7 +826,8 @@ async function decodeLayerBlob(
       return page;
     });
     const engine = servedEngineOf(json);
-    return { pages, ...(engine ? { engine } : {}) };
+    const made = layerFileMaker(json);
+    return { pages, ...(engine ? { engine } : {}), ...(made ? { made } : {}) };
   } catch (error) {
     console.warn(`[layer-sync] could not read '${label}':`, error);
     return null;
@@ -962,18 +972,20 @@ async function storePulledLayer(
   const kind = misfiled
     ? ('ocr' as const)
     : (existing?.kind ?? layerKindForId(layerId, pulled.engine));
+  // The engine the FILE names, not the layer's id: a server calls its
+  // generations what it likes (`hayai-nova-ctd` is still hayai-nova).
+  const engine = existing?.engine || (kind === 'ocr' ? (pulled.engine ?? layerId) : undefined);
+  // What made the file: the row's name follows it unless the user renamed it.
+  const made = makerFieldsOnWrite(existing, pulled.made);
   const layer: VolumeOcrLayer = {
     volume_uuid: row.volume_uuid,
     layer_id: layerId,
-    name: existing?.name ?? layerNameForId(layerId),
+    name: layerNameOnWrite(existing, { layer_id: layerId, ...(engine ? { engine } : {}), ...made }),
     kind,
-    // The engine the FILE names, not the layer's id: a server calls its
-    // generations what it likes (`hayai-nova-ctd` is still hayai-nova).
-    ...(existing?.engine
-      ? { engine: existing.engine }
-      : kind === 'ocr'
-        ? { engine: pulled.engine ?? layerId }
-        : {}),
+    ...(engine ? { engine } : {}),
+    ...made,
+    // A name the user typed stays theirs through every rewrite.
+    ...(existing?.named_by_user ? { named_by_user: true as const } : {}),
     created_at: existing?.created_at ?? now,
     updated_at: now,
     cloud: {
@@ -1099,11 +1111,11 @@ async function refileKnownEngineRows(local: VolumeOcrLayer[]): Promise<void> {
   for (const layer of local) {
     if (layer.kind !== 'edit' || layer.engine || !layer.cloud) continue;
     if (layerKindForId(layer.layer_id) !== 'ocr') continue;
-    const renamed = layer.name !== titleCasedLayerId(layer.layer_id);
+    const renamed = !isAutoNamedLayer(layer);
     const changes = {
       kind: 'ocr' as const,
       engine: layer.layer_id,
-      ...(renamed ? {} : { name: layerNameForId(layer.layer_id) })
+      ...(renamed ? {} : { name: autoLayerName({ ...layer, engine: layer.layer_id }) })
     };
     await updateLayerMeta(db, layer.volume_uuid, layer.layer_id, changes);
     Object.assign(layer, changes);
@@ -1989,6 +2001,7 @@ export async function publishCuratedLayer(volumeUuid: string): Promise<CuratedPu
       volume_uuid: volumeUuid,
       layer_id: CURATED_LAYER_ID,
       name: existing?.name ?? layerNameForId(CURATED_LAYER_ID),
+      ...(existing?.named_by_user ? { named_by_user: true as const } : {}),
       kind: 'edit',
       created_at: existing?.created_at ?? now,
       updated_at: now,
