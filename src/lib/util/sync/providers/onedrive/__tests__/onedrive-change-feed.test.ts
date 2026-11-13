@@ -501,3 +501,73 @@ describe('OneDrive change feed (Graph delta) on the listing cache', () => {
     expect(vi.mocked(readDelta)).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('OneDrive: a scoped series pull beside the change feed (queue file v2)', () => {
+  // `refreshSeriesFolder` lists one series folder (`listFolder`) and swaps
+  // its entries in (`replaceFolderEntries`) without moving the feed's
+  // position, so the next delta read carries those changes again.
+  const listed = (fileId: string, name: string, size: number, modifiedTime: string) => ({
+    provider: 'onedrive' as const,
+    fileId,
+    path: `Series A/${name}`,
+    modifiedTime,
+    size,
+    revision: `"c:{${fileId}},${modifiedTime === T0 ? 1 : 2}"`
+  });
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    provider.isAuthenticated.mockReturnValue(true);
+    now = Date.parse('2026-11-07T12:00:00Z');
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    onedriveCache.clear();
+    await loadLibrary();
+    now += FULL_LISTING_REUSE_MS + 1;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("what the pull installed comes back through the feed as an echo: 'unchanged', one entry each", async () => {
+    // A Bunko finished OCR in Series A: a new volume's sidecar.
+    expect(
+      await onedriveCache.replaceFolderEntries('Series A', async () => [
+        listed('v1', 'Volume 1.cbz', 100, T0),
+        listed('v1m', 'Volume 1.mokuro', 10, T0),
+        listed('v2m', 'Volume 2.mokuro', 7, T1)
+      ])
+    ).toBe(true);
+    expect(paths()).toContain('Series A/Volume 2.mokuro');
+    const before = onedriveCache.store.read();
+
+    feed([
+      ...ancestors,
+      folderItem('SA', 'Series A', 'R', 3),
+      fileItem('v2m', 'Volume 2.mokuro', 'SA')
+    ]);
+    expect(await onedriveCache.refreshFromChanges()).toBe('unchanged');
+    expect(onedriveCache.store.read()).toBe(before);
+    expect(paths().filter((p) => p === 'Series A/Volume 2.mokuro')).toHaveLength(1);
+    expect(provider.listLibrary).not.toHaveBeenCalled();
+  });
+
+  it('a feed batch applied while the folder is listed survives the replacement', async () => {
+    let answer!: (files: CloudFileMetadata[]) => void;
+    const pull = onedriveCache.replaceFolderEntries(
+      'Series A',
+      () => new Promise<CloudFileMetadata[]>((resolve) => (answer = resolve))
+    );
+    // Meanwhile the feed removes the sidecar the (older) folder listing still holds.
+    feed([...ancestors, folderItem('SA', 'Series A', 'R', 1), deletedItem('v1m', 'SA')]);
+    expect(await onedriveCache.refreshFromChanges()).toBe('applied');
+    answer([listed('v1', 'Volume 1.cbz', 100, T0), listed('v1m', 'Volume 1.mokuro', 10, T0)]);
+    expect(await pull).toBe(true);
+
+    expect(paths()).toContain('Series A/Volume 1.cbz');
+    expect(paths()).not.toContain('Series A/Volume 1.mokuro');
+    // Other folders are the feed's and the walk's, untouched by the pull.
+    expect(paths()).toContain('history/dev-a/2026-10.events');
+    expect(paths()).toContain('volume-data.json');
+  });
+});

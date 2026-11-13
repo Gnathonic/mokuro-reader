@@ -41,4 +41,24 @@ describe('change feeds by cache', () => {
       expect('beginHistoryPatch' in cache).toBe(false);
     }
   });
+
+  it("the scoped series pull reads a feed only where it never falls back to a whole-library listing: Drive's", async () => {
+    // `unifiedCloudManager.refreshSeriesFolder` (queue file v2) takes the feed
+    // when `changeFeedUsable()` says so, else lists the one folder. OneDrive's
+    // delta falls back to a walk (one request per folder) and MEGA's sc feed
+    // to a full tree load — the scoped pull must never cost either, and their
+    // one-folder listing is as cheap (MEGA's filters the tree: no request).
+    const { webdavCache } = await import('./providers/webdav/webdav-cache');
+    const { filesystemCache } = await import('./providers/filesystem/filesystem-cache');
+    const { onedriveCache } = await import('./providers/onedrive/onedrive-cache');
+    const { megaCache } = await import('./providers/mega/mega-cache');
+    const { driveFilesCache } = await import('./providers/google-drive/drive-files-cache');
+    expect(typeof driveFilesCache.changeFeedUsable).toBe('function');
+    for (const cache of [onedriveCache, megaCache, webdavCache, filesystemCache]) {
+      expect('changeFeedUsable' in cache).toBe(false);
+    }
+    for (const cache of [driveFilesCache, onedriveCache, megaCache, webdavCache, filesystemCache]) {
+      expect(typeof cache.replaceFolderEntries).toBe('function');
+    }
+  });
 });

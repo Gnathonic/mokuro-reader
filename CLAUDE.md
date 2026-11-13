@@ -269,7 +269,8 @@ walked there — writers still are, under their TTL. A MEGA upload whose new nod
 size check deletes that node (best-effort): left as the newest duplicate it would abort
 every later root-file read. WebDAV and Local Folder have no change
 token: their sync lists `history/` alone, throttled (`history-listing-refresh.ts`), and
-series folders wait for the next full listing.
+series folders wait for the next full listing (or a finished OCR job's scoped pull,
+`refreshSeriesFolder`).
 
 **Provider status is published, never polled.** The navbar's reconnect banner, the cloud
 screen and every read-only gate read `providerManager.status`, which moves only when
@@ -1118,7 +1119,9 @@ min`); `released` at once; rank epoch desc, claimed_at asc, instance_id asc.
   neither `series.json` nor a finished volume's sidecar moved.
   `unifiedCloudManager.refreshSeriesFolder(S)` lists ONLY S (Drive: the
   change feed when `changeFeedUsable()`, else `listFolder`; others
-  `listFolder`) and swaps only the cached entries under `S/`
+  `listFolder` — OneDrive's delta and MEGA's sc feed declare no
+  `changeFeedUsable`, since their fallbacks walk the library / reload the
+  tree) and swaps only the cached entries under `S/`
   (`CloudCache.replaceFolderEntries`, which replays writes made meanwhile,
   `CoalescedCacheStore.beginPartialListing`), then
   `refreshSeriesIndexForSeries(S)`; then the upgrade pass and

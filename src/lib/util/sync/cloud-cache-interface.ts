@@ -190,7 +190,13 @@ export interface CloudCache<T = any> {
 
   /**
    * Would {@link refreshFromChanges} answer from the feed rather than list
-   * the whole account? OPTIONAL, with the feed: absent = no feed to use.
+   * the whole account? OPTIONAL, with the feed: absent = the feed is not
+   * offered to a caller that needs only ONE folder current
+   * (`unifiedCloudManager.refreshSeriesFolder`), which lists that folder
+   * instead. Google Drive has it. OneDrive's delta and MEGA's sc stream
+   * deliberately do not: their fallback is a walk of the library or a full
+   * tree load, and their one-folder listing costs as little (MEGA's filters
+   * the session's tree: no request).
    */
   changeFeedUsable?(): boolean;
 
