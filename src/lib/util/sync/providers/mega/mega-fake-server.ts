@@ -60,6 +60,10 @@ interface Poll {
   sid: string;
   seq: number;
   settled: boolean;
+  /** On a dead connection: never answered (an abort still ends it). */
+  hung?: boolean;
+  /** A wait request (`w`): answered, empty, by the next batch of any number. */
+  wait?: boolean;
   resolve: (body: unknown) => void;
   reject: (error: Error) => void;
 }
@@ -305,6 +309,28 @@ export class FakeMegaServer {
    */
   rejectPollsOf: string | null = null;
 
+  /**
+   * Answer a poll that is caught up the way real MEGA does: with a wait URL
+   * (`{w}`) at once, held until the next batch; megajs then pulls again.
+   * Off: the poll itself stays open until a batch exists.
+   */
+  waitWhenCaughtUp = false;
+
+  /** /sc polls (not waits) every session has opened, in arrival order. */
+  scPolls = 0;
+
+  /**
+   * Leave a session's open sc requests (polls and waits) on a dead
+   * connection: never answered, never failed — megajs's fetch has no timeout,
+   * so they stay pending until aborted. With `newOnesToo` every later request
+   * of that session hangs on arrival as well; `null` ends that.
+   */
+  hangPolls(sid = CLIENT_SID, { newOnesToo = false }: { newOnesToo?: boolean } = {}): void {
+    for (const poll of this.polls) if (!poll.settled && poll.sid === sid) poll.hung = true;
+    if (newOnesToo) this.hangNewPollsOf = sid;
+  }
+  hangNewPollsOf: string | null = null;
+
   /** Fail a session's open sc long-polls the way a dropped connection does. */
   failPolls(sid = CLIENT_SID): void {
     for (const poll of this.polls) {
@@ -350,6 +376,7 @@ export class FakeMegaServer {
     const path = parsed.pathname;
     if (path === '/cs') return this.handleCs(parsed, opts);
     if (path === '/sc') return this.handleSc(parsed, opts);
+    if (path.startsWith('/wait/')) return this.handleWait(parsed, opts);
     if (path.startsWith('/ul/')) return this.handleUploadChunk(path, opts);
     if (path.startsWith('/dl/')) return this.handleDownload(path);
     throw new Error(`FakeMegaServer: unexpected URL ${url}`);
@@ -373,9 +400,24 @@ export class FakeMegaServer {
   private handleSc(url: URL, opts: any): Promise<any> {
     const sid = url.searchParams.get('sid') ?? '';
     const seq = Number(String(url.searchParams.get('sn')).replace(/^sn/, ''));
+    this.scPolls++;
     if (sid === this.rejectPollsOf) return Promise.reject(new TypeError('Failed to fetch'));
+    return this.openPoll({ sid, seq }, opts);
+  }
+
+  /** megajs's wait on the URL a caught-up poll answered with (`waitWhenCaughtUp`). */
+  private handleWait(url: URL, opts: any): Promise<any> {
+    const [, , sid, seq] = url.pathname.split('/');
+    return this.openPoll({ sid, seq: Number(seq), wait: true }, opts);
+  }
+
+  private openPoll(
+    { sid, seq, wait = false }: { sid: string; seq: number; wait?: boolean },
+    opts: any
+  ): Promise<any> {
     return new Promise((resolve, reject) => {
-      const poll: Poll = { sid, seq, settled: false, resolve, reject };
+      const hung = sid === this.hangNewPollsOf;
+      const poll: Poll = { sid, seq, settled: false, hung, wait, resolve, reject };
       this.polls.push(poll);
       opts.signal?.addEventListener?.('abort', () => {
         if (poll.settled) return;
@@ -387,11 +429,16 @@ export class FakeMegaServer {
   }
 
   private answerPoll(poll: Poll): void {
-    if (poll.settled) return;
+    if (poll.settled || poll.hung) return;
     const next = this.batches.find((b) => b.seq > poll.seq);
-    if (!next) return;
+    if (!next) {
+      if (!this.waitWhenCaughtUp || poll.wait) return;
+      poll.settled = true;
+      poll.resolve(response({ w: `${GATEWAY}wait/${poll.sid}/${poll.seq}` }));
+      return;
+    }
     poll.settled = true;
-    poll.resolve(response({ a: next.packets, sn: `sn${next.seq}` }));
+    poll.resolve(response(poll.wait ? 0 : { a: next.packets, sn: `sn${next.seq}` }));
   }
 
   private publish(packets: any[]): void {

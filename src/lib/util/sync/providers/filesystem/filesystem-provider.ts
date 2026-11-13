@@ -11,6 +11,7 @@ import type {
   ControlFileResult
 } from '../../provider-interface';
 import { ProviderError } from '../../provider-interface';
+import { confirmUploadReceipt } from '../../core/upload-receipt';
 import {
   ControlNodeCache,
   controlReadKey,
@@ -365,14 +366,14 @@ export class FilesystemProvider implements SyncProvider {
     try {
       this.requireRoot();
       const fileHandle = await this.resolveFileHandle(path, { create: true });
+      const payload =
+        blob instanceof Blob
+          ? blob
+          : blob instanceof ArrayBuffer
+            ? new Blob([blob])
+            : new Blob([new Uint8Array(blob).buffer as ArrayBuffer]);
       const writable = await fileHandle.createWritable();
       try {
-        const payload =
-          blob instanceof Blob
-            ? blob
-            : blob instanceof ArrayBuffer
-              ? new Blob([blob])
-              : new Blob([new Uint8Array(blob).buffer as ArrayBuffer]);
         await writable.write(payload);
         onProgress?.(payload.size, payload.size);
       } finally {
@@ -392,7 +393,12 @@ export class FilesystemProvider implements SyncProvider {
       } catch {
         // Stat failed: return no mtime and let the cache entry stay provisional.
       }
-      return { fileId: path, modifiedTime, size };
+      // Confirmed by the written file's own size (#288).
+      return confirmUploadReceipt(
+        { fileId: path, modifiedTime, size },
+        payload.size,
+        'Local Folder'
+      );
     } catch (error) {
       throw this.toProviderError(error, 'Upload', path);
     }

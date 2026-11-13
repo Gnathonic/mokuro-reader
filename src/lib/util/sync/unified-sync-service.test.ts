@@ -94,6 +94,12 @@ vi.mock('$lib/reading-history/history-sync', () => ({
     s.historySync ?? !s.serverCompilesMetadata
 }));
 
+// This device's history id, for the history listing's own-entry rule.
+vi.mock('$lib/reading-history/record', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('$lib/reading-history/record')>()),
+  getOrCreateDeviceId: vi.fn(async () => 'dev-own')
+}));
+
 vi.mock('$lib/positions/positions-sync', () => ({
   syncPositions: vi.fn(async () => ({ adopted: [], deferred: [], uploaded: false }))
 }));
@@ -1650,6 +1656,115 @@ describe('reading history rides every sync', () => {
     ).resolves.toBeUndefined();
   });
 
+  describe('without a change feed, history/ is listed again when due (#288)', () => {
+    const seg = (device: string, month: string) => ({
+      provider: 'webdav' as const,
+      fileId: `/mokuro-reader/history/${device}/${month}.events`,
+      path: `history/${device}/${month}.events`,
+      modifiedTime: '2026-11-01T00:00:00.000Z',
+      size: 10
+    });
+
+    afterEach(async () => {
+      const { _setHistoryRefreshIntervalForTests } = await import('./history-listing-refresh');
+      _setHistoryRefreshIntervalForTests();
+    });
+
+    /** A WebDAV-shaped listing cache: real store, real history patch, an old full listing. */
+    async function webdavLike(files: CloudFileMetadata[]) {
+      const { CoalescedCacheStore } = await import('./coalesced-cache-store');
+      const { beginHistoryPatch } = await import('./listing-mutations');
+      const store = new CoalescedCacheStore<CloudFileMetadata[]>();
+      store.set(new Map([['history', files]]));
+      const fetch = vi.fn();
+      return {
+        fetch,
+        isLoaded: () => true,
+        isFetching: () => false,
+        getAll: () => [],
+        get: () => null,
+        getAllFiles: () => [...store.read().values()].flat(),
+        add: vi.fn(),
+        beginHistoryPatch: () => beginHistoryPatch(store, Date.now() - 10 * 60_000)
+      };
+    }
+
+    it("another device's new month reaches the history pass, once per interval, no full listing", async () => {
+      const { syncHistory } = await import('$lib/reading-history/history-sync');
+      vi.mocked(syncHistory).mockClear();
+      const cache = await webdavLike([seg('dev-a', '2026-10'), seg('dev-own', '2026-11')]);
+      getCache.mockReturnValue(cache);
+      const listFolder = vi.fn(async () => [
+        seg('dev-a', '2026-10'),
+        seg('dev-a', '2026-11'),
+        seg('dev-own', '2026-11')
+      ]);
+      const provider = {
+        type: 'webdav',
+        name: 'WebDAV',
+        listFolder,
+        getStatus: () => ({}),
+        isAuthenticated: () => true
+      } as unknown as SyncProvider;
+
+      await svc.syncReadingHistory(provider, { silent: true });
+      await svc.syncReadingHistory(provider, { silent: true });
+
+      expect(listFolder).toHaveBeenCalledExactlyOnceWith('history');
+      expect(cache.fetch).not.toHaveBeenCalled();
+      const passed = vi.mocked(syncHistory).mock.calls.map((c) => c[1].map((f) => f.path).sort());
+      expect(passed).toEqual([
+        [
+          'history/dev-a/2026-10.events',
+          'history/dev-a/2026-11.events',
+          'history/dev-own/2026-11.events'
+        ],
+        [
+          'history/dev-a/2026-10.events',
+          'history/dev-a/2026-11.events',
+          'history/dev-own/2026-11.events'
+        ]
+      ]);
+    });
+
+    it('a failed history listing still runs the pass on the cached listing', async () => {
+      const { syncHistory } = await import('$lib/reading-history/history-sync');
+      vi.mocked(syncHistory).mockClear();
+      getCache.mockReturnValue(await webdavLike([seg('dev-a', '2026-10')]));
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const provider = {
+        type: 'webdav',
+        listFolder: vi.fn(async () => {
+          throw new Error('503');
+        }),
+        getStatus: () => ({})
+      } as unknown as SyncProvider;
+
+      await svc.syncReadingHistory(provider, {});
+
+      expect(vi.mocked(syncHistory).mock.calls[0][1].map((f) => f.path)).toEqual([
+        'history/dev-a/2026-10.events'
+      ]);
+      warn.mockRestore();
+    });
+
+    it('a cache without a history patch (Drive, OneDrive, MEGA) is never listed', async () => {
+      const listFolder = vi.fn(async () => []);
+      getCache.mockReturnValue({
+        isLoaded: () => true,
+        isFetching: () => false,
+        getAllFiles: () => [seg('dev-a', '2026-10')]
+      });
+      for (const type of ['google-drive', 'onedrive', 'mega']) {
+        await svc.syncReadingHistory(
+          { type, listFolder, getStatus: () => ({}) } as unknown as SyncProvider,
+          {}
+        );
+      }
+      expect(listFolder).not.toHaveBeenCalled();
+    });
+  });
+
   it('skips while the listing has not loaded', async () => {
     const { syncHistory } = await import('$lib/reading-history/history-sync');
     vi.mocked(syncHistory).mockClear();
@@ -2265,7 +2380,7 @@ describe('positions.json rides every sync', () => {
   });
 });
 
-describe('the Google Drive change feed opens every sync (#288)', () => {
+describe('a listing cache with a change feed opens every sync (#288)', () => {
   const STEPS = [
     'syncVolumeData',
     'syncPositionsFile',
@@ -2285,39 +2400,45 @@ describe('the Google Drive change feed opens every sync (#288)', () => {
 
   afterEach(() => getCache.mockReset());
 
-  it('on Google Drive it runs FIRST, before anything reads the listing', async () => {
-    const order: string[] = [];
-    const refreshFromChanges = vi.fn(async () => {
-      order.push('feed');
-      return 'unchanged';
-    });
-    getCache.mockReturnValue({ refreshFromChanges });
-    const spies = stubSteps(order);
-    try {
-      expect(await svc.runProviderSync(providerOf('google-drive'), {})).toMatchObject({
-        success: true
+  it.each(['google-drive', 'onedrive'])(
+    'on %s it runs FIRST, before anything reads the listing',
+    async (type) => {
+      const order: string[] = [];
+      const refreshFromChanges = vi.fn(async (_options?: { feedOnly?: boolean }) => {
+        order.push('feed');
+        return 'unchanged';
       });
-      expect(order).toEqual(['feed', ...STEPS]);
-      expect(getCache).toHaveBeenCalledWith('google-drive');
-      expect(refreshFromChanges).toHaveBeenCalledTimes(1);
-    } finally {
-      spies.forEach((spy) => spy.mockRestore());
+      getCache.mockReturnValue({ refreshFromChanges });
+      const spies = stubSteps(order);
+      try {
+        expect(await svc.runProviderSync(providerOf(type), {})).toMatchObject({
+          success: true
+        });
+        expect(order).toEqual(['feed', ...STEPS]);
+        expect(getCache).toHaveBeenCalledWith(type);
+        expect(refreshFromChanges).toHaveBeenCalledTimes(1);
+        // The sync needs a few root files, never a walk in a refused feed's place.
+        expect(refreshFromChanges).toHaveBeenCalledWith({ feedOnly: true });
+      } finally {
+        spies.forEach((spy) => spy.mockRestore());
+      }
     }
-  });
+  );
 
-  it.each(['webdav', 'mega', 'onedrive', 'filesystem'])('never on %s', async (type) => {
-    const order: string[] = [];
-    const refreshFromChanges = vi.fn(async () => 'unchanged');
-    getCache.mockReturnValue({ refreshFromChanges });
-    const spies = stubSteps(order);
-    try {
-      expect(await svc.runProviderSync(providerOf(type), {})).toMatchObject({ success: true });
-      expect(refreshFromChanges).not.toHaveBeenCalled();
-      expect(order).toEqual(STEPS);
-    } finally {
-      spies.forEach((spy) => spy.mockRestore());
+  it.each(['webdav', 'mega', 'filesystem'])(
+    'a cache without a feed (%s) syncs without one',
+    async (type) => {
+      const order: string[] = [];
+      getCache.mockReturnValue({ isLoaded: () => true });
+      const spies = stubSteps(order);
+      try {
+        expect(await svc.runProviderSync(providerOf(type), {})).toMatchObject({ success: true });
+        expect(order).toEqual(STEPS);
+      } finally {
+        spies.forEach((spy) => spy.mockRestore());
+      }
     }
-  });
+  );
 
   it('a feed that fails on auth fails the sync before any step runs', async () => {
     const order: string[] = [];
@@ -2329,6 +2450,54 @@ describe('the Google Drive change feed opens every sync (#288)', () => {
     const spies = stubSteps(order);
     try {
       expect(await svc.runProviderSync(providerOf('google-drive'), {})).toMatchObject({
+        success: false
+      });
+      expect(order).toEqual([]);
+    } finally {
+      spies.forEach((spy) => spy.mockRestore());
+    }
+  });
+
+  it('a feed whose fallback walk fails (not auth) is logged; every step still runs', async () => {
+    const order: string[] = [];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    getCache.mockReturnValue({
+      refreshFromChanges: vi.fn(async () => {
+        throw new ProviderError(
+          'Graph 429 Too Many Requests',
+          'onedrive',
+          'GRAPH_429',
+          false,
+          true
+        );
+      })
+    });
+    const spies = stubSteps(order);
+    try {
+      expect(await svc.runProviderSync(providerOf('onedrive'), {})).toMatchObject({
+        success: true
+      });
+      expect(order).toEqual(STEPS);
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      spies.forEach((spy) => spy.mockRestore());
+      warn.mockRestore();
+    }
+  });
+
+  it.each([
+    ['a ProviderError auth failure', new ProviderError('Graph 401', 'onedrive', 'GRAPH_401', true)],
+    ["Drive's kind: 'auth'", Object.assign(new Error('Authentication error'), { kind: 'auth' })]
+  ])('%s still fails the sync before any step runs', async (_what, failure) => {
+    const order: string[] = [];
+    getCache.mockReturnValue({
+      refreshFromChanges: vi.fn(async () => {
+        throw failure;
+      })
+    });
+    const spies = stubSteps(order);
+    try {
+      expect(await svc.runProviderSync(providerOf('onedrive'), {})).toMatchObject({
         success: false
       });
       expect(order).toEqual([]);

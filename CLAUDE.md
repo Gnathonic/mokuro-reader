@@ -240,11 +240,37 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
   no feed request (no position either) until the next login / cache clear; a 400 on
   `changes.list` is a refused POSITION only (the full fetch takes a fresh one). The feed
   never toggles `fetching`/`loaded`. It runs at the top of
-  `runProviderSync` (Drive only, before volume data), and metadata writers'
+  `runProviderSync` (every cache that has one, before volume data), and metadata writers'
   `ensureFreshCloudListing` takes it via `fetchAllCloudVolumes({ fromChangeFeed: true })`
   once the cache is loaded; the backup run's single post-run listing stays. Unverified
   without a real account: whether `drive.file` scope shows another device's writes and
   folder moves in the feed — the full-fetch fallback covers any feed failure.
+
+**Every provider: receipts and change feeds** (#288). An upload is confirmed by its own
+response: a success status, and the stored size the response reports must equal the bytes
+sent (`confirmUploadReceipt`, `core/upload-receipt.ts` — Drive `fields=size`, OneDrive's
+finished item, the new MEGA node, Local Folder's `getFile()`; a WebDAV PUT reports none,
+bunko's `X-Mokuro-Size` is checked in `webdav-upload.ts`). Content hashes are not compared
+(no streaming WebCrypto digest; TLS + bunko's `Content-Digest` cover transit). A WebDAV PUT
+without an `ETag` is never followed by a stat (`webdav-provider.ts`: another device's write
+in between would be bound to our bytes). Other devices' writes reach the listing through the
+cache's `refreshFromChanges`, gated on the method alone: Drive `changes.list`, OneDrive Graph
+root `delta` (`onedrive-delta.ts`), MEGA the sc push stream megajs already applies to the
+session's tree (`megaCache.refreshFromChanges`: no request while the poll runs and answered
+within `SC_QUIET_MS` — `treeVersion()` says whether the listing is behind. megajs puts no
+timeout on the long-poll, so one hung on a dead connection would freeze the tree without
+ever erroring: a quiet poll is PROBED by restarting it from its last sequence number
+(`confirmServerChanges`, one sc request; a live server answers at once). A dead poll, an
+unanswered probe, or a tree loaded over `CHANGE_FEED_MAX_AGE_MS` ago → a full tree load,
+and a reject if that load did not bring the poll back or no listing was installed;
+`statFile` vouches only while the poll is trusted). The sync's opening read passes
+`feedOnly`: a provider that refused its feed for the session (OneDrive 403/501) is not
+walked there — writers still are, under their TTL. A MEGA upload whose new node fails the
+size check deletes that node (best-effort): left as the newest duplicate it would abort
+every later root-file read. WebDAV and Local Folder have no change
+token: their sync lists `history/` alone, throttled (`history-listing-refresh.ts`), and
+series folders wait for the next full listing (or a finished OCR job's scoped pull,
+`refreshSeriesFolder`).
 
 **Provider status is published, never polled.** The navbar's reconnect banner, the cloud
 screen and every read-only gate read `providerManager.status`, which moves only when
@@ -1093,7 +1119,9 @@ min`); `released` at once; rank epoch desc, claimed_at asc, instance_id asc.
   neither `series.json` nor a finished volume's sidecar moved.
   `unifiedCloudManager.refreshSeriesFolder(S)` lists ONLY S (Drive: the
   change feed when `changeFeedUsable()`, else `listFolder`; others
-  `listFolder`) and swaps only the cached entries under `S/`
+  `listFolder` — OneDrive's delta and MEGA's sc feed declare no
+  `changeFeedUsable`, since their fallbacks walk the library / reload the
+  tree) and swaps only the cached entries under `S/`
   (`CloudCache.replaceFolderEntries`, which replays writes made meanwhile,
   `CoalescedCacheStore.beginPartialListing`), then
   `refreshSeriesIndexForSeries(S)`; then the upgrade pass and

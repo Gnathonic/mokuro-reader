@@ -133,6 +133,54 @@ describe.skipIf(!cloudsimForSuite())('OneDrive provider against cloudsim', () =>
     expect(files.some((f) => f.path === 'mokuro-reader/Series B/Vol 1.mokuro')).toBe(true);
   });
 
+  it('uploads resolve their folders once: no getItemByPath after the first upload into each', async () => {
+    const { OneDriveProvider } =
+      await import('$lib/util/sync/providers/onedrive/onedrive-provider');
+    // A fresh session's provider: nothing remembered yet.
+    const fresh = new OneDriveProvider();
+    const lookups = async () =>
+      (await sim.log()).filter(
+        (e) => e.method === 'GET' && e.class === 'metadata' && e.path.includes('/root:/')
+      ).length;
+    await sim.clearLog();
+    await fresh.uploadFile('positions.json', new Blob(['{"v":1}']));
+    await fresh.uploadFile('history/dev-latch/2026-11.events', new Blob(['a\n']));
+    const first = await lookups();
+    expect(first).toBeGreaterThan(0);
+
+    await fresh.uploadFile('positions.json', new Blob(['{"v":2}']));
+    await fresh.uploadFile('history/dev-latch/2026-11.events', new Blob(['a\nb\n']));
+    await fresh.uploadFile('history/dev-latch/2026-12.events', new Blob(['c\n']));
+    expect(await lookups()).toBe(first);
+    const files = await sim.files('microsoft');
+    expect(files.find((f) => f.path === 'mokuro-reader/positions.json')?.size).toBe(7);
+    expect(files.some((f) => f.path === 'mokuro-reader/history/dev-latch/2026-12.events')).toBe(
+      true
+    );
+  });
+
+  it('a remembered folder another device deleted is re-created by the next upload', async () => {
+    const { OneDriveProvider } =
+      await import('$lib/util/sync/providers/onedrive/onedrive-provider');
+    const fresh = new OneDriveProvider();
+    await fresh.uploadFile('Series Gone/Vol 1.mokuro', new Blob(['{}']));
+    const folder = (await sim.tree('microsoft')).find((n) => n.name === 'Series Gone');
+    // Another device deletes the folder.
+    const gone = await fetch(`${sim.bases().graph}/me/drive/items/${folder!.id}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${accessToken}` }
+    });
+    expect(gone.status).toBe(204);
+
+    await sim.clearLog();
+    await fresh.uploadFile('Series Gone/Vol 2.mokuro', new Blob(['{"v":2}']));
+    // The remembered folder's session 404s once; the folders are resolved again.
+    const sessions = (await sim.log()).filter((e) => e.path.endsWith(':/createUploadSession'));
+    expect(sessions.map((e) => e.status)).toEqual([404, 200]);
+    const files = await sim.files('microsoft');
+    expect(files.some((f) => f.path === 'mokuro-reader/Series Gone/Vol 2.mokuro')).toBe(true);
+  });
+
   it('reads a control file once, then answers not-modified without a download', async () => {
     await sim.clearLog();
     const first = await provider.readControlFile('catalog.json');

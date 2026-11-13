@@ -9,6 +9,10 @@ import { gotoApp } from './helpers/app';
  * Device A records page views and syncs: its month goes up as
  * `history/<A>/<YYYY-MM>.events` beside `device.json`. Device B syncs and holds
  * A's events, identical, under A's device id. Syncing again moves nothing.
+ *
+ * Mid-session (no reload, no full listing), B picks up A's NEW month through
+ * the throttled `history/` listing (`history-listing-refresh.ts`): one
+ * PROPFIND of that folder per interval, never a walk of the library.
  */
 
 const STUB = 'http://stub.test';
@@ -23,7 +27,7 @@ interface StubEntry {
 /** A tiny in-memory WebDAV server behind `page.route` that logs every request. */
 class WebDavStub {
   files = new Map<string, StubEntry>();
-  log: Array<{ method: string; path: string }> = [];
+  log: Array<{ method: string; path: string; depth?: string }> = [];
 
   constructor() {
     this.dir('/');
@@ -96,7 +100,7 @@ class WebDavStub {
         Allow: 'OPTIONS, GET, HEAD, PUT, DELETE, MKCOL, MOVE, COPY, PROPFIND'
       });
     }
-    this.log.push({ method, path });
+    this.log.push({ method, path, depth: request.headers()['depth'] });
     const entry = this.files.get(path);
     switch (method) {
       case 'PROPFIND': {
@@ -164,6 +168,42 @@ async function deviceId(page: Page): Promise<string> {
     const { getOrCreateDeviceId } = await import('/src/lib/reading-history/record.ts');
     return getOrCreateDeviceId(historyDb());
   });
+}
+
+/** Record page views on `page` at the given times. */
+async function record(page: Page, volume: string, times: number[]) {
+  await page.evaluate(
+    async ({ volume, times }) => {
+      const { recordEvent } = await import('/src/lib/reading-history/record.ts');
+      for (const [i, t] of times.entries()) {
+        await recordEvent(
+          {
+            kind: 'page',
+            volume,
+            first_page: i + 1,
+            last_page: i + 1,
+            page_chars: [10],
+            chars_before: i * 10,
+            dwell_ms: 4000,
+            layout: 'single',
+            orientation: 'portrait',
+            viewport: { w: 400, h: 800 }
+          },
+          t
+        );
+      }
+    },
+    { volume, times }
+  );
+}
+
+/** The sync a reading burst triggers mid-session: no full listing first. */
+async function sessionSync(page: Page) {
+  const result = await page.evaluate(async () => {
+    const { unifiedCloudManager } = await import('/src/lib/util/sync/unified-cloud-manager.ts');
+    return unifiedCloudManager.syncProgress({ silent: true });
+  });
+  expect(result.succeeded).toBe(1);
 }
 
 async function events(page: Page) {
@@ -236,4 +276,50 @@ test('two devices exchange reading history through WebDAV', async ({ browser }) 
   await sync(b);
   expect(historyPuts(stub)).toBe(putsBefore);
   expect((await events(b)).filter((e) => e.device === idA)).toHaveLength(3);
+});
+
+test("another device's new month arrives mid-session from one history/ PROPFIND", async ({
+  browser
+}) => {
+  const stub = new WebDavStub();
+  const a = await device(browser, stub);
+  const idA = await deviceId(a);
+  await record(a, 'e2e-history-volume', [Date.UTC(2026, 9, 3, 12, 1)]);
+  await sync(a);
+
+  const b = await device(browser, stub);
+  await sync(b); // B's one full listing: it holds A's October
+  expect((await events(b)).filter((e) => e.device === idA)).toHaveLength(1);
+
+  // A reads into a new month and syncs it up.
+  await record(a, 'e2e-history-volume', [Date.UTC(2026, 10, 5, 9, 0), Date.UTC(2026, 10, 5, 9, 1)]);
+  await sync(a);
+  const novemberA = `${ROOT}/history/${idA}/2026-11.events`;
+  expect(stub.files.has(novemberA)).toBe(true);
+
+  // Shorten the interval (5 min in the app) and let it pass since B's listing.
+  const INTERVAL_MS = 4000;
+  await b.evaluate(async (ms) => {
+    const m = await import('/src/lib/util/sync/history-listing-refresh.ts');
+    m._setHistoryRefreshIntervalForTests(ms);
+  }, INTERVAL_MS);
+  await b.waitForTimeout(INTERVAL_MS + 500);
+
+  const from = stub.log.length;
+  await sessionSync(b);
+  await sessionSync(b); // within the interval: no second listing
+  const window = stub.log.slice(from);
+
+  expect((await events(b)).filter((e) => e.device === idA)).toHaveLength(3);
+  expect(window.filter((l) => l.method === 'GET' && l.path === novemberA)).toHaveLength(1);
+  const propfinds = window.filter((l) => l.method === 'PROPFIND');
+  expect(
+    propfinds.filter((l) => l.path === `${ROOT}/history`),
+    JSON.stringify(propfinds)
+  ).toEqual([{ method: 'PROPFIND', path: `${ROOT}/history`, depth: 'infinity' }]);
+  // No walk of the library: nothing above or beside history/ listed deeper than a stamp.
+  expect(
+    propfinds.filter((l) => l.path !== `${ROOT}/history` && l.depth !== '0'),
+    JSON.stringify(propfinds)
+  ).toEqual([]);
 });

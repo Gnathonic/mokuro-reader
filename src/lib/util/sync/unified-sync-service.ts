@@ -200,6 +200,22 @@ interface SyncFlight {
  * authenticated cloud providers. Works with the SyncProvider interface,
  * making it provider-agnostic.
  */
+/**
+ * Did a listing refresh fail on AUTH — a token rejected or a session that
+ * must sign in again? Each provider's own marker: `isAuthError` on a
+ * `ProviderError`, Drive's `kind: 'auth'`, MSAL's interaction-required error,
+ * and the "not authenticated"/"authentication expired" messages they throw.
+ */
+function isListingAuthFailure(error: unknown): boolean {
+  if (error instanceof ProviderError) return error.isAuthError;
+  if ((error as { kind?: unknown } | null)?.kind === 'auth') return true;
+  return (
+    error instanceof Error &&
+    (error.name === 'InteractionRequiredAuthError' ||
+      /not authenticated|authentication expired/i.test(error.message))
+  );
+}
+
 class UnifiedSyncService {
   private isSyncingStore = writable<boolean>(false);
   /** Provider syncs in progress (a running flight and its follow-up count once); `isSyncing` is "any". */
@@ -300,6 +316,34 @@ class UnifiedSyncService {
     });
   }
 
+  /**
+   * The sync's opening change-feed read. Only an AUTH failure fails the sync
+   * (every step below would fail the same way). Anything else — a library
+   * walk the feed fell back to and that failed (throttled, offline) — is
+   * logged and the sync goes on with the listing as it stands: progress,
+   * positions, profiles and goals need a few control files, not the library.
+   * The metadata writers keep their own guard: `ensureFreshCloudListing`
+   * reads the feed again and refuses to prune against a listing it could not
+   * bring current. (Google Drive's feed already resolved after a failed
+   * fallback listing before this — its full listing swallows its own errors —
+   * so for Drive only the auth rethrow was ever observable.) `feedOnly`: a
+   * provider that refused its feed for the session is not walked in its
+   * place here (OneDrive; see `ChangeFeedOptions`).
+   */
+  private async refreshListingFromChanges(provider: SyncProvider): Promise<void> {
+    const listingCache = cacheManager.getCache(provider.type);
+    if (!listingCache?.refreshFromChanges) return;
+    try {
+      await listingCache.refreshFromChanges({ feedOnly: true });
+    } catch (error) {
+      if (isListingAuthFailure(error) || !provider.isAuthenticated()) throw error;
+      console.warn(
+        `[sync] ${provider.name} listing could not be brought current; syncing with the listing as it stands:`,
+        error
+      );
+    }
+  }
+
   private async runProviderSync(
     provider: SyncProvider,
     options: SyncOptions
@@ -321,14 +365,14 @@ class UnifiedSyncService {
         }
       }
 
-      // Google Drive's listing moves only when this device lists or writes, and
-      // every step below reads it: other devices' root files, their copies,
-      // their history. Its change feed brings it current first — one small
-      // request when nothing changed (a full listing when the feed cannot
-      // answer). The other providers have no feed (MEGA's tree is live).
-      if (provider.type === 'google-drive') {
-        await cacheManager.getCache(provider.type)?.refreshFromChanges?.();
-      }
+      // A listing cache moves only when this device lists or writes, and every
+      // step below reads it: other devices' root files, their copies, their
+      // history. A cache with a change feed (Google Drive's changes.list,
+      // OneDrive's delta, MEGA's sc push stream) brings it current first — one
+      // small request (none on MEGA) when nothing changed, a full listing when
+      // the feed cannot answer. WebDAV and Local Folder have none (no change
+      // token).
+      await this.refreshListingFromChanges(provider);
       // What the server keeps per user can change under an open tab (a bunko
       // upgrade or rollback); the per-user files below follow it. Fails quietly.
       await refreshGates(provider);
@@ -1216,11 +1260,23 @@ class UnifiedSyncService {
     try {
       const cache = cacheManager.getCache(provider.type);
       if (!cache?.isLoaded?.() || cache.isFetching?.()) return;
-      const listing = cache.getAllFiles().filter((f) => isHistoryFilePath(f.path));
       const [{ syncHistory }, { historyDb }] = await Promise.all([
         import('$lib/reading-history/history-sync'),
         import('$lib/reading-history/history-db')
       ]);
+      // Without a change feed (WebDAV, Local Folder) the cached listing holds
+      // `history/` as of the last full walk: list that folder again when it
+      // is due, so another device's months arrive mid-session. History only —
+      // never a stand-in for a full listing (history-listing-refresh.ts).
+      if (cache.beginHistoryPatch) {
+        const { refreshHistoryListing } = await import('./history-listing-refresh');
+        await refreshHistoryListing(provider, cache, async () => {
+          const { getOrCreateDeviceId } = await import('$lib/reading-history/record');
+          return getOrCreateDeviceId(historyDb());
+        });
+        if (!cache.isLoaded()) return; // cleared meanwhile (sign-out)
+      }
+      const listing = cache.getAllFiles().filter((f) => isHistoryFilePath(f.path));
       const result = await syncHistory(provider, listing, historyDb(), {
         force: !options.silent,
         onUploaded: (path, bytes, uploaded) =>

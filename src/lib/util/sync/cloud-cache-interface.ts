@@ -1,5 +1,6 @@
 import type { Readable } from 'svelte/store';
 import type { CloudFileMetadata, ProviderType, UploadFileResult } from './provider-interface';
+import type { HistoryListingPatch } from './listing-mutations';
 
 /**
  * Cloud Cache Interface
@@ -38,6 +39,21 @@ export type CacheAddMetadata<T> = T & { modifiedTimeProvisional: boolean };
  * nothing to apply, changes applied, or a full listing instead.
  */
 export type ChangeFeedResult = 'unchanged' | 'applied' | 'reset';
+
+/** How far a {@link CloudCache.refreshFromChanges} caller needs the listing current. */
+export interface ChangeFeedOptions {
+  /**
+   * Read the feed where there is one, but never list the whole library in
+   * its place when the provider refused the feed for the session (a lasting
+   * 403/501): answer `'unchanged'` from the listing as it stands. The sync's
+   * opening read (`runProviderSync`): progress, positions, profiles and goals
+   * need a few root files, not the library, and before the feed existed that
+   * sync never walked. Writers that prune against the listing never pass it.
+   * Honoured by OneDrive, whose fallback is a walk of one request per folder;
+   * the other caches ignore it.
+   */
+  feedOnly?: boolean;
+}
 
 /**
  * The cache entry ONE successful upload earns — the single rule for
@@ -149,14 +165,38 @@ export interface CloudCache<T = any> {
    * since the last listing, not the listing again; falls back to a full
    * {@link fetch} whenever the feed cannot answer (`'reset'`). Never toggles
    * the fetching/loaded state, and leaves the cache untouched (same identity)
-   * when nothing changed. OPTIONAL: Google Drive's cache is the one with a
-   * feed today (`changes.list`).
+   * when nothing changed. Rejects when it could not bring the cache current
+   * (an auth failure; OneDrive and MEGA also when the full listing they fell
+   * back to failed). OPTIONAL — the callers gate on the method, never on the
+   * provider type: Google Drive's cache (`changes.list`), OneDrive's (Graph
+   * root `delta`) and MEGA's (the sc push stream, already applied to the
+   * session's tree — no request) have one; WebDAV and Local Folder offer no
+   * change token.
    */
-  refreshFromChanges?(): Promise<ChangeFeedResult>;
+  refreshFromChanges?(options?: ChangeFeedOptions): Promise<ChangeFeedResult>;
+
+  /**
+   * Open a patch of `history/` alone into this cache — the history freshness
+   * a cache WITHOUT a change feed gets between full listings
+   * (`history-listing-refresh.ts`: a throttled `SyncProvider.listFolder`).
+   * Begun before the folder is listed; its `apply` drops the listing if the
+   * cache was replaced meanwhile. OPTIONAL, and never on a cache that has
+   * {@link refreshFromChanges} (its feed already carries `history/`): WebDAV
+   * and Local Folder have it. It is NOT a change feed — it says nothing about
+   * series folders, so nothing that needs the whole listing current may
+   * treat it as one.
+   */
+  beginHistoryPatch?(): HistoryListingPatch;
 
   /**
    * Would {@link refreshFromChanges} answer from the feed rather than list
-   * the whole account? OPTIONAL, with the feed: absent = no feed to use.
+   * the whole account? OPTIONAL, with the feed: absent = the feed is not
+   * offered to a caller that needs only ONE folder current
+   * (`unifiedCloudManager.refreshSeriesFolder`), which lists that folder
+   * instead. Google Drive has it. OneDrive's delta and MEGA's sc stream
+   * deliberately do not: their fallback is a walk of the library or a full
+   * tree load, and their one-folder listing costs as little (MEGA's filters
+   * the session's tree: no request).
    */
   changeFeedUsable?(): boolean;
 
