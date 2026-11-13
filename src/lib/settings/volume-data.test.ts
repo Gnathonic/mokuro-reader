@@ -274,13 +274,24 @@ describe('VolumeData.completedAt', () => {
       updateProgress('vol-1', 100, 5000, true);
       expect(get(volumes)['vol-1'].completedAt).toBe('2025-06-01T00:00:00.000Z');
 
-      // Page back to the start: the flag falls, the date stays.
+      // Page back to the start: the date stays.
       vi.setSystemTime(new Date('2026-03-01T00:00:00.000Z'));
       updateProgress('vol-1', 1, 5000);
       expect(get(volumes)['vol-1'].completedAt).toBe('2025-06-01T00:00:00.000Z');
-      // The reader records that view of page 1 in reading history.
+      // The reader records the views of that re-read in reading history: from
+      // page 1 on, through the volume (a look at page 1 alone is no re-read, #304).
+      const start = Date.parse('2026-03-01T00:00:00.000Z');
       _setHistoryTurnsForTest(
-        new Map([['vol-1', [[Date.parse('2026-03-01T00:00:00.000Z'), 1, 50]]]])
+        new Map([
+          [
+            'vol-1',
+            Array.from({ length: 99 }, (_, i) => [start + i * 60_000, i + 1, (i + 1) * 50]) as [
+              number,
+              number,
+              number
+            ][]
+          ]
+        ])
       );
 
       // Read it through again: a second completion gets its own date, in the
@@ -549,7 +560,19 @@ describe('page turns after the cut-over', () => {
       v: new VolumeData({ progress: 3, completed: false, completedAt: done })
     });
     const now = Date.now();
-    _setHistoryTurnsForTest(new Map([['v', [[now - 5000, 1, 10]]]]));
+    _setHistoryTurnsForTest(
+      new Map([
+        [
+          'v',
+          [
+            [now - 40_000, 1, 10],
+            [now - 30_000, 2, 20],
+            [now - 20_000, 3, 30],
+            [now - 10_000, 4, 40]
+          ]
+        ]
+      ])
+    );
     updateProgress('v', 10, 100, true);
     expect(get(volumesWithTrash).v.completedAt).not.toBe(done);
   });

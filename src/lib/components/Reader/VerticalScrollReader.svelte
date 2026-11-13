@@ -22,6 +22,12 @@
   } from '$lib/reader/zoom-math';
   import { gestureTargetRole, keyboardShouldIgnore } from '$lib/reader/input/gesture-target';
   import { volumeEdgeNav } from '$lib/reader/page-nav';
+  import {
+    alignDelta,
+    pageKeyStep,
+    stripPageKeyTarget,
+    type AxisSpan
+  } from '$lib/reader/page-key-step';
   import { PointerGestureTracker, zoomGestureConfig } from '$lib/reader/input/pointer-tracker';
   import { TapDiscriminator } from '$lib/reader/input/tap';
   import type { MotionGate } from '$lib/reader/input/motion-gate';
@@ -337,6 +343,73 @@
     scroller.scrollToElement(el, 'center', pageFitsVertically(pageIdx) ? 'center' : 'start');
   }
 
+  /**
+   * Page Down / Space / Page Up with "scroll tall pages before turning" on
+   * (#283). Measured at the scroll's resting target, so a held key chains.
+   * The key acts on the first page with content hidden in its direction
+   * (`stripPageKeyTarget` — never the page nearest the centre, which beside a
+   * short page is the wrong one): while that page covers the view it scrolls
+   * a screenful (minus an overlap), never past a page start below the view
+   * top; otherwise the key turns onto it as before — and a backward turn onto
+   * a page taller than the screen shows its LAST screenful, so repeated
+   * Page Up walks back up through it.
+   */
+  function pageKey(direction: 'forward' | 'backward') {
+    if (!scroller || !scrollContainer) return;
+    motion.beforeNav?.();
+    const rest = scroller.restingTarget();
+    const maxY = Math.max(0, scrollContainer.scrollHeight - scrollContainer.clientHeight);
+    const restY = Math.min(maxY, Math.max(0, rest.y));
+    // Page rects are measured at the LIVE scroll position; shift the view to
+    // where the scroll is heading instead of re-measuring mid-glide.
+    const box = scrollContainer.getBoundingClientRect();
+    const shift = restY - scrollContainer.scrollTop;
+    const view: AxisSpan = { start: box.top + shift, end: box.top + shift + box.height };
+    const spans = pageElements.map((el) => {
+      const r = el?.getBoundingClientRect();
+      return r ? { start: r.top, end: r.bottom } : undefined;
+    });
+    const delta = direction === 'forward' ? 1 : -1;
+    const fits = pageElements.map((_, i) => pageFitsVertically(i));
+    const target = stripPageKeyTarget(direction, view, spans, (i) => fits[i]);
+
+    // Nothing hidden that way: the strip's end — turn past it (volume edge).
+    // No page measured yet (not mounted): nothing to act on.
+    if (!target) {
+      if (spans.some(Boolean)) scrollToPageVertical(direction === 'forward' ? pages.length : -1);
+      return;
+    }
+
+    let turnTo = target.index;
+    if (target.within) {
+      const step = pageKeyStep({
+        direction,
+        view,
+        current: spans[target.index]!,
+        pages: spans.filter((p): p is AxisSpan => !!p),
+        enabled: true
+      });
+      if (step.kind === 'scroll') {
+        const y = Math.min(maxY, Math.max(0, restY + step.by));
+        // At the strip's end nothing is left to scroll — turn past the page.
+        if (Math.abs(y - restY) >= 1) {
+          scroller.scrollBy(0, y - rest.y);
+          return;
+        }
+      }
+      turnTo = target.index + delta;
+    }
+
+    const turnSpan = spans[turnTo];
+    if (direction === 'forward' || !turnSpan || fits[turnTo]) {
+      scrollToPageVertical(turnTo);
+      return;
+    }
+    // Backward onto a tall page: its last screenful.
+    const y = Math.min(maxY, Math.max(0, restY + alignDelta(view, turnSpan, 'end')));
+    scroller.scrollBy(0, y - rest.y);
+  }
+
   function handleKeydown(e: KeyboardEvent) {
     if (keyboardShouldIgnore(e.target)) return;
     if (!scrollContainer) return;
@@ -377,11 +450,13 @@
       case 'PageDown':
       case ' ':
         e.preventDefault();
-        scrollToPageVertical(detectCurrentPage() + 1);
+        if ($settings.pageKeysScrollFirst) pageKey('forward');
+        else scrollToPageVertical(detectCurrentPage() + 1);
         break;
       case 'PageUp':
         e.preventDefault();
-        scrollToPageVertical(detectCurrentPage() - 1);
+        if ($settings.pageKeysScrollFirst) pageKey('backward');
+        else scrollToPageVertical(detectCurrentPage() - 1);
         break;
       case 'Home':
         e.preventDefault();
