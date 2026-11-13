@@ -1667,7 +1667,7 @@
   // Callback for ContinuousReader page changes
   function handleContinuousPageChange(newPage: number, charCount: number, isComplete: boolean) {
     if (!volume) return;
-    updateProgress(volume.volume_uuid, newPage, charCount, isComplete);
+    updateProgress(volume.volume_uuid, newPage, charCount, isComplete, pages.length || undefined);
     activityTracker.recordActivity();
   }
 

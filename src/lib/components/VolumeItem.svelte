@@ -24,7 +24,7 @@
   import { promptConfirmation, showSnackbar } from '$lib/util';
   import { promptExtraction } from '$lib/util/modals';
   import { zipManga } from '$lib/util/zip';
-  import { getCurrentPage, getProgressDisplay, isVolumeComplete } from '$lib/util/volume-helpers';
+  import { getCurrentPage, getProgressDisplay, isVolumeFinished } from '$lib/util/volume-helpers';
   import { ListgroupItem, Dropdown, DropdownItem, Badge, Button, Spinner } from 'flowbite-svelte';
   import {
     CheckCircleSolid,
@@ -120,11 +120,11 @@
   });
   let currentPage = $derived(getCurrentPage(volume.volume_uuid, $progress));
   let progressDisplay = $derived(getProgressDisplay(currentPage, volume.page_count));
-  // Completion reads the RAW page, not the display default of 1: "page 1 of 1" with no
-  // progress record at all is a volume nobody has opened (see isVolumeComplete).
-  let isComplete = $derived(
-    isVolumeComplete($progress?.[volume.volume_uuid] ?? 0, volume.page_count)
-  );
+  // The app's one completion rule (isVolumeFinished): the stored flag, or the RAW page —
+  // not the display default of 1, since "page 1 of 1" with no progress record at all is a
+  // volume nobody has opened. The flag matters here: a finished volume the reader paged
+  // back in keeps it (#304), and the row must not offer "Mark as read" for it.
+  let isComplete = $derived(isVolumeFinished(volume, volumeData));
 
   // Check if this is an image-only volume (no mokuro OCR data)
   let isImageOnly = $derived(volume.mokuro_version === '');
