@@ -135,8 +135,9 @@ describe('partial credit is MONOTONE in pages read', () => {
       progress: to,
       completed: to >= pageCount - 1,
       completedAt: '2025-06-01T00:00:00.000Z',
+      // 20 s a page: read, not flipped through (`hasFreshPassSince`).
       recentPageTurns: Array.from({ length: to - from + 1 }, (_, i) => [
-        feb + i * 1000,
+        feb + i * 20_000,
         from + i,
         (from + i) * 10
       ]) as [number, number, number][]

@@ -12,7 +12,9 @@
     resetVolumeCover,
     getVolumeData,
     calculateVolumeCharacterCount,
-    getNextVolumeUuidInSeries
+    getNextVolumeUuidInSeries,
+    completionDateInputValue,
+    completedAtFromDateInput
   } from '$lib/util/volume-editor';
   import { showSnackbar } from '$lib/util';
   import { sanitizeRenameTitle } from '$lib/util/sanitize-title';
@@ -47,6 +49,13 @@
   let timeReadInMinutes = $state(0);
   /** Time read as the stats showed it when the editor opened: a save records the difference. */
   let loadedMinutes = 0;
+
+  // Completion date (#304): shown for a finished or dated volume, edited as a local day.
+  let datable = $state(false);
+  let completedOn = $state('');
+  let loadedCompletedOn = '';
+  let loadedCompletedAt: string | undefined;
+  let today = $state('');
 
   // Time display as hh:mm
   let timeHours = $state(0);
@@ -160,6 +169,11 @@
       loadedMinutes = timeReadInMinutes;
       updateTimeFromMinutes(timeReadInMinutes);
 
+      loadedCompletedAt = data.stats.completedAt;
+      datable = data.stats.completed || !!loadedCompletedAt;
+      completedOn = loadedCompletedOn = completionDateInputValue(loadedCompletedAt);
+      today = completionDateInputValue(new Date().toISOString());
+
       isNewSeries = false;
       newSeriesName = '';
 
@@ -206,6 +220,16 @@
 
   async function handleSave() {
     if (!originalMetadata) return;
+
+    // A cleared field changes nothing ("Mark as unread" is the un-finish).
+    let completedAt: string | undefined;
+    if (datable && completedOn && completedOn !== loadedCompletedOn) {
+      completedAt = completedAtFromDateInput(completedOn, loadedCompletedAt) ?? undefined;
+      if (!completedAt) {
+        showSnackbar('Pick a finish date that is not in the future.');
+        return;
+      }
+    }
 
     saving = true;
     try {
@@ -310,6 +334,7 @@
         progress,
         chars,
         timeRead: { from: loadedMinutes, to: timeReadInMinutes },
+        ...(completedAt && { completedAt }),
         series_uuid: finalSeriesUuid,
         series_title: finalSeriesTitle,
         volume_title: volumeTitle
@@ -621,7 +646,27 @@
                 <span class="text-sm text-gray-500">m</span>
               </div>
             </div>
+
+            {#if datable}
+              <div>
+                <Label for="completed-on" class="mb-1">Finished On</Label>
+                <Input
+                  id="completed-on"
+                  type="date"
+                  bind:value={completedOn}
+                  max={today}
+                  required
+                  class="w-40"
+                />
+              </div>
+            {/if}
           </div>
+          {#if datable}
+            <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">
+              Goals count a volume in the period it was finished. Closed periods keep the totals
+              they closed with.
+            </p>
+          {/if}
         </div>
 
         <!-- Missing Pages Section (only shown if there are missing pages) -->
@@ -645,7 +690,7 @@
         {/if}
 
         <!-- Actions -->
-        <div class="flex justify-end gap-2">
+        <div class="relative z-10 flex justify-end gap-2">
           <Button color="alternative" onclick={handleCancel} disabled={saving}>Cancel</Button>
           <Button color="primary" onclick={handleSave} disabled={saving}>
             {#if saving}

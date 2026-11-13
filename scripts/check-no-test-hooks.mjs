@@ -18,6 +18,8 @@ const NAMES = [
   'setCloudTestBases',
   'setCloudTestToken',
   'cloudTestToken',
+  'setFolderTestHandle',
+  'folderTestHandle',
   '__mokuroCloudTestHooks',
   'installGapiRestShim',
   'CLOUDSIM',

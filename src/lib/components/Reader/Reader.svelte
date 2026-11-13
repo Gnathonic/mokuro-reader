@@ -230,6 +230,28 @@
     changePage(calculateBackwardTarget(page, pageNavContext()), ingoreTimeOut);
   }
 
+  /**
+   * Page Down / Space (#283): with "Page Up/Down scroll tall pages before
+   * turning" on, a page (or spread) taller than the screen scrolls down a
+   * screenful first; the page turns once its bottom is in view. Off: turn.
+   */
+  function pageKeyForward(): void {
+    if ($settings.pageKeysScrollFirst && $pagedZoom?.pageKeyScroll('forward')) return;
+    navigateForward(true);
+  }
+
+  /** Page Up — the mirror; the previous page then opens at its bottom. */
+  function pageKeyBackward(): void {
+    if ($settings.pageKeysScrollFirst && $pagedZoom) {
+      if ($pagedZoom.pageKeyScroll('backward')) return;
+      const target = calculateBackwardTarget(page, pageNavContext());
+      // Only a turn within this volume lands anywhere (the edge goes to the
+      // previous volume, which opens where its own progress says).
+      if (target >= 1 && target < page) $pagedZoom.landAtEndOf(target);
+    }
+    navigateBackward(true);
+  }
+
   function changePage(newPage: number, ingoreTimeOut = false) {
     const end = new Date();
     const clickDuration = ingoreTimeOut ? 0 : end.getTime() - start?.getTime();
@@ -401,7 +423,7 @@
         $pagedZoom?.scrollImage('up');
         return;
       case 'PageUp':
-        navigateBackward(true);
+        pageKeyBackward();
         return;
       case 'ArrowRight':
         right(event, true);
@@ -411,7 +433,7 @@
         return;
       case 'PageDown':
       case 'Space':
-        navigateForward(true);
+        pageKeyForward();
         return;
       case 'Home':
         changePage(1, true);
@@ -889,7 +911,7 @@
   }
 
   // ---- layer switching and actions (the picker and the settings panel) ----
-  let primaryName = $derived(primaryLayerName(volume?.mokuro_version));
+  let primaryName = $derived(primaryLayerName(volume));
 
   function layerDisplayName(layerId: string | null): string {
     if (layerId === null) return primaryName;
@@ -1645,7 +1667,7 @@
   // Callback for ContinuousReader page changes
   function handleContinuousPageChange(newPage: number, charCount: number, isComplete: boolean) {
     if (!volume) return;
-    updateProgress(volume.volume_uuid, newPage, charCount, isComplete);
+    updateProgress(volume.volume_uuid, newPage, charCount, isComplete, pages.length || undefined);
     activityTracker.recordActivity();
   }
 

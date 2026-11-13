@@ -1,11 +1,12 @@
 import { readable, writable, type Readable } from 'svelte/store';
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
-import { layerNameForId } from '$lib/reader/edit/layer-names';
+import { ocrFileLabel, validParts, type OcrPart } from '$lib/reader/edit/ocr-label';
 
 /**
  * What the volume views show of a server's OCR queue — the light half of
- * `server-ocr-queue.ts`, which polls `<dav root>/.mokuro-queue.json` and writes
- * the stores below. Kept apart so a volume card imports no polling machinery.
+ * `server-ocr-queue.ts` (the v1 root file `<dav root>/.mokuro-queue.json`)
+ * and `series-queue-loop.ts` (the v2 per-series files), which write the
+ * stores below. Kept apart so a volume card imports no polling machinery.
  */
 
 /** One job of a volume in the queue file. */
@@ -13,11 +14,24 @@ export interface QueueJob {
   kind: 'ocr' | 'layer';
   /** The generation name; the layer id for a layer. */
   id: string;
-  state: 'running' | 'queued' | 'held';
+  /** `starting`: claimed by a processor, not running yet (queue file v2). */
+  state: 'running' | 'queued' | 'held' | 'starting';
   /** ISO finishing time the server predicts, or null when it cannot price it. */
   eta: string | null;
   /** 0–1 while running, else null. */
   progress: number | null;
+  /**
+   * ISO start of a running job (queue file v2): with `eta`, the card derives
+   * its progress from the clock it redraws with, and says "finishing" past
+   * `eta`.
+   */
+  startedAt?: string;
+  /**
+   * What the job will make the OCR with, in `ocr_engine.parts` shape (bunko
+   * 0.8+): names the line as the finished file will be named. Absent from an
+   * older bunko, or dropped when malformed (the job itself stays).
+   */
+  parts?: OcrPart[];
 }
 
 /** Why the whole queue is held (plain codes only). */
@@ -38,6 +52,86 @@ export function volumeQueueKey(series: string, volume: string): string {
 
 /** Written only by `server-ocr-queue.ts`: volume key → its jobs, across every polled server. */
 export const queueStatusStore = writable<Record<string, VolumeQueueStatus>>({});
+
+/** One series' volumes (folded volume key) → their jobs, from its v2 series file. */
+export type SeriesQueueSlice = ReadonlyMap<string, VolumeQueueStatus>;
+
+/**
+ * Queue file v2: series key (`normalizeSeriesKey`) → that series' slice.
+ * Written only by `publishSeriesQueueSlice`: a read replaces its own series'
+ * entry and nothing else, and an unchanged read sets nothing. A series with
+ * an entry is answered from it alone (an absent volume has nothing pending);
+ * a series without one falls back to the v1 statuses.
+ */
+const seriesQueueWritable = writable<ReadonlyMap<string, SeriesQueueSlice>>(new Map());
+export const seriesQueueStore: Readable<ReadonlyMap<string, SeriesQueueSlice>> = {
+  subscribe: seriesQueueWritable.subscribe
+};
+
+let seriesQueueCurrent: ReadonlyMap<string, SeriesQueueSlice> = new Map();
+seriesQueueWritable.subscribe((v) => (seriesQueueCurrent = v));
+
+const sameStatus = (a: VolumeQueueStatus, b: VolumeQueueStatus) =>
+  JSON.stringify(a) === JSON.stringify(b);
+
+/**
+ * Publish one series' slice (null withdraws it: nothing known for that series).
+ * Sets the store only when what the cards show changed, and keeps the object
+ * of every volume whose jobs did not, so only the cards that changed redraw.
+ * True when it set the store.
+ */
+export function publishSeriesQueueSlice(
+  seriesKey: string,
+  slice: SeriesQueueSlice | null
+): boolean {
+  const current = seriesQueueCurrent;
+  const previous = current.get(seriesKey);
+  if (slice === null) {
+    if (!previous) return false;
+    const next = new Map(current);
+    next.delete(seriesKey);
+    seriesQueueWritable.set(next);
+    return true;
+  }
+  let changed = !previous || previous.size !== slice.size;
+  const merged = new Map<string, VolumeQueueStatus>();
+  for (const [key, status] of slice) {
+    const before = previous?.get(key);
+    if (before && sameStatus(before, status)) {
+      merged.set(key, before);
+    } else {
+      merged.set(key, status);
+      changed = true;
+    }
+  }
+  if (!changed) return false;
+  const next = new Map(current);
+  next.set(seriesKey, merged);
+  seriesQueueWritable.set(next);
+  return true;
+}
+
+/** Tests: forget every series' slice. */
+export function resetSeriesQueueStoreForTest(): void {
+  seriesQueueWritable.set(new Map());
+}
+
+/**
+ * What a card shows for its key: the v2 slice of its series when there is one
+ * (absent there = nothing pending), else the v1 status.
+ */
+export function pendingStatusFor(
+  key: string,
+  series: ReadonlyMap<string, SeriesQueueSlice>,
+  v1: Record<string, VolumeQueueStatus>
+): VolumeQueueStatus | undefined {
+  const cut = key.indexOf('\u0000');
+  if (cut >= 0) {
+    const slice = series.get(key.slice(0, cut));
+    if (slice) return slice.get(key.slice(cut + 1));
+  }
+  return v1[key];
+}
 
 /** volume key → what the server's queue says about it. */
 export const serverOcrQueueStatus: Readable<Record<string, VolumeQueueStatus>> = {
@@ -103,7 +197,7 @@ function localHhMm(ms: number): string {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
-/** "in ~3 min" + local "08:17"; "queued" (no clock) unpriced; "any moment" once overdue. */
+/** "in ~3 min" + local "08:17"; "queued" (no clock) unpriced; "soon" within a minute or overdue. */
 export function relativeEta(
   eta: string | null,
   now: number
@@ -113,8 +207,8 @@ export function relativeEta(
   if (!Number.isFinite(at)) return { when: 'queued', clock: null };
   const clock = localHhMm(at);
   const ms = at - now;
-  if (ms <= 0) return { when: 'any moment', clock };
-  if (ms < 60_000) return { when: 'in <1 min', clock };
+  // Never negative: a past ETA (a late job, a skewed clock) is "soon" too.
+  if (ms <= 60_000) return { when: 'soon', clock };
   const minutes = Math.round(ms / 60_000);
   if (minutes < 60) return { when: `in ~${minutes} min`, clock };
   const h = Math.floor(minutes / 60);
@@ -147,11 +241,59 @@ function shorten(name: string): string {
   return name.length <= MAX_NAME ? name : `${name.slice(0, MAX_NAME - 1).trimEnd()}…`;
 }
 
+/**
+ * The short names a job's line may take, plainest first: with parts, the
+ * recognizer alone, then every part without versions ("Hayai Nova ·
+ * AnimeText"), then the full label; without, its full name.
+ */
+function compactNames(job: QueueJob, fullName: string): string[] {
+  const parts = validParts(job.parts);
+  if (!parts) return [fullName];
+  const names = [parts[0].name];
+  if (parts.length > 1) names.push(parts.map((p) => p.name).join(' · '));
+  names.push(fullName);
+  return names;
+}
+
+/**
+ * Each line's short name: the plainest that, cut to `MAX_NAME`, no other line
+ * of the volume shares — so "Hayai Nova 2.5 · PP-OCR Manga 0.3" and "Hayai
+ * Nova 2.5 · AnimeText 12x" never both read "Hayai Nova 2.5…". Lines that
+ * collide take their next form until they differ or have none left.
+ */
+function distinctShortNames(candidates: string[][]): string[] {
+  const level = candidates.map(() => 0);
+  const shortOf = (i: number) => shorten(candidates[i][level[i]]);
+  for (;;) {
+    const byShort = new Map<string, number[]>();
+    candidates.forEach((_, i) => {
+      const key = shortOf(i);
+      byShort.set(key, [...(byShort.get(key) ?? []), i]);
+    });
+    let bumped = false;
+    for (const group of byShort.values()) {
+      if (group.length < 2) continue;
+      for (const i of group) {
+        if (level[i] + 1 < candidates[i].length) {
+          level[i]++;
+          bumped = true;
+        }
+      }
+    }
+    if (!bumped) return candidates.map((_, i) => shortOf(i));
+  }
+}
+
 export interface PendingOcrLine {
   /** Stable per job (`kind:id`): a landed job's line leaves without disturbing the rest. */
   key: string;
-  /** "Text" for the primary, else the layer's display name, shortened. */
+  /**
+   * What the job will make, short: its recognizer ("Hayai Nova"), with the
+   * other parts only where two lines would otherwise read the same; cut to
+   * `MAX_NAME`. Without parts, its full name cut.
+   */
   name: string;
+  /** Named as the finished file will be (`ocrFileLabel`): "Hayai Nova 2.5 · PP-OCR Manga 0.3". */
   fullName: string;
   /** Beside the name on a cover: "42% · ~08:17", "in ~3 min · 08:17", "queued", "held: …". */
   detail: string;
@@ -163,12 +305,12 @@ export interface PendingOcrLine {
 
 export interface PendingOcrView {
   title: string;
-  /** Every pending job: the primary first, then by ETA, unpriced last. */
+  /** Every pending job, soonest first: running, then queued by ETA, then unpriced and held. */
   lines: PendingOcrLine[];
   /** What a compact surface shows (at most `maxLines`, counting a "+N more" line). */
   shown: PendingOcrLine[];
   more: number;
-  /** The list view's single line: "Server OCR: Text 42% · ~08:17 · Hayai Nova in ~8 min · …". */
+  /** The list view's single line: "Server OCR: Hayai Nova 42% · ~08:17 · Paddle Manga in ~8 min · …". */
   inline: string;
   /** Tooltip / aria-label: every job, its full name and exact clock time. */
   label: string;
@@ -176,19 +318,31 @@ export interface PendingOcrView {
 
 const TITLE = 'Server OCR';
 
-function lineFor(job: QueueJob, held: QueueHeld | null, now: number): PendingOcrLine {
-  const fullName = job.kind === 'ocr' ? 'Text' : layerNameForId(job.id);
-  const base = { key: `${job.kind}:${job.id}`, name: shorten(fullName), fullName };
+/**
+ * The main file and a layer alike: the job's parts ("Hayai Nova 2.5 ·
+ * PP-OCR Manga 0.3"), else its generation's display name — never "Text".
+ */
+function fullNameOf(job: QueueJob): string {
+  return ocrFileLabel({ engine: job.id, parts: job.parts });
+}
+
+function lineFor(job: QueueJob, name: string, held: QueueHeld | null, now: number): PendingOcrLine {
+  const base = { key: `${job.kind}:${job.id}`, name, fullName: fullNameOf(job) };
   const { when, clock } = relativeEta(job.eta, now);
   if (job.state === 'held') {
     const text = heldText(held);
     return { ...base, detail: text, short: text, spoken: text };
   }
+  if (job.state === 'starting') {
+    return { ...base, detail: 'starting', short: 'starting', spoken: 'starting' };
+  }
   if (job.state === 'running') {
+    const progress = progressOf(job, now);
+    if (progress === 'finishing') {
+      return { ...base, detail: 'finishing', short: 'finishing', spoken: 'finishing' };
+    }
     const pct =
-      typeof job.progress === 'number' && Number.isFinite(job.progress)
-        ? `${Math.round(Math.min(Math.max(job.progress, 0), 1) * 100)}%`
-        : null;
+      progress !== null ? `${Math.round(Math.min(Math.max(progress, 0), 1) * 100)}%` : null;
     const parts = [pct, clock ? `~${clock}` : null].filter(Boolean);
     const detail = parts.length ? parts.join(' · ') : 'running';
     const spoken =
@@ -207,6 +361,50 @@ function lineFor(job: QueueJob, held: QueueHeld | null, now: number): PendingOcr
 }
 
 /**
+ * A running job's progress: the server's own figure (v1), else — with its
+ * start and predicted finish (v2) — `(now − start) / (finish − start)`,
+ * clamped to [0, 0.99], and `finishing` once past the finish. Null when
+ * neither is known.
+ */
+function progressOf(job: QueueJob, now: number): number | 'finishing' | null {
+  if (typeof job.progress === 'number' && Number.isFinite(job.progress)) return job.progress;
+  if (!job.startedAt || job.eta === null) return null;
+  const t0 = Date.parse(job.startedAt);
+  const e = Date.parse(job.eta);
+  if (!Number.isFinite(t0) || !Number.isFinite(e)) return null;
+  if (now > e) return 'finishing';
+  if (e <= t0) return 0.99;
+  return Math.min(Math.max((now - t0) / (e - t0), 0), 0.99);
+}
+
+/** Running first, then starting, then queued with an ETA, then unpriced and held (`soonestFirst`). */
+function rankOf(job: QueueJob): number {
+  if (job.state === 'running') return 0;
+  if (job.state === 'starting') return 1;
+  if (job.state === 'queued' && job.eta !== null) return 2;
+  return 3;
+}
+
+function etaOf(job: QueueJob): number {
+  const t = job.eta === null ? NaN : Date.parse(job.eta);
+  return Number.isFinite(t) ? t : Infinity;
+}
+
+/**
+ * Soonest first, whatever the job makes (a main file due in days must not sit
+ * above a layer due in minutes): running jobs by ETA, then the starting ones,
+ * then queued ones by ETA, then the unpriced and the held. Ties keep the server's order (a stable sort).
+ */
+function soonestFirst(a: QueueJob, b: QueueJob): number {
+  const rank = rankOf(a) - rankOf(b);
+  if (rank !== 0) return rank;
+  if (rankOf(a) === 1 || rankOf(a) === 3) return 0;
+  const ea = etaOf(a);
+  const eb = etaOf(b);
+  return ea === eb ? 0 : ea < eb ? -1 : 1;
+}
+
+/**
  * What the volume views say about OCR the server is still making for a volume,
  * from its entry in the queue file. Null when nothing is pending.
  */
@@ -216,11 +414,9 @@ export function describePendingOcr(
   maxLines = 3
 ): PendingOcrView | null {
   if (!status || status.jobs.length === 0) return null;
-  const etaOf = (j: QueueJob) => (j.eta === null ? Infinity : Date.parse(j.eta));
-  const ordered = [...status.jobs].sort(
-    (a, b) => (a.kind === 'ocr' ? 0 : 1) - (b.kind === 'ocr' ? 0 : 1) || etaOf(a) - etaOf(b)
-  );
-  const lines = ordered.map((job) => lineFor(job, status.held, now));
+  const ordered = [...status.jobs].sort(soonestFirst);
+  const names = distinctShortNames(ordered.map((job) => compactNames(job, fullNameOf(job))));
+  const lines = ordered.map((job, i) => lineFor(job, names[i], status.held, now));
   const shown = lines.length <= maxLines ? lines : lines.slice(0, maxLines - 1);
   return {
     title: TITLE,
