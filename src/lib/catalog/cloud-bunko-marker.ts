@@ -33,6 +33,11 @@
  * Marker v2 (bunko 0.8) adds `per_user_files`, `curated` and `dedup` beside
  * `bunko_version`, all optional on the wire. They describe the lease HOLDER's
  * rules, so they reach the views through `holder`, never from any other node.
+ *
+ * Queue file v2 adds the `series_queue` block (library-wide queue state: the
+ * hold, held rows and the ETA work clock, `series-queue.ts`) and sets `queue`
+ * to null. Only the holder's block counts; its series files are trusted only
+ * when they name the holder's `instance_id`.
  */
 import type {
   CloudBunkoStatus,
@@ -43,6 +48,7 @@ import type {
 import { BUNKO_MARKER_NAME } from '#lib/util/sync/syncable-file.js';
 import { bunkoSupportsHistory } from '#lib/util/sync/providers/webdav/bunko-version.js';
 import { POSITIONS_FILE_NAME } from '#lib/positions/positions-file.js';
+import { parseSeriesQueueBlock, type SeriesQueueBlock } from './series-queue';
 
 /** Files a marker may say Bunko compiles. */
 export const COMPILED_METADATA_FILES = ['series.json', 'catalog.json'] as const;
@@ -72,6 +78,8 @@ export interface BunkoMarker {
   curated: boolean;
   /** Bunko merges duplicate folders and files itself. */
   dedup: boolean;
+  /** Queue file v2's library-wide queue state; null from a Bunko that writes no series files. */
+  series_queue: SeriesQueueBlock | null;
 }
 
 function isObject(v: unknown): v is Record<string, unknown> {
@@ -103,7 +111,8 @@ export function parseBunkoMarker(json: unknown): BunkoMarker | null {
     bunko_version: typeof json.bunko_version === 'string' ? json.bunko_version : '',
     per_user_files: stringList(json.per_user_files),
     curated: json.curated === true,
-    dedup: json.dedup === true
+    dedup: json.dedup === true,
+    series_queue: parseSeriesQueueBlock(json.series_queue, { requireVersion: true })
   };
 }
 
@@ -130,6 +139,8 @@ export interface MarkerNodeRecord {
   per_user_files: string[];
   curated: boolean;
   dedup: boolean;
+  /** The marker's `series_queue` block (queue file v2), or null. */
+  series_queue: SeriesQueueBlock | null;
   /** Local ms this device first saw `version`; null = no history (cold start). */
   changedAt: number | null;
 }
@@ -238,6 +249,7 @@ export function foldMarkerNodes(
       per_user_files: marker.per_user_files,
       curated: marker.curated,
       dedup: marker.dedup,
+      series_queue: marker.series_queue,
       changedAt
     };
   });
@@ -266,8 +278,10 @@ export function markerStatusOf(recs: readonly MarkerNodeRecord[], now: number): 
 
 let records: Map<string, MarkerNodeRecord[]> | null = null;
 const listeners = new Set<() => void>();
+const seriesQueueListeners = new Set<() => void>();
 let expiryTimer: ReturnType<typeof setTimeout> | null = null;
 let lastAnnounced = '';
+let lastSeriesQueueAnnounced = '';
 let clock: () => number = () => Date.now();
 /** The marker set's version last read per scope, shared by every caller of `refreshCloudBunkoMarker`. */
 const markerEtags = new Map<string, string>();
@@ -291,6 +305,7 @@ function isRecord(v: unknown): v is MarkerNodeRecord {
       (Array.isArray(r.per_user_files) && r.per_user_files.every((f) => typeof f === 'string'))) &&
     (r.curated === undefined || typeof r.curated === 'boolean') &&
     (r.dedup === undefined || typeof r.dedup === 'boolean') &&
+    (r.series_queue === undefined || r.series_queue === null || isObject(r.series_queue)) &&
     typeof r.id === 'string' &&
     typeof r.version === 'string' &&
     typeof r.instance_id === 'string' &&
@@ -311,7 +326,9 @@ function normalizeRecord(r: MarkerNodeRecord): MarkerNodeRecord {
     bunko_version: r.bunko_version ?? '',
     per_user_files: r.per_user_files ?? [],
     curated: r.curated ?? false,
-    dedup: r.dedup ?? false
+    dedup: r.dedup ?? false,
+    // Stored in its parsed shape, re-validated on the way in.
+    series_queue: r.series_queue ? parseSeriesQueueBlock(r.series_queue) : null
   };
 }
 
@@ -348,19 +365,38 @@ function snapshot(now: number): string {
   return JSON.stringify(out);
 }
 
+/** Per scope: the holder's instance and its `series_queue` block, as text. */
+function seriesQueueSnapshot(now: number): string {
+  const out: Record<string, unknown> = {};
+  for (const [scope, recs] of load()) {
+    const top = topFreshMarker(recs, now);
+    out[scope] = top ? [top.instance_id, top.series_queue] : null;
+  }
+  return JSON.stringify(out);
+}
+
+function notify(set: Set<() => void>): void {
+  for (const listener of [...set]) {
+    try {
+      listener();
+    } catch (error) {
+      console.debug('[cloud-bunko-marker] listener failed:', error);
+    }
+  }
+}
+
 /** Tell listeners when any scope's verdict changed, and arm the timer for the next expiry. */
 function reannounce(): void {
   const now = clock();
   const current = snapshot(now);
   if (current !== lastAnnounced) {
     lastAnnounced = current;
-    for (const listener of [...listeners]) {
-      try {
-        listener();
-      } catch (error) {
-        console.debug('[cloud-bunko-marker] listener failed:', error);
-      }
-    }
+    notify(listeners);
+  }
+  const queue = seriesQueueSnapshot(now);
+  if (queue !== lastSeriesQueueAnnounced) {
+    lastSeriesQueueAnnounced = queue;
+    notify(seriesQueueListeners);
   }
   if (expiryTimer) clearTimeout(expiryTimer);
   expiryTimer = null;
@@ -566,6 +602,17 @@ export function onCloudBunkoMarkerChange(listener: () => void): () => void {
   return () => listeners.delete(listener);
 }
 
+/**
+ * Called whenever any scope's lease holder or its `series_queue` block
+ * (hold, held rows, work clock) changed — which the provider status does not
+ * carry, so `onCloudBunkoMarkerChange` stays quiet for a clock refit. Returns
+ * the unsubscribe.
+ */
+export function onCloudSeriesQueueChange(listener: () => void): () => void {
+  seriesQueueListeners.add(listener);
+  return () => seriesQueueListeners.delete(listener);
+}
+
 /** Forget the marker of one scope (logout), or of every scope. */
 export function clearCloudBunkoMarkers(scope?: string): void {
   const map = load();
@@ -591,6 +638,8 @@ export function resetCloudBunkoMarkersForTest(now?: () => number): void {
   markerEtags.clear();
   markerReads.clear();
   listeners.clear();
+  seriesQueueListeners.clear();
   lastAnnounced = '';
+  lastSeriesQueueAnnounced = '';
   clock = now ?? (() => Date.now());
 }

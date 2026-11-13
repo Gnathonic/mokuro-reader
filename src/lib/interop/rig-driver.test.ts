@@ -246,6 +246,7 @@ import type { ReviewGroup } from '#lib/import/image-only-review.js';
 import { reviewSession, type GroupDecision } from '#lib/import/review-session.js';
 import { backupQueue } from '#lib/util/backup-queue.js';
 import { uploadFailures } from '#lib/util/upload-failures.js';
+import { folderTestHandle, setFolderTestHandle } from '#lib/util/sync/cloud-test-hooks.js';
 import { RIG_CAPABILITIES, install } from './rig-driver';
 
 const statusStore = activeProviderStatus as unknown as Writable<Record<string, unknown> | null>;
@@ -397,7 +398,9 @@ describe('install()', () => {
         'edit-layers-curated',
         'provenance',
         'case-merge-rename',
-        'dedup'
+        'dedup',
+        'series-queue-v2',
+        'local-folder'
       ].sort()
     );
   });
@@ -464,6 +467,67 @@ describe('connect', () => {
   it('logout is the provider manager logout', async () => {
     await install().logout();
     expect(providerManager.logout).toHaveBeenCalled();
+  });
+});
+
+/** A drop on the page carrying `items` (jsdom has no DragEvent or DataTransfer). */
+function dropOf(items: unknown[]): Event {
+  const e = new Event('drop', { bubbles: true, cancelable: true });
+  Object.defineProperty(e, 'dataTransfer', { value: { items } });
+  return e;
+}
+
+describe('connectFolder (capability local-folder)', () => {
+  afterEach(() => setFolderTestHandle(null));
+
+  it('signs the Local Folder in on the folder dropped next, in place of the picker', async () => {
+    const folder = { kind: 'directory', name: 'Library' };
+    let handed: unknown = 'unset';
+    provider.login.mockImplementationOnce(async () => {
+      handed = folderTestHandle();
+    });
+    const app = vi.fn();
+    document.body.addEventListener('drop', app);
+    try {
+      const pending = install().connectFolder();
+      const drop = dropOf([{ getAsFileSystemHandle: async () => folder }]);
+      document.body.dispatchEvent(drop);
+      const result = await pending;
+      expect(providerManager.getOrLoadProvider).toHaveBeenCalledWith('filesystem');
+      expect(handed).toBe(folder);
+      expect(result.sync).toEqual({ ok: true, errors: [] });
+      // The drop was the driver's alone, and the folder is handed over only once.
+      expect(drop.defaultPrevented).toBe(true);
+      expect(app).not.toHaveBeenCalled();
+      expect(folderTestHandle()).toBeNull();
+      // The listeners went with the drop.
+      document.body.dispatchEvent(dropOf([]));
+      expect(app).toHaveBeenCalledTimes(1);
+    } finally {
+      document.body.removeEventListener('drop', app);
+    }
+  });
+
+  it('a dropped file is no folder: it rejects and connects nothing', async () => {
+    const pending = install().connectFolder();
+    document.body.dispatchEvent(
+      dropOf([{ getAsFileSystemHandle: async () => ({ kind: 'file', name: 'Vol 1.cbz' }) }])
+    );
+    await expect(pending).rejects.toThrow('not a folder');
+    expect(providerManager.getOrLoadProvider).not.toHaveBeenCalled();
+  });
+
+  it('no drop within the wait rejects', async () => {
+    vi.useFakeTimers();
+    try {
+      const pending = install().connectFolder();
+      const settled = expect(pending).rejects.toThrow('no folder was dropped');
+      await vi.advanceTimersByTimeAsync(30_000);
+      await settled;
+      expect(providerManager.getOrLoadProvider).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -892,7 +956,7 @@ describe('reading', () => {
     });
     expect(await install().pendingOcr('v2')).toMatchObject({
       title: 'Server OCR',
-      inline: 'Server OCR: Text queued'
+      inline: 'Server OCR: Mokuro queued'
     });
   });
 

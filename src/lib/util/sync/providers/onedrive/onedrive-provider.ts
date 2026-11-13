@@ -28,7 +28,12 @@ import {
 import { oneDriveRevision } from '../../core/providers/onedrive-core';
 import { getCloudProviderCore } from '../../core/cloud-provider-core-registry';
 import { isSyncableFile } from '../../syncable-file';
-import { ControlNodeCache, readControlNodes } from '../../control-file-read';
+import {
+  ControlNodeCache,
+  controlReadKey,
+  isPathSafeFolderName,
+  readControlNodes
+} from '../../control-file-read';
 import { withCloudBunkoStatus } from '#lib/catalog/cloud-bunko-marker.js';
 
 /** Worth retrying later; a full drive (507) is not, so it is excluded. */
@@ -237,19 +242,35 @@ export class OneDriveProvider implements SyncProvider {
   }
 
   /**
-   * Read a control file at the library root (`mokuro-reader/<name>`): ONE
-   * `GET /me/drive/root:/mokuro-reader/<name>` per read. OneDrive names are
-   * unique within a folder, so there is at most one node. Its `cTag` (content
-   * tag; falls back to `eTag`) is the version: unchanged means no content
-   * download. Never creates anything; a missing file (or folder) is null.
+   * Read a control file at the library root (`mokuro-reader/<name>`), or in a
+   * series folder (`mokuro-reader/<folder>/<name>`): ONE
+   * `GET /me/drive/root:/<path>` per read, each segment encoded on its own.
+   * OneDrive names are unique within a folder and case-insensitive, so every
+   * spelling of `folder` is the one folder and there is at most one node. Its
+   * `cTag` (content tag; falls back to `eTag`) is the version: unchanged means
+   * no content download. Never creates anything; a missing file (or folder)
+   * is null.
    */
-  async readControlFile(name: string, opts?: { ifNoneMatch?: string }): Promise<ControlFileResult> {
+  async readControlFile(
+    name: string,
+    opts?: { ifNoneMatch?: string; folder?: string }
+  ): Promise<ControlFileResult> {
     if (!this.isAuthenticated()) {
       throw new ProviderError('Not authenticated', 'onedrive', 'NOT_AUTHENTICATED', true);
     }
+    const folder = opts?.folder;
+    const key = controlReadKey(name, folder);
+    if (folder !== undefined && !isPathSafeFolderName(folder)) {
+      this.controlCache.retain(key, []);
+      return null;
+    }
     try {
       const token = await onedriveTokenManager.getAccessToken();
-      const item = await getItemByPath(token, `${ONEDRIVE_CONFIG.MOKURO_FOLDER}/${name}`);
+      const path =
+        folder === undefined
+          ? `${ONEDRIVE_CONFIG.MOKURO_FOLDER}/${name}`
+          : `${ONEDRIVE_CONFIG.MOKURO_FOLDER}/${folder}/${name}`;
+      const item = await getItemByPath(token, path);
       const version = item ? (item.cTag ?? item.eTag) : undefined;
       const listed =
         item && version
@@ -262,7 +283,7 @@ export class OneDriveProvider implements SyncProvider {
             ]
           : [];
       return await readControlNodes(
-        name,
+        key,
         listed,
         async (node) => downloadItemContent(await onedriveTokenManager.getAccessToken(), node.id),
         this.controlCache,

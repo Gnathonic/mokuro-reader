@@ -36,7 +36,11 @@ const editor = vi.hoisted(() => ({
   updateVolumeStats: vi.fn(),
   getVolumeData: vi.fn()
 }));
-vi.mock('#lib/util/volume-editor.js', () => ({
+vi.mock('#lib/util/volume-editor.js', async (importOriginal) => ({
+  completionDateInputValue: (await importOriginal<typeof import('#lib/util/volume-editor.js')>())
+    .completionDateInputValue,
+  completedAtFromDateInput: (await importOriginal<typeof import('#lib/util/volume-editor.js')>())
+    .completedAtFromDateInput,
   getAllSeriesOptions: vi.fn(async () => [{ uuid: 's1', title: 'Series' }]),
   generateNewSeriesUuid: vi.fn(() => 'new'),
   updateVolumeInDb: vi.fn(async () => {}),
@@ -150,5 +154,73 @@ describe('VolumeEditorModal cover preview', () => {
     await waitFor(() => expect(hours()).not.toBeNull());
     expect(preview()).toBeNull();
     expect(globalThis.URL.createObjectURL).not.toHaveBeenCalled();
+  });
+});
+
+describe('VolumeEditorModal completion date (#304)', () => {
+  const meta = {
+    volume_uuid: 'vol-1',
+    series_uuid: 's1',
+    series_title: 'Series',
+    volume_title: 'Vol 1',
+    page_count: 100
+  };
+  const finishedOn = () => document.querySelector('#completed-on') as HTMLInputElement | null;
+
+  beforeEach(() => {
+    editor.updateVolumeStats.mockClear();
+    readingStats.store.set({ ready: true });
+    stats.release();
+  });
+  afterEach(() => {
+    closeVolumeEditor();
+    cleanup();
+  });
+
+  it("shows a finished volume's date and saves a corrected one", async () => {
+    const finished = new Date(2026, 9, 11, 21, 30).toISOString();
+    editor.getVolumeData.mockResolvedValue({
+      metadata: meta,
+      stats: new VolumeData({ progress: 100, completed: true, completedAt: finished })
+    });
+    const { getByText } = render(VolumeEditorModal);
+    promptVolumeEditor('vol-1');
+    await waitFor(() => expect(finishedOn()?.value).toBe('2026-10-11'));
+
+    await fireEvent.input(finishedOn()!, { target: { value: '2025-03-02' } });
+    await fireEvent.click(getByText('Save'));
+    await waitFor(() => expect(editor.updateVolumeStats).toHaveBeenCalled());
+    // The day moves; the time of day it was finished stays.
+    expect(editor.updateVolumeStats.mock.calls[0][1].completedAt).toBe(
+      new Date(2025, 2, 2, 21, 30).toISOString()
+    );
+  });
+
+  it('sends no date when it was left alone', async () => {
+    editor.getVolumeData.mockResolvedValue({
+      metadata: meta,
+      stats: new VolumeData({
+        progress: 100,
+        completed: true,
+        completedAt: new Date(2026, 9, 11).toISOString()
+      })
+    });
+    const { getByText } = render(VolumeEditorModal);
+    promptVolumeEditor('vol-1');
+    await waitFor(() => expect(finishedOn()).not.toBeNull());
+    await fireEvent.click(getByText('Save'));
+    await waitFor(() => expect(editor.updateVolumeStats).toHaveBeenCalled());
+    expect('completedAt' in editor.updateVolumeStats.mock.calls[0][1]).toBe(false);
+  });
+
+  it('has no date to edit for an unfinished volume', async () => {
+    editor.getVolumeData.mockResolvedValue({
+      metadata: meta,
+      stats: new VolumeData({ progress: 10 })
+    });
+    render(VolumeEditorModal);
+    promptVolumeEditor('vol-1');
+    await waitFor(() => expect(hours()).not.toBeNull());
+    expect(finishedOn()).toBeNull();
   });
 });

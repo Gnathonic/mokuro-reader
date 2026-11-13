@@ -9,6 +9,7 @@
  */
 
 import { db } from '#lib/catalog/db.js';
+import { mainMakerOfFile } from '#lib/reader/edit/ocr-label.js';
 import { deleteLayersOfVolume, layerTables } from '#lib/catalog/layer-store.js';
 import { requestPersistentStorage } from '#lib/util/upload.js';
 import { sanitizeTitleSegment } from '#lib/util/sanitize-title.js';
@@ -119,6 +120,8 @@ export async function saveVolume(
   // Calculate page_char_counts from pages
   const pageCharCounts = ocrData.pages.map((page) => page.cumulativeChars);
 
+  const mainMaker = mainMakerOfFile(metadata.ocrProvenance, metadata.mokuroVersion);
+
   // Convert ProcessedMetadata to VolumeMetadata format
   const volumeMetadata: VolumeMetadata = {
     mokuro_version: metadata.mokuroVersion || '',
@@ -149,7 +152,9 @@ export async function saveVolume(
       ? { mokuro_sha256_cloud: metadata.mokuroCloud }
       : {}),
     // Same rule: the file's block or none, never a previous install's.
-    ...(metadata.ocrProvenance ? { ocr_provenance: [metadata.ocrProvenance] } : {})
+    ...(metadata.ocrProvenance ? { ocr_provenance: [metadata.ocrProvenance] } : {}),
+    // What made this main (names the primary); unknown for an EDITED main.
+    ...(mainMaker ? { ocr_maker: mainMaker } : {})
   };
 
   // Strip cumulativeChars (it's stored in page_char_counts) — this is the

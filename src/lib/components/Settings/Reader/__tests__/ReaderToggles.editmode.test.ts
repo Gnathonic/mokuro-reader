@@ -28,6 +28,7 @@ vi.mock('#lib/settings/index.js', async () => {
     showTimer: false,
     quickActions: true,
     swapWheelBehavior: false,
+    pageKeysScrollFirst: true,
     disableAnimations: false,
     textBoxContextMenu: false,
     continuousScroll: false,
@@ -105,5 +106,28 @@ describe('ReaderToggles — reading timer', () => {
     // The controls it replaced are gone.
     expect(queryByLabelText('Automatic idle cutoff')).toBeNull();
     expect(queryByLabelText('When a page stays open past the cutoff')).toBeNull();
+  });
+});
+
+describe('ReaderToggles — page keys scroll tall pages (#283)', () => {
+  it('lists the toggle next to the other input toggles and writes the setting', async () => {
+    const { updateSetting } = await import('#lib/settings/index.js');
+    vi.mocked(updateSetting).mockClear();
+    settingsStore.get().update((s) => ({ ...s, continuousScroll: false }));
+    const { getByLabelText } = render(ReaderToggles);
+    const input = getByLabelText(
+      /Page Up\/Down scroll tall pages before turning/
+    ) as HTMLInputElement;
+    expect(input.checked).toBe(true);
+    const swap = getByLabelText(/Swap mouse wheel scroll\/zoom/);
+    expect(swap.compareDocumentPosition(input) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await fireEvent.click(input);
+    expect(updateSetting).toHaveBeenCalledWith('pageKeysScrollFirst', false);
+  });
+
+  it('stays visible in continuous scroll mode (the rule applies there too)', () => {
+    settingsStore.get().update((s) => ({ ...s, continuousScroll: true }));
+    const { getByLabelText } = render(ReaderToggles);
+    expect(getByLabelText(/Page Up\/Down scroll tall pages before turning/)).toBeTruthy();
   });
 });

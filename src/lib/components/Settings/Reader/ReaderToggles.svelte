@@ -47,6 +47,11 @@
           value: $settings.swapWheelBehavior
         },
         {
+          key: 'pageKeysScrollFirst',
+          text: 'Page Up/Down scroll tall pages before turning',
+          value: $settings.pageKeysScrollFirst
+        },
+        {
           key: 'disableAnimations',
           text: 'Disable animations (e-ink)',
           value: $settings.disableAnimations

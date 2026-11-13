@@ -11,8 +11,10 @@ import {
   cbzStemsOf,
   QUEUE_FILE_NAME,
   BUNKO_MARKER_NAME,
+  SERIES_QUEUE_FILE_NAME,
   isBunkoControlFile,
   dedupKeepsEveryCopy,
+  foldFolderName,
   foldStem,
   isReservedLayerSidecarPath,
   layerOwnerArchive,
@@ -493,5 +495,33 @@ describe('isReservedLayerSidecarPath', () => {
     ]) {
       expect(isReservedLayerSidecarPath(path), path).toBe(false);
     }
+  });
+});
+
+describe('the series queue file (queue file v2)', () => {
+  it('is named .mokuro-series-queue.json', () => {
+    expect(SERIES_QUEUE_FILE_NAME).toBe('.mokuro-series-queue.json');
+  });
+
+  it('is never listed, in a series folder or anywhere else', () => {
+    expect(isSyncableFile(`Example Saga/${SERIES_QUEUE_FILE_NAME}`)).toBe(false);
+    expect(isSyncableFile(SERIES_QUEUE_FILE_NAME)).toBe(false);
+    expect(isSidecarFile(SERIES_QUEUE_FILE_NAME)).toBe(false);
+    expect(isRootConfigFile(SERIES_QUEUE_FILE_NAME)).toBe(false);
+  });
+
+  it('is no root control file, and the root names are unchanged', () => {
+    expect(isBunkoControlFile(SERIES_QUEUE_FILE_NAME)).toBe(false);
+    // A merge keeps every copy only of the root files; this one is Bunko's to merge.
+    expect(dedupKeepsEveryCopy(SERIES_QUEUE_FILE_NAME)).toBe(false);
+    expect(QUEUE_FILE_NAME).toBe('.mokuro-queue.json');
+    expect(BUNKO_MARKER_NAME).toBe('.mokuro-bunko.json');
+    expect(isBunkoControlFile(QUEUE_FILE_NAME)).toBe(true);
+    expect(isBunkoControlFile(BUNKO_MARKER_NAME)).toBe(true);
+  });
+
+  it('foldFolderName is NFC then lowercase', () => {
+    expect(foldFolderName('Example SAGA')).toBe('example saga');
+    expect(foldFolderName('Sa\u0301ga')).toBe(foldFolderName('S\u00c1GA'));
   });
 });

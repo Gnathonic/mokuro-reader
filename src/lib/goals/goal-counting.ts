@@ -68,8 +68,9 @@ export function isCompletedInPeriod(
  *   goal.
  * - The volume was already read through BEFORE this period and the reading
  *   since is a revisit rather than a fresh pass. Paging back through the last
- *   chapter of a book you finished last year is not progress toward this year's
- *   goal.
+ *   chapter of a book you finished last year, or looking up a scene in it, is
+ *   not progress toward this year's goal. A "Restart series" since that
+ *   completion IS a fresh pass, declared: no reading has to prove it.
  *
  * MONOTONE IN PAGES READ, which took three attempts to get right. Rules keyed
  * to where the reader is STANDING — "is it finished now", "was it read through
@@ -77,7 +78,7 @@ export function isCompletedInPeriod(
  * depending on position, so finishing a re-read subtracted credit that was
  * already on screen: 89 more pages read, and the goal went down. Keyed instead
  * to whether a fresh pass began after the last pre-period completion, the
- * answer cannot change as the reader advances.
+ * answer can only go from "no" to "yes" as the reader advances.
  *
  * `hasFreshPassSince` is the same classifier `updateProgress` uses to decide
  * whether a completion earns a new date, so "this counts" and "this gets dated"
@@ -102,7 +103,10 @@ export function partialProgressInPeriod(
 
   if (completionsBefore.length > 0) {
     const lastBefore = Math.max(...completionsBefore);
-    if (!hasFreshPassSince(volumeData.recentPageTurns, lastBefore, pageCount)) return 0;
+    const restartedSince = volumeData.archivedReads.some((read) => read.at >= lastBefore);
+    if (!restartedSince && !hasFreshPassSince(volumeData.recentPageTurns, lastBefore, pageCount)) {
+      return 0;
+    }
   }
 
   return calculatePartialVolumeProgressInPeriod(volumeData.recentPageTurns, start, end, pageCount);

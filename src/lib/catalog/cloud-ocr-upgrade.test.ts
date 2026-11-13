@@ -212,12 +212,15 @@ describe('upgradeOcrFromSidecarBlob (a sidecar fetched outside any provider)', (
     await upgradeOcrFromSidecarBlob('vol-1', 'S/Volume 1.mokuro', new Blob(['{}']));
     let row = await (db as any).table('volumes').get('vol-1');
     expect(row.ocr_provenance).toEqual([{ engine, digest: await contentDigest(engine, pages) }]);
+    expect(row.ocr_maker).toEqual({ engine: 'hayai-nova', mokuro_version: '0.2.0' });
 
     await (db as any).table('volumes').put({ ...imageOnlyVolume, ocr_provenance: stale });
     parseMokuroFile.mockResolvedValue({ version: '0.2.0', seriesUuid: 'series-1', pages });
     await upgradeOcrFromSidecarBlob('vol-1', 'S/Volume 1.mokuro', new Blob(['{}']));
     row = await (db as any).table('volumes').get('vol-1');
     expect(row.ocr_provenance).toBeUndefined();
+    // No block: mokuro made the main now.
+    expect(row.ocr_maker).toEqual({ mokuro_version: '0.2.0' });
   });
 
   it('decompresses a .mokuro.gz by its name', async () => {

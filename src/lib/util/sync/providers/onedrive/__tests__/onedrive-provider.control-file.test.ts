@@ -31,7 +31,7 @@ import { getItemByPath, downloadItemContent, createFolder } from '../graph-clien
 import { onedriveTokenManager } from '../token-manager';
 import { ProviderError } from '../../../provider-interface';
 import type { ControlFileRead } from '../../../provider-interface';
-import { BUNKO_MARKER_NAME } from '../../../syncable-file';
+import { BUNKO_MARKER_NAME, SERIES_QUEUE_FILE_NAME } from '../../../syncable-file';
 import {
   ingestMarkerRead,
   resetCloudBunkoMarkersForTest
@@ -136,6 +136,52 @@ describe('OneDriveProvider.readControlFile()', () => {
 
     expect(downloadItemContent).not.toHaveBeenCalled();
     expect(createFolder).not.toHaveBeenCalled();
+  });
+
+  describe('in a series folder ({ folder })', () => {
+    it('reads mokuro-reader/<folder>/<name> by path, one request', async () => {
+      vi.mocked(getItemByPath).mockResolvedValue(item('ctag-s', { id: 'item-s' }));
+      vi.mocked(downloadItemContent).mockImplementation(async () => new Blob(['{"v":2}']));
+
+      const result = (await provider.readControlFile(SERIES_QUEUE_FILE_NAME, {
+        folder: 'Example Saga #1'
+      })) as ControlFileRead;
+
+      expect(getItemByPath).toHaveBeenCalledTimes(1);
+      expect(getItemByPath).toHaveBeenCalledWith(
+        'TOKEN',
+        `mokuro-reader/Example Saga #1/${SERIES_QUEUE_FILE_NAME}`
+      );
+      expect(result.nodes.map((n) => n.id)).toEqual(['item-s']);
+      expect(await result.nodes[0].blob.text()).toBe('{"v":2}');
+    });
+
+    it('keeps the folder’s version apart from the root file of the same name', async () => {
+      vi.mocked(getItemByPath).mockResolvedValue(item('ctag-s', { id: 'item-s' }));
+      const inFolder = (await provider.readControlFile(SERIES_QUEUE_FILE_NAME, {
+        folder: 'Saga'
+      })) as ControlFileRead;
+      vi.mocked(getItemByPath).mockResolvedValue(null);
+      expect(await provider.readControlFile(SERIES_QUEUE_FILE_NAME)).toBeNull();
+
+      vi.mocked(getItemByPath).mockResolvedValue(item('ctag-s', { id: 'item-s' }));
+      vi.mocked(downloadItemContent).mockClear();
+      // Another spelling of the folder is the same folder on OneDrive.
+      expect(
+        await provider.readControlFile(SERIES_QUEUE_FILE_NAME, {
+          folder: 'SAGA',
+          ifNoneMatch: inFolder.etag
+        })
+      ).toBe('not-modified');
+      expect(downloadItemContent).not.toHaveBeenCalled();
+    });
+
+    it('answers null without a request for a folder that is no one series folder', async () => {
+      for (const folder of ['', '.', '..', 'Saga/Sub']) {
+        expect(await provider.readControlFile(SERIES_QUEUE_FILE_NAME, { folder })).toBeNull();
+      }
+      expect(getItemByPath).not.toHaveBeenCalled();
+    });
   });
 
   it('rejects with an auth ProviderError when not authenticated', async () => {

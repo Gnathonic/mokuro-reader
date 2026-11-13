@@ -34,6 +34,7 @@ import {
   layerNameForId
 } from './layers';
 import { isReservedLayerId } from './layer-names';
+import { primaryLayerName } from './ocr-label';
 
 function pg(text: string, img_path = 'p.png'): Page {
   return {
@@ -136,6 +137,8 @@ describe('layers store', () => {
       sourcePages: PAGES
     });
     expect(copy.layer_id).toBe('fix-ups');
+    // Made by name: the user's name, never relabelled (`ocr-label.ts`).
+    expect(copy.named_by_user).toBe(true);
     expect(empty.pages[0].blocks).toEqual([]);
     expect(empty.pages[1].img_path).toBe('q.png');
     const ids = (await listLayers('v1')).map((l) => l.layer_id);
@@ -157,6 +160,8 @@ describe('layers store', () => {
     });
     await renameLayer('v1', 'a', 'B');
     expect((await getLayerWithPages(db, 'v1', 'a'))?.name).toBe('B');
+    // A typed name is marked as the user's: no file's label replaces it.
+    expect((await getLayerWithPages(db, 'v1', 'a'))?.named_by_user).toBe(true);
     await expect(renameLayer('v1', 'original', 'X')).rejects.toThrow();
     await expect(deleteLayer('v1', 'original')).rejects.toThrow();
     await deleteLayer('v1', 'a');
@@ -201,6 +206,42 @@ describe('promoteLayer', () => {
     expect(row.mokuro_sha256).toBe('a'.repeat(64));
     // Where the cloud stores that file is not known here: nothing vouches for it.
     expect(row.mokuro_sha256_cloud).toBeUndefined();
+  });
+
+  it('the main is then named by what made the promoted layer', async () => {
+    await db.volumes.update('v1', {
+      mokuro_version: '0.2.5',
+      ocr_maker: { engine: 'hayai-nova', mokuro_version: '0.2.5' }
+    });
+    const parts = [{ role: 'recognizer', name: 'PP-OCR Manga', version: '0.3' }];
+    await putLayerWithPages(db, {
+      volume_uuid: 'v1',
+      layer_id: 'ppocr-manga',
+      name: 'PP-OCR Manga 0.3',
+      kind: 'ocr',
+      engine: 'ppocr-manga',
+      ocr_parts: parts,
+      created_at: 't',
+      updated_at: 't',
+      cloud: { provider: 'webdav', synced_at: 't' },
+      pages: [pg('しん'), pg('き', 'q.png')]
+    });
+    await promoteLayer('v1', 'ppocr-manga');
+    const row = (await db.volumes.get('v1'))!;
+    expect(row.ocr_maker).toEqual({ engine: 'ppocr-manga', parts });
+    expect(primaryLayerName(row)).toBe('PP-OCR Manga 0.3');
+  });
+
+  it('a promoted layer that knows no maker (edits, original) leaves the main its own', async () => {
+    const maker = { engine: 'hayai-nova', mokuro_version: '0.2.5' };
+    await db.volumes.update('v1', { mokuro_version: '0.2.5', ocr_maker: maker });
+    await createLayer('v1', { name: 'A', pages: [pg('かき'), pg('さ', 'q.png')] });
+    await promoteLayer('v1', 'a');
+    const row = (await db.volumes.get('v1'))!;
+    expect(row.ocr_maker).toEqual(maker);
+    // Edited (promote stamps `ocr_edited_at`), and still named by its maker.
+    expect(typeof row.ocr_edited_at).toBe('string');
+    expect(primaryLayerName(row)).toBe('Hayai Nova');
   });
 
   it('promoting any other layer is a local change on top of the same base: the hash stays', async () => {

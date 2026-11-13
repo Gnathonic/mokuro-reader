@@ -12,7 +12,13 @@ import { activityTracker } from '#lib/util/activity-tracker.js';
 
 export function recordPagedPageView(volumeUuid: string, page: number, pages: Page[]): void {
   const { charCount } = getCharCount(pages, page);
-  updateProgress(volumeUuid, page, charCount, page === pages.length || page === pages.length - 1);
+  updateProgress(
+    volumeUuid,
+    page,
+    charCount,
+    page === pages.length || page === pages.length - 1,
+    pages.length
+  );
   // Record activity for auto-timer and auto-sync
   activityTracker.recordActivity();
 }

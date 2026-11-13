@@ -12,6 +12,7 @@ import {
   clearAllLayers,
   deleteLayerRows,
   deleteLayersOfVolume,
+  backfillSetAsideLayerVersions,
   deleteRetiredPreviousOcrLayers,
   getLayerMeta,
   getLayerPages,
@@ -294,6 +295,41 @@ describe('layer-store', () => {
       expect(await deleteRetiredPreviousOcrLayers(db, isDisplayed)).toBe(0);
       expect(asked).toBe(2);
       expect(await allKeys('volume_ocr_layers')).toEqual(['v1/previous-ocr']);
+    });
+  });
+
+  describe('backfillSetAsideLayerVersions', () => {
+    it("fills a set-aside row's version from its pages, metadata only, and nothing else", async () => {
+      await putLayerWithPages(db, layer('v1', 'pre-upgrade', 'old'));
+      await putLayerWithPages(
+        db,
+        layer('v1', 'previous-ocr-2', 'old', { name: 'Previous OCR (2)' })
+      );
+      // Already known, made by an engine, or not a set-aside id: untouched.
+      await putLayerWithPages(db, layer('v2', 'pre-upgrade', 'x', { mokuro_version: '0.2.2' }));
+      await putLayerWithPages(
+        db,
+        layer('v3', 'pre-upgrade', 'x', { kind: 'ocr', engine: 'hayai-nova' })
+      );
+      await putLayerWithPages(db, layer('v1', 'my-notes', 'x'));
+      // Pages that name no version: nothing to fill.
+      await putLayerWithPages(db, {
+        ...layer('v4', 'pre-upgrade', 'x'),
+        pages: [{ ...pg('x'), version: '' }]
+      });
+
+      expect(await backfillSetAsideLayerVersions(db)).toBe(2);
+      expect(await getLayerMeta(db, 'v1', 'pre-upgrade')).toMatchObject({
+        mokuro_version: '0.2.1',
+        updated_at: 'u'
+      });
+      expect((await getLayerMeta(db, 'v1', 'previous-ocr-2'))!.mokuro_version).toBe('0.2.1');
+      expect((await getLayerMeta(db, 'v2', 'pre-upgrade'))!.mokuro_version).toBe('0.2.2');
+      expect((await getLayerMeta(db, 'v3', 'pre-upgrade'))!.mokuro_version).toBeUndefined();
+      expect((await getLayerMeta(db, 'v1', 'my-notes'))!.mokuro_version).toBeUndefined();
+      expect((await getLayerMeta(db, 'v4', 'pre-upgrade'))!.mokuro_version).toBeUndefined();
+      // Idempotent.
+      expect(await backfillSetAsideLayerVersions(db)).toBe(0);
     });
   });
 });

@@ -40,6 +40,7 @@ import {
   describeContract,
   fixtureFetch,
   fixtureHeader,
+  hasContractFile,
   loadBunkoFixture,
   loadSeed,
   recordRequest,
@@ -61,7 +62,7 @@ import {
 } from '#lib/util/sync/providers/webdav/webdav-upload.js';
 import { webdavAuthorization } from '#lib/util/sync/core/providers/webdav-authorization.js';
 import { webdavCore } from '#lib/util/sync/core/providers/webdav-core.js';
-import { layerSidecarName } from '#lib/util/sync/syncable-file.js';
+import { SERIES_QUEUE_FILE_NAME, layerSidecarName } from '#lib/util/sync/syncable-file.js';
 import { historyMonthOf, historySegmentPath } from '#lib/reading-history/paths.js';
 import { buildLayerMokuroMetadata } from '#lib/util/mokuro-metadata.js';
 import { buildPageCharCounts } from '#lib/catalog/page-char-counts.js';
@@ -282,6 +283,61 @@ describeContract('WebDAV reads through the provider', () => {
       'queue-get'
     );
   });
+
+  // Queue file v2 (§12.2): the series page's read of one series' virtual
+  // file, then its conditional one. The folder is addressed per segment.
+  const seriesQueueIt = hasContractFile('bunko/series-queue-http.json') ? it : it.skip;
+  seriesQueueIt(
+    'series-queue-get and series-queue-get-if-none-match: a series page’s read, then its conditional one',
+    async () => {
+      const provider = await signedIn();
+      const reads = fixtureFetch([fx('series-queue-http')]);
+      fetchHandler.impl = reads.fetch;
+      const first = await provider.readControlFile(SERIES_QUEUE_FILE_NAME, {
+        folder: 'Contract Series'
+      });
+      expect(first).not.toBeNull();
+      expect(first).not.toBe('not-modified');
+      record('series-queue-get', captured(reads.calls[0]), {
+        status: [200],
+        // What `parseSeriesQueueFile` and the trust rule read.
+        body_fields: [
+          'v',
+          'instance_id',
+          'rev',
+          'at',
+          'clock_at',
+          'rows.0.kind',
+          'rows.0.id',
+          'vols.*.0.0',
+          'vols.*.0.1',
+          'done',
+          'live.held_rows',
+          'live.clock',
+          'live.clock_at',
+          'live.batch_s'
+        ],
+        // A queued job's `w` is null when unpriced; no hold is null.
+        nullable_fields: ['vols.*.0.2', 'live.held'],
+        headers: ['etag']
+      });
+
+      const conditional = fixtureFetch([fx('series-queue-http-not-modified')]);
+      fetchHandler.impl = conditional.fetch;
+      expect(
+        await provider.readControlFile(SERIES_QUEUE_FILE_NAME, {
+          folder: 'Contract Series',
+          ifNoneMatch: first.etag
+        })
+      ).toBe('not-modified');
+      record(
+        'series-queue-get-if-none-match',
+        captured(conditional.calls[0]),
+        { status: [304], headers: ['etag'] },
+        'series-queue-get'
+      );
+    }
+  );
 
   it('options-library: the OPTIONS the write-permission fallback and the PUT probe send', async () => {
     const provider = await signedIn();

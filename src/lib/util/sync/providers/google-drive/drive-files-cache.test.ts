@@ -101,6 +101,39 @@ describe('driveFilesCache', () => {
       'Series/Volume 1.webp'
     ]);
   });
+
+  it('names the listed ids of every folder spelled like a series, from its files alone', async () => {
+    const FOLDER = 'application/vnd.google-apps.folder';
+    const file = (id: string, name: string, parent: string) => ({
+      id,
+      name,
+      mimeType: 'application/octet-stream',
+      parents: [parent],
+      modifiedTime: '2026-03-09T00:00:00.000Z',
+      size: '1'
+    });
+    (driveApiClient.listFiles as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { id: 'root', name: 'mokuro-reader', mimeType: FOLDER, parents: ['MY_DRIVE'] },
+      { id: 'saga-1', name: 'Example Saga', mimeType: FOLDER, parents: ['root'] },
+      { id: 'saga-2', name: 'example saga', mimeType: FOLDER, parents: ['root'] },
+      { id: 'other', name: 'Other Saga', mimeType: FOLDER, parents: ['root'] },
+      { id: 'hist', name: 'history', mimeType: FOLDER, parents: ['root'] },
+      { id: 'dev', name: 'device-1', mimeType: FOLDER, parents: ['hist'] },
+      file('a', 'Vol 1.cbz', 'saga-1'),
+      file('b', 'Vol 2.cbz', 'saga-1'),
+      file('c', 'Vol 1.mokuro', 'saga-2'),
+      file('d', 'Vol 1.cbz', 'other'),
+      file('e', 'volume-data.json', 'root')
+    ]);
+
+    await driveFilesCache.fetch();
+
+    expect(driveFilesCache.getListedSeriesFolderIds('EXAMPLE SAGA')).toEqual(['saga-1', 'saga-2']);
+    expect(driveFilesCache.getListedSeriesFolderIds('Other Saga')).toEqual(['other']);
+    // A folder with no listed file, and a root config's bare key, name no folder.
+    expect(driveFilesCache.getListedSeriesFolderIds('Missing')).toEqual([]);
+    expect(driveFilesCache.getListedSeriesFolderIds('volume-data.json')).toEqual([]);
+  });
 });
 
 /**

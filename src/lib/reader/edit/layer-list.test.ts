@@ -94,10 +94,51 @@ describe('nextLayerId', () => {
 });
 
 describe('primaryLayerName', () => {
-  it('names the primary row after the mokuro version, plain mokuro when image-only', () => {
-    expect(primaryLayerName('0.2.2')).toBe('mokuro 0.2.2');
-    expect(primaryLayerName(' 0.1.8 ')).toBe('mokuro 0.1.8');
-    expect(primaryLayerName('')).toBe('mokuro');
+  it('names a primary mokuro made after the mokuro version, plain mokuro when image-only', () => {
+    expect(primaryLayerName({ mokuro_version: '0.2.2' })).toBe('mokuro 0.2.2');
+    expect(primaryLayerName({ mokuro_version: ' 0.1.8 ' })).toBe('mokuro 0.1.8');
+    expect(primaryLayerName({ mokuro_version: '' })).toBe('mokuro');
+    expect(primaryLayerName({})).toBe('mokuro');
     expect(primaryLayerName(undefined)).toBe('mokuro');
+  });
+});
+
+describe('summarizeLayers names', () => {
+  const row = (over: Partial<VolumeOcrLayer>): VolumeOcrLayer => ({
+    volume_uuid: 'v',
+    layer_id: 'x',
+    name: 'X',
+    kind: 'edit',
+    created_at: '2026-01-01',
+    updated_at: 'x',
+    ...over
+  });
+
+  it('shows what made a layer, keeps a name the user typed', () => {
+    const names = summarizeLayers([
+      // Stored before this change: the title-cased slug.
+      row({
+        layer_id: 'pre-upgrade',
+        name: 'Pre Upgrade',
+        mokuro_version: '0.2.2',
+        created_at: '1'
+      }),
+      row({
+        layer_id: 'charspot-small',
+        name: 'Charspot Small',
+        kind: 'ocr',
+        engine: 'charspot-small',
+        ocr_parts: [{ name: 'Charspot Small' }, { name: 'AnimeText', version: '12x' }],
+        created_at: '2'
+      }),
+      row({ layer_id: 'previous-ocr', name: 'Old scan', mokuro_version: '0.2.2', created_at: '3' }),
+      row({ layer_id: 'edit', name: 'Your corrections', created_at: '4' })
+    ]).map((l) => l.name);
+    expect(names).toEqual([
+      'mokuro 0.2.2',
+      'Charspot Small · AnimeText 12x',
+      'Old scan',
+      'Your corrections'
+    ]);
   });
 });

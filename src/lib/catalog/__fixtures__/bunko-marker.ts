@@ -24,7 +24,23 @@ export const MARKER_SNAPSHOT = {
   state: 'active',
   compiles: ['series.json', 'catalog.json'],
   ocr: true,
-  queue: '.mokuro-queue.json',
+  // Queue file v2 (B2): no root queue file is stored; the library-wide queue
+  // state rides the marker's `series_queue` block. Its clock is the identity
+  // with its fit time on the epoch sentinel (`946684800`); the far knot is a
+  // day later and is not a sentinel, so it is not rebased.
+  queue: null as string | null,
+  series_queue: {
+    v: 2,
+    file: '.mokuro-series-queue.json',
+    batch_s: 120,
+    held: { reason: 'no-processor' } as { reason: string } | null,
+    held_rows: [] as string[],
+    clock: [
+      [946684800, 946684800],
+      [946771200, 946771200]
+    ] as [number, number][],
+    clock_at: 946684800
+  },
   dedup: true,
   curated: true,
   took_over_from: null as string | null,

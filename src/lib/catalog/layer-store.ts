@@ -20,7 +20,8 @@
  *   depends on that.
  *
  * Every function takes the connection as its first argument and this module
- * imports nothing at runtime but the dependency-free `mokuro-hash.ts`, because
+ * imports nothing at runtime but the dependency-free `mokuro-hash.ts` and
+ * `layer-names.ts`, because
  * the export Worker (`compress-volume.ts`) opens its own connection and cannot
  * load the main-thread `db` graph. On the
  * main thread `$lib/reader/edit/layers.ts` is the layer API; this is the
@@ -38,6 +39,11 @@ import type {
   VolumeOcrLayerWithPages
 } from '#lib/types/index.js';
 import { isUntouchedUpgradeLayer } from './mokuro-hash';
+import {
+  isSetAsideLayerId,
+  PREVIOUS_OCR_ID_RE,
+  PREVIOUS_OCR_NAME_RE
+} from '#lib/reader/edit/layer-names.js';
 
 export const LAYER_META_TABLE = 'volume_ocr_layers';
 export const LAYER_PAGES_TABLE = 'volume_ocr_layer_pages';
@@ -106,7 +112,9 @@ export function updateLayerMeta(
   db: Dexie,
   volumeUuid: string,
   layerId: string,
-  changes: Partial<Pick<VolumeOcrLayer, 'name' | 'cloud' | 'kind' | 'engine'>>
+  changes: Partial<
+    Pick<VolumeOcrLayer, 'name' | 'cloud' | 'kind' | 'engine' | 'named_by_user' | 'mokuro_version'>
+  >
 ): Promise<number> {
   return metaTable(db).update([volumeUuid, layerId], changes);
 }
@@ -225,8 +233,8 @@ export function clearAllLayers(db: Dexie): Promise<void> {
  * `previous-ocr`, then `previous-ocr-<n>` once the user had edited one), and
  * the names it gave them. The upgrade no longer keeps one.
  */
-const RETIRED_PREVIOUS_OCR_ID = /^previous-ocr(?:-\d+)?$/;
-const RETIRED_PREVIOUS_OCR_NAME = /^Previous OCR(?: \(\d+\))?$/;
+const RETIRED_PREVIOUS_OCR_ID = PREVIOUS_OCR_ID_RE;
+const RETIRED_PREVIOUS_OCR_NAME = PREVIOUS_OCR_NAME_RE;
 
 /**
  * Delete every `previous-ocr` / `previous-ocr-<n>` layer nobody claimed, both
@@ -270,4 +278,34 @@ export async function deleteRetiredPreviousOcrLayers(
     }
     return deleted;
   });
+}
+
+/**
+ * Give each set-aside main (`pre-upgrade…`, `previous-ocr…`) whose row does
+ * not know its maker's version the one its own pages name (mokuro writes
+ * `version` on every page), so it reads "mokuro 0.2.2" rather than "mokuro"
+ * (`ocr-label.ts`). Rows pulled or imported since keep the version their file
+ * names; these are the ones stored before. Metadata only: `updated_at` and
+ * the cloud stamp stay, so nothing is pushed or pulled for it. Only rows with
+ * no engine (an engine names the row itself). Idempotent. Resolves how many
+ * rows it filled.
+ */
+export async function backfillSetAsideLayerVersions(db: Dexie): Promise<number> {
+  const keys = await metaTable(db).toCollection().primaryKeys();
+  const candidates = keys.filter((key) => isSetAsideLayerId(key[1]));
+  if (candidates.length === 0) return 0;
+  const metas = await metaTable(db).bulkGet(candidates);
+  let filled = 0;
+  for (const meta of metas) {
+    if (!meta || meta.engine || meta.mokuro_version) continue;
+    const pages = await getLayerPages(db, meta.volume_uuid, meta.layer_id);
+    const version = pages
+      ?.map((p) => (typeof p?.version === 'string' ? p.version.trim() : ''))
+      .find(Boolean);
+    if (!version) continue;
+    filled += await updateLayerMeta(db, meta.volume_uuid, meta.layer_id, {
+      mokuro_version: version
+    });
+  }
+  return filled;
 }

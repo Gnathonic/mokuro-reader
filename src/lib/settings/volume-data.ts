@@ -13,6 +13,7 @@ import { hasFreshPassSince } from '#lib/util/volume-helpers.js';
 import { SERIES_SECTION_KEY } from './series-data';
 import { TRACKING_SECTION_KEY } from './tracking-data';
 import { recordEvent } from '#lib/reading-history/record.js';
+import { VISIT_GAP_MS } from '#lib/reading-history/visits.js';
 
 // Deep equality check for settings objects
 function settingsEqual(
@@ -769,41 +770,88 @@ function notifyPosition(volumeUuid: string) {
 /**
  * Has the reader started a fresh pass since this volume was last finished?
  *
- * The `completed` flag alone is a poor signal: it falls on any page below the
- * last-page window, on the reader-settings page input and on `toggleHasCover`,
- * so a bare false->true edge re-dated a volume finished in 2025 the moment
- * somebody paged back two pages and forward one in 2026 — and that date decides
- * which year's goal the volume counts toward.
+ * The `completed` flag alone is a poor signal: it used to fall on any page
+ * below the last-page window (it no longer does for a finished volume, see
+ * `updateProgress`), on the reader-settings page input and on
+ * `toggleHasCover`, so a bare false->true edge re-dated a volume finished in
+ * 2025 the moment somebody paged back two pages and forward one in 2026 — and
+ * that date decides which year's goal the volume counts toward.
  *
  * `hasFreshPassSince` is shared with the goals module's partial-credit rule on
- * purpose; see its doc comment for why the two must answer alike.
+ * purpose; see its doc comment for why they must answer alike.
+ *
+ * `undated` answers for a volume with no completion date to measure from:
+ * true when it is about to be finished for the first time (this IS the first
+ * pass), false when asking whether a finished-but-undated volume is being
+ * read again (nothing says since when, so it stays finished).
  */
 function startedFreshPassSince(
   volume: string,
   volumeData: VolumeData,
   sinceIso: string | undefined,
-  completingPage: number
+  referencePage: number,
+  undated = true
 ): boolean {
-  if (!sinceIso) return true; // never finished before — this IS the first pass
+  if (!sinceIso) return undated;
   const since = Date.parse(sinceIso);
-  if (Number.isNaN(since)) return true;
+  if (Number.isNaN(since)) return undated;
 
   // Reading history's turns once loaded (every device's), else the record's own.
   const turns = projectedTurnsOf(volume, volumeData);
-  return hasFreshPassSince(turns, since, completingPage);
+  return hasFreshPassSince(turns, since, referencePage);
 }
 
+/**
+ * How long a finish stays the reader's to take back by paging away from the
+ * end (`updateProgress`): one visit's gap. An undated finish (from before
+ * completion dates, or marked on a device that lost the date) has settled.
+ */
+export const FINISH_SETTLE_MS = VISIT_GAP_MS;
+
+function finishSettled(completedAt: string | undefined, now: number): boolean {
+  const at = completedAt ? Date.parse(completedAt) : NaN;
+  return Number.isNaN(at) || now - at >= FINISH_SETTLE_MS;
+}
+
+/**
+ * The reader's position report: the page on screen, the characters through it,
+ * and whether that is the end of the volume (`completed`).
+ *
+ * `pageCount` is the volume's length when the caller knows it (the reader's
+ * page turns). Without it a finished volume can only stay finished: callers
+ * that merely move the page (the cover toggle, the page input) pass none.
+ *
+ * A FINISHED VOLUME STAYS FINISHED when the reader pages back in it (#304).
+ * Going back to check a scene in a volume read last month used to drop the
+ * flag and the characters with it: the volume jumped back into "Currently
+ * Reading", its series to the front of the catalog, the re-read prompt and
+ * the series' read count stopped seeing it as read, and the next flip to the
+ * end (or "Mark as read") re-dated it into the current goal period. The page
+ * still moves — the reader stands where the user left it — but the flag and
+ * the pass's characters hold until the reader is genuinely reading the volume
+ * again (`hasFreshPassSince` against the page count: one stretch of reading,
+ * begun in its first half, through a quarter of its pages since it was
+ * finished — look-ups on separate visits never add up to one). Only the explicit
+ * un-reads (Mark as unread, Restart series, forget), which return the page to
+ * 0, end a finish otherwise.
+ *
+ * A finish holds once it has settled (`FINISH_SETTLE_MS`). Paging back within
+ * minutes of reaching the end takes the finish back, as it always did: the
+ * end reached by a slip of the slider, or by a look-up visit that may still be
+ * restored (its held completion is then never announced). It keeps its date
+ * either way, and only a fresh pass re-dates it.
+ */
 export function updateProgress(
   volume: string,
   progress: number,
   chars?: number,
-  completed = false
+  completed = false,
+  pageCount?: number
 ) {
   let becameCompleted = false;
   let moved = false;
   _volumesInternal.update((prev) => {
     const currentVolume = prev[volume] || new VolumeData();
-    becameCompleted = completed && !currentVolume.completed;
     const nowIso = new Date().toISOString();
 
     // No page turn is written any more (phase 2b): the reader records each view
@@ -832,6 +880,19 @@ export function updateProgress(
         });
     }
 
+    // Paged back in a finished volume: still finished unless a re-read is under
+    // way. Page 0 is the explicit un-read (`markVolumeAsUnread`).
+    const keepsFinish =
+      !completed &&
+      currentVolume.completed &&
+      progress > 0 &&
+      finishSettled(currentVolume.completedAt, Date.parse(nowIso)) &&
+      !(
+        pageCount &&
+        startedFreshPassSince(volume, currentVolume, currentVolume.completedAt, pageCount, false)
+      );
+    const finished = completed || keepsFinish;
+
     // The reader reports the page it shows when a volume opens, and again on
     // layout changes. A report of the position the record already holds is
     // not a position change: stamping it would make an opened-but-unread
@@ -847,45 +908,64 @@ export function updateProgress(
     if (
       prev[volume] &&
       progress === currentVolume.progress &&
-      completed === currentVolume.completed
+      finished === currentVolume.completed
     ) {
       return prev;
     }
     moved = true;
+
+    /*
+     * A completion is NEW — dated now and announced — for a GENUINE pass only:
+     * the flag rising from a volume never finished, or the end of a fresh pass
+     * through one finished before (`startedFreshPassSince`, which also answers
+     * for a volume whose flag fell while it was being read again).
+     *
+     * Reaching the end again after a look back is not one. Neither was the bare
+     * false->true edge before the flag held: "tap back twice, forward once" in
+     * a volume finished last year re-dated it into this year's goal, the
+     * original date gone from every device after the next sync. Write-once was
+     * no better in the other direction: a real cover-to-cover re-read kept its
+     * old date and counted for nothing.
+     */
+    // Against the page count when the caller knows it, as the flag above and
+    // the goals' partial credit measure: the completing page may be the
+    // second-to-last, and a quarter of it can be one page less than a quarter
+    // of the volume — a revisit the flag held, re-dated on the next turn.
+    const newCompletion =
+      completed &&
+      startedFreshPassSince(
+        volume,
+        currentVolume,
+        currentVolume.completedAt,
+        pageCount ?? progress,
+        !currentVolume.completed
+      );
+    becameCompleted = completed && (!currentVolume.completed || newCompletion);
 
     return {
       ...prev,
       [volume]: new VolumeData({
         ...currentVolume,
         progress,
-        chars: chars ?? currentVolume.chars,
-        completed,
+        // A look back takes none of the pass's characters back.
+        chars: keepsFinish
+          ? Math.max(currentVolume.chars, chars ?? 0)
+          : (chars ?? currentVolume.chars),
+        completed: finished,
         /*
-         * Re-dated only for a GENUINE second reading — the flag rising again
-         * AND a page turn back at the start since the last completion.
-         *
-         * The bare false->true edge is not enough. The flag falls on any page
-         * below the last-page window, on the reader-settings page input and on
-         * `toggleHasCover`, so "tap back twice, forward once" in a volume
-         * finished last year re-dated it into this year's goal — a book the
-         * user did not read this year inflating the count, and the original
-         * date gone from every device after the next sync. Write-once was no
-         * better in the other direction: a real cover-to-cover re-read kept its
-         * old date and counted for nothing.
-         *
-         * `completed: false` NEVER clears it here. `updateProgress`'s
+         * `completed: false` NEVER clears the date here. `updateProgress`'s
          * `completed` parameter defaults to false and two callers pass only
          * three arguments — `toggleHasCover` in Reader.svelte and the
          * page-number input in ReaderSettings.svelte — so a false here
          * frequently means "the caller said nothing", not "the user un-read
          * this". The three paths that genuinely un-read a volume clear it.
+         *
+         * Nor is a date ever made up for a finish that has none (from before
+         * completion dates, after the one-time backfill): reaching the end of
+         * it again is not when it was read, and today's date would pile it
+         * into the current goal period. A first finish is a new completion.
          */
-        completedAt: completed
-          ? becameCompleted &&
-            startedFreshPassSince(volume, currentVolume, currentVolume.completedAt, progress)
-            ? nowIso
-            : (currentVolume.completedAt ?? nowIso)
-          : currentVolume.completedAt,
+        completedAt: newCompletion ? nowIso : currentVolume.completedAt,
         lastProgressUpdate: nowIso
       })
     };

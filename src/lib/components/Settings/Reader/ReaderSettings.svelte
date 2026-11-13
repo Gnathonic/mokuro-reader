@@ -95,7 +95,7 @@
     !!currentLayer &&
       isTranslationLayer({ layer_id: currentLayer, kind: currentLayerSummary?.kind })
   );
-  // The primary row is named after the mokuro version on the volume's DB row.
+  // The primary row is named after what made it, from the volume's DB row (`ocr-label.ts`).
   let primaryName = $state('mokuro');
   $effect(() => {
     const id = inReader ? volumeId : '';
@@ -104,7 +104,7 @@
     db.volumes
       .get(id)
       .then((row) => {
-        if (!cancelled) primaryName = primaryLayerName(row?.mokuro_version);
+        if (!cancelled) primaryName = primaryLayerName(row);
       })
       .catch(() => {});
     return () => {

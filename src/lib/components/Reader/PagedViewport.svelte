@@ -27,6 +27,7 @@
   import { TapDiscriminator } from '#lib/reader/input/tap.js';
   import { classifySwipe } from '#lib/reader/input/swipe.js';
   import type { MotionGate } from '#lib/reader/input/motion-gate.js';
+  import { pageKeyStep } from '#lib/reader/page-key-step.js';
 
   interface Props {
     /** Native pixel size of the displayed page or pair — from page data, not DOM. */
@@ -95,6 +96,11 @@
     );
   }
 
+  /** One-shot "open page `key` at its bottom" — see landAtEndOf. */
+  let pendingEndLanding: { key: number | string; at: number } | null = null;
+  /** A landing request older than this belongs to a turn that never happened. */
+  const LANDING_TTL_MS = 2000;
+
   // Re-apply on page-identity / content / mode / viewport / direction
   // changes. The base is computed from page data, so the {#key page}
   // transition overlap can't skew it; pageKey makes uniform-dimension page
@@ -106,6 +112,14 @@
     if (sig === lastSig) return;
     lastSig = sig;
     applyBase(mode);
+    // A backward page-key turn asked to open this page at its bottom (#283).
+    // Consumed by the first re-apply after the request, whatever caused it:
+    // only the turn it was made for (same page, moments later) honours it.
+    const landing = pendingEndLanding;
+    pendingEndLanding = null;
+    if (landing && landing.key === pageKey && performance.now() - landing.at < LANDING_TTL_MS) {
+      camera.placeAtEnd();
+    }
   });
 
   // Enabling bounds/mobile mid-session must clamp the current view
@@ -199,6 +213,25 @@
     camera.panBy(0, direction === 'down' ? -amount : amount);
   }
 
+  /** Page Down / Space / Page Up (#283) — see PagedZoomApi.pageKeyScroll. */
+  function pageKeyScroll(direction: 'forward' | 'backward'): boolean {
+    motion.beforeAnimatedScroll();
+    const step = pageKeyStep({
+      direction,
+      view: { start: 0, end: viewportHeight },
+      current: camera.verticalExtent(),
+      enabled: true
+    });
+    if (step.kind === 'turn') return false;
+    // Content moves up (negative translate) as the view moves down the page.
+    camera.panBy(0, -step.by);
+    return true;
+  }
+
+  function landAtEndOf(key: number | string) {
+    pendingEndLanding = { key, at: performance.now() };
+  }
+
   function zoomFitToScreen() {
     // Show the whole page without changing the persisted mode — the next
     // page turn re-applies the user's zoomDefault.
@@ -213,7 +246,9 @@
 
   const api: PagedZoomApi = {
     scrollImage,
-    zoomFitToScreen
+    zoomFitToScreen,
+    pageKeyScroll,
+    landAtEndOf
   };
 
   // ============================================================

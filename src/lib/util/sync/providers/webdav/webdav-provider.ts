@@ -42,7 +42,7 @@ import {
   isReservedLayerSidecarPath,
   isSyncableFile
 } from '../../syncable-file';
-import { controlSetEtag } from '../../control-file-read';
+import { controlReadKey, controlSetEtag, isPathSafeFolderName } from '../../control-file-read';
 import { withCloudBunkoStatus } from '#lib/catalog/cloud-bunko-marker.js';
 import { bunkoSupportsHistory } from './bunko-version';
 
@@ -1771,18 +1771,34 @@ export class WebDAVProvider implements SyncProvider {
   }
 
   /**
-   * Read `<server>/mokuro-reader/<name>` with ONE conditional GET (the server
-   * does the version check: `If-None-Match` with the previous read's ETag).
-   * 304 -> 'not-modified', 404 -> null, 200 -> a single node.
+   * Read `<server>/mokuro-reader/<name>`, or `<server>/mokuro-reader/<folder>/<name>`
+   * for a series folder's file, with ONE conditional GET (the server does the
+   * version check: `If-None-Match` with the previous read's ETag). Each path
+   * segment is encoded on its own. 304 -> 'not-modified', 404 -> null, 200 ->
+   * a single node. The folder is addressed as spelled: a case-insensitive
+   * server (a Bunko) resolves every spelling, a case-sensitive one answers
+   * for that spelling.
    */
-  async readControlFile(name: string, opts?: { ifNoneMatch?: string }): Promise<ControlFileResult> {
+  async readControlFile(
+    name: string,
+    opts?: { ifNoneMatch?: string; folder?: string }
+  ): Promise<ControlFileResult> {
     const account = this.sessionAccount();
     if (!this.isAuthenticated() || !account) {
       throw new ProviderError('Not authenticated', 'webdav', 'NOT_AUTHENTICATED', true);
     }
+    const folder = opts?.folder;
+    const key = controlReadKey(name, folder);
+    if (folder !== undefined && !isPathSafeFolderName(folder)) {
+      this.controlReads.delete(key);
+      return null;
+    }
     const base = stripUrlUserinfo(account.serverUrl).replace(/\/$/, '');
-    const url = `${base}${MOKURO_FOLDER}/${encodeURIComponent(name)}`;
-    const previous = this.controlReads.get(name);
+    const url =
+      folder === undefined
+        ? `${base}${MOKURO_FOLDER}/${encodeURIComponent(name)}`
+        : `${base}${MOKURO_FOLDER}/${encodeURIComponent(folder)}/${encodeURIComponent(name)}`;
+    const previous = this.controlReads.get(key);
     const conditional =
       previous !== undefined &&
       opts?.ifNoneMatch !== undefined &&
@@ -1820,7 +1836,7 @@ export class WebDAVProvider implements SyncProvider {
 
     if (response.status === 304 && conditional) return 'not-modified';
     if (response.status === 404) {
-      this.controlReads.delete(name);
+      this.controlReads.delete(key);
       return null;
     }
     if (response.status === 401 && reissue !== 'transient') {
@@ -1850,7 +1866,7 @@ export class WebDAVProvider implements SyncProvider {
     const serverEtag =
       response.headers.get('ETag') || lastModified || (await bodyFingerprint(blob));
     const etag = controlSetEtag([{ id: url, etag: serverEtag }]);
-    this.controlReads.set(name, { setEtag: etag, serverEtag });
+    this.controlReads.set(key, { setEtag: etag, serverEtag });
     // A server that ignored the conditional still answers 'unchanged' honestly.
     if (opts?.ifNoneMatch !== undefined && opts.ifNoneMatch === etag) return 'not-modified';
     const modifiedMs = lastModified ? Date.parse(lastModified) : NaN;

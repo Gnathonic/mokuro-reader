@@ -1076,7 +1076,8 @@ async function installDownloadedLayers(
       if (read) {
         await attachLayerToVolume(volumeUuid, entry.layerId, read.pages, {
           passive: true,
-          engine: read.engine
+          engine: read.engine,
+          made: read.made
         });
       }
     }

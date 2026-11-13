@@ -23,6 +23,7 @@ vi.mock('#lib/util/sync/providers/google-drive/drive-files-cache.js', () => ({
   driveFilesCache: {
     getReaderFolderId: vi.fn(async () => null),
     getListedReaderFolderIds: vi.fn((): string[] | null => null),
+    getListedSeriesFolderIds: vi.fn((_folder: string): string[] => []),
     setReaderFolderId: vi.fn(),
     clear: vi.fn(),
     fetch: vi.fn(async () => {})
@@ -49,7 +50,7 @@ import { driveFilesCache } from '#lib/util/sync/providers/google-drive/drive-fil
 import { tokenManager } from '#lib/util/sync/providers/google-drive/token-manager.js';
 import { ProviderError } from '../../provider-interface';
 import type { ControlFileRead } from '../../provider-interface';
-import { BUNKO_MARKER_NAME } from '../../syncable-file';
+import { BUNKO_MARKER_NAME, SERIES_QUEUE_FILE_NAME } from '../../syncable-file';
 import {
   ingestMarkerRead,
   resetCloudBunkoMarkersForTest
@@ -122,6 +123,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(tokenManager.isAuthenticated).mockReturnValue(true);
   vi.mocked(driveFilesCache.getListedReaderFolderIds).mockReturnValue(null);
+  vi.mocked(driveFilesCache.getListedSeriesFolderIds).mockReturnValue([]);
   vi.mocked(driveApiClient.downloadFile).mockImplementation(
     async (id: string) => new Blob([bodies[id] ?? ''])
   );
@@ -399,6 +401,85 @@ describe('GoogleDriveProvider.readControlFile()', () => {
 
     expect(error.isAuthError).toBe(true);
     expect(error.code).toBe('AUTH_EXPIRED');
+  });
+
+  describe('in a series folder ({ folder })', () => {
+    const queueFile = (id: string, parent: string, md5 = `md5-${id}`) => ({
+      id,
+      name: SERIES_QUEUE_FILE_NAME,
+      md5Checksum: md5,
+      modifiedTime: '2026-10-12T09:00:00.000Z',
+      parents: [parent]
+    });
+
+    it('asks for the parents the listing holds for every copy of the folder: ONE query, no folder lookup', async () => {
+      vi.mocked(driveFilesCache.getListedSeriesFolderIds).mockReturnValue(['saga-1', 'saga-2']);
+      mockDrive({
+        roots: ['root-1'],
+        files: () => [queueFile('q-1', 'saga-1'), queueFile('q-2', 'saga-2')]
+      });
+      bodies['q-1'] = '{"v":2,"rev":1}';
+      bodies['q-2'] = '{"v":2,"rev":2}';
+
+      const result = (await googleDriveProvider.readControlFile(SERIES_QUEUE_FILE_NAME, {
+        folder: 'Example Saga'
+      })) as ControlFileRead;
+
+      expect(driveFilesCache.getListedSeriesFolderIds).toHaveBeenCalledWith('Example Saga');
+      const queries = vi.mocked(driveApiClient.listFiles).mock.calls.map(([q]) => q);
+      expect(queries).toEqual([
+        `name='${SERIES_QUEUE_FILE_NAME}' and trashed=false and ('saga-1' in parents or 'saga-2' in parents)`
+      ]);
+      expect(folderQueries()).toHaveLength(0);
+      expect(result.nodes.map((n) => n.id).sort()).toEqual(['q-1', 'q-2']);
+      expect(await result.nodes.find((n) => n.id === 'q-2')!.blob.text()).toBe('{"v":2,"rev":2}');
+
+      // Unchanged: one files.list, no download.
+      vi.mocked(driveApiClient.downloadFile).mockClear();
+      expect(
+        await googleDriveProvider.readControlFile(SERIES_QUEUE_FILE_NAME, {
+          folder: 'example saga',
+          ifNoneMatch: result.etag
+        })
+      ).toBe('not-modified');
+      expect(driveApiClient.downloadFile).not.toHaveBeenCalled();
+    });
+
+    it('caches bodies per folder: the root file of the same name is a separate read', async () => {
+      vi.mocked(driveFilesCache.getListedSeriesFolderIds).mockReturnValue(['saga-1']);
+      mockDrive({
+        roots: ['root-1'],
+        files: (q) =>
+          q.includes("'saga-1' in parents")
+            ? [queueFile('q-1', 'saga-1')]
+            : [queueFile('q-root', 'root-1')]
+      });
+      bodies['q-1'] = '{"v":2}';
+      bodies['q-root'] = '{"root":true}';
+
+      await googleDriveProvider.readControlFile(SERIES_QUEUE_FILE_NAME, { folder: 'Saga' });
+      // A root read of the same name neither drops nor reuses the folder's body.
+      const root = (await googleDriveProvider.readControlFile(
+        SERIES_QUEUE_FILE_NAME
+      )) as ControlFileRead;
+      expect(root.nodes.map((n) => n.id)).toEqual(['q-root']);
+      vi.mocked(driveApiClient.downloadFile).mockClear();
+      const again = (await googleDriveProvider.readControlFile(SERIES_QUEUE_FILE_NAME, {
+        folder: 'Saga'
+      })) as ControlFileRead;
+      expect(await again.nodes[0].blob.text()).toBe('{"v":2}');
+      expect(driveApiClient.downloadFile).not.toHaveBeenCalled();
+    });
+
+    it('answers null with no request for a folder the listing does not hold', async () => {
+      mockDrive({ roots: ['root-1'], files: () => [] });
+
+      expect(
+        await googleDriveProvider.readControlFile(SERIES_QUEUE_FILE_NAME, { folder: 'Unknown' })
+      ).toBeNull();
+      expect(driveApiClient.listFiles).not.toHaveBeenCalled();
+      expect(driveApiClient.createFolder).not.toHaveBeenCalled();
+    });
   });
 
   it('wraps other failures as non-auth ProviderErrors', async () => {
