@@ -189,6 +189,12 @@ export interface CloudCache<T = any> {
   beginHistoryPatch?(): HistoryListingPatch;
 
   /**
+   * Would {@link refreshFromChanges} answer from the feed rather than list
+   * the whole account? OPTIONAL, with the feed: absent = no feed to use.
+   */
+  changeFeedUsable?(): boolean;
+
+  /**
    * Clear all cached data
    */
   clear(): void;
@@ -218,6 +224,17 @@ export interface CloudCache<T = any> {
    * @param fileId Provider-specific file ID
    */
   removeById?(fileId: string): void;
+
+  /**
+   * List ONE folder again (`list`, the provider's `listFolder`) and replace
+   * the cached entries under `folder/` with what it found, leaving every
+   * other folder as it is: the scoped pull after a finished OCR job (queue
+   * file v2). Writes this app makes while the folder is listed are kept
+   * (`CoalescedCacheStore.beginPartialListing`). False, with nothing changed,
+   * when the cache is not loaded yet (the first listing is still coming) or
+   * a whole-account install or a clear overtook it. Rejects when `list` does.
+   */
+  replaceFolderEntries?(folder: string, list: () => Promise<T[]>): Promise<boolean>;
 
   /**
    * Update file metadata in the cache

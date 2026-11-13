@@ -1383,6 +1383,64 @@ describe('MegaProvider.readControlFile() — live tree', () => {
     expect(await provider.readControlFile(MARKER)).toBeNull();
   });
 
+  describe('in a series folder ({ folder })', () => {
+    const SQ = '.mokuro-series-queue.json';
+
+    it('returns the file of every folder spelled like it, under every library root, and nothing else', async () => {
+      const rootA = makeFolder();
+      const rootB = makeFolder();
+      const elsewhere = makeFolder('Documents');
+      const sagaA = makeFolder('Example Saga', rootA);
+      const sagaLower = makeFolder('example saga', rootA);
+      const sagaB = makeFolder('EXAMPLE SAGA', rootB);
+      const notSeries = makeFolder('Example Saga', elsewhere);
+      const nested = makeFolder('Example Saga', makeFolder('Deeper', rootA));
+      const other = makeFolder('Other Saga', rootA);
+      const nodes = {
+        qa: makeNode('Hqa', SQ, sagaA, 1_780_000_100, '{"rev":1}'),
+        ql: makeNode('Hql', SQ, sagaLower, 1_780_000_200, '{"rev":2}'),
+        qb: makeNode('Hqb', SQ, sagaB, 1_780_000_300, '{"rev":3}'),
+        qx: makeNode('Hqx', SQ, notSeries, 1_780_000_400, '{"rev":4}'),
+        qn: makeNode('Hqn', SQ, nested, 1_780_000_500, '{"rev":5}'),
+        qo: makeNode('Hqo', SQ, other, 1_780_000_600, '{"rev":6}'),
+        // Same name at the library root: a root read's business only.
+        qr: makeNode('Hqr', SQ, rootA, 1_780_000_700, '{"rev":7}')
+      };
+      const provider = await loginWithTree({
+        rootA,
+        rootB,
+        elsewhere,
+        sagaA,
+        sagaLower,
+        sagaB,
+        notSeries,
+        nested,
+        other,
+        ...nodes
+      });
+
+      const read = (await provider.readControlFile(SQ, { folder: 'Example Saga' })) as any;
+
+      expect(read.nodes.map((n: any) => n.id)).toEqual(['Hqb', 'Hql', 'Hqa']);
+      for (const n of [nodes.qx, nodes.qn, nodes.qo, nodes.qr]) {
+        expect(n.download).not.toHaveBeenCalled();
+      }
+
+      // Zero requests until a body changes; another spelling is the same read.
+      expect(
+        await provider.readControlFile(SQ, { folder: 'example SAGA', ifNoneMatch: read.etag })
+      ).toBe('not-modified');
+      // Another folder's read leaves this one's bodies cached.
+      await provider.readControlFile(SQ, { folder: 'Other Saga' });
+      await provider.readControlFile(SQ, { folder: 'Example Saga' });
+      expect(nodes.qa.download).toHaveBeenCalledTimes(1);
+      expect(nodes.qo.download).toHaveBeenCalledTimes(1);
+
+      expect(await provider.readControlFile(SQ, { folder: 'Missing' })).toBeNull();
+      expect(await provider.readControlFile(SQ, { folder: '' })).toBeNull();
+    });
+  });
+
   it('never reinitializes or reloads the storage', async () => {
     const folder = makeFolder();
     const marker = makeNode('H1', MARKER, folder, 1_780_000_000);
@@ -1414,7 +1472,7 @@ describe('MegaProvider.readControlFile() — live tree', () => {
       await provider.readControlFile(MARKER);
       const seen: string[] = [];
       provider.onControlFileChange((name: string) => seen.push(name));
-      provider.scheduleControlNotify(MARKER, provider.storage);
+      provider.scheduleControlNotify(MARKER, undefined, provider.storage);
       expect(provider.controlCache.byName.size).toBe(1);
       expect(provider.vanishedControlHandles.size).toBe(1);
 
@@ -1422,7 +1480,7 @@ describe('MegaProvider.readControlFile() — live tree', () => {
 
       expect(provider.controlCache.byName.size).toBe(0);
       expect(provider.vanishedControlHandles.size).toBe(0);
-      expect(provider.controlPendingNames.size).toBe(0);
+      expect(provider.controlPending.size).toBe(0);
       expect(provider.controlNotifyTimer).toBeNull();
       await vi.advanceTimersByTimeAsync(1000);
       expect(seen).toEqual([]);
@@ -1545,6 +1603,108 @@ describe('MegaProvider.onControlFileChange()', () => {
     await (provider as any).refreshTree();
     await vi.advanceTimersByTimeAsync(600);
     expect(seen).toEqual([]);
+  });
+
+  describe('a series folder queue file', () => {
+    const SQ = '.mokuro-series-queue.json';
+
+    async function withSeries() {
+      const root = { name: 'mokuro-reader', directory: true, children: [] as any[] } as any;
+      const folder = (name: string, parent: any) => {
+        const f = { name, directory: true, parent, children: [] as any[] } as any;
+        parent.children.push(f);
+        return f;
+      };
+      const saga = folder('Example Saga', root);
+      const other = folder('Other Saga', root);
+      const outside = folder('Example Saga', { name: 'Documents', directory: true, children: [] });
+      storageState.files = { root, saga, other };
+      const provider = new MegaProvider();
+      await provider.whenReady();
+      await provider.login({ email: 'a@b.c', password: 'secret' });
+      const storage = (provider as any).storage;
+      const emit = (event: string, ...args: any[]) => {
+        for (const [name, handler] of storage.on.mock.calls) if (name === event) handler(...args);
+      };
+      const seen: Array<[string, string | undefined]> = [];
+      provider.onControlFileChange((name, f) => seen.push([name, f]));
+      return { provider, emit, seen, root, saga, other, outside };
+    }
+
+    it('fires with the series folder its node sits in (a delete keeps its parent link)', async () => {
+      const { emit, seen, saga } = await withSeries();
+
+      emit('add', { name: SQ, parent: saga });
+      emit('update', { name: SQ, parent: saga });
+      emit('delete', { name: SQ, parent: saga });
+      emit('add', { name: '.mokuro-bunko.json' });
+      await vi.advanceTimersByTimeAsync(600);
+
+      expect(seen).toEqual([
+        [SQ, 'Example Saga'],
+        ['.mokuro-bunko.json', undefined]
+      ]);
+    });
+
+    it('a move between two series names both folders', async () => {
+      const { emit, seen, saga, other } = await withSeries();
+
+      emit('move', { name: SQ, parent: other }, saga);
+      await vi.advanceTimersByTimeAsync(600);
+
+      expect(seen.sort()).toEqual([
+        [SQ, 'Example Saga'],
+        [SQ, 'Other Saga']
+      ]);
+    });
+
+    it('stays silent for the name outside a series folder, and for look-alike names', async () => {
+      const { emit, seen, root, outside, saga } = await withSeries();
+
+      emit('add', { name: SQ, parent: root }); // the library root is no series
+      emit('add', { name: SQ, parent: outside }); // not under a library root
+      emit('add', { name: SQ }); // no parent at all
+      emit('add', { name: '.MOKURO-SERIES-QUEUE.JSON', parent: saga });
+      emit('add', { name: '.mokuro-queue.json.json', parent: saga });
+      await vi.advanceTimersByTimeAsync(600);
+
+      expect(seen).toEqual([]);
+    });
+
+    it('fires for a series file whose handles a full tree load changed — added, replaced or gone', async () => {
+      const { provider, seen, saga, other } = await withSeries();
+      const storage = (provider as any).storage;
+      const node = (handle: string, parent: any) => {
+        const n = { nodeId: handle, name: SQ, directory: false, parent, timestamp: 1 } as any;
+        parent.children.push(n);
+        return n;
+      };
+
+      storage.reload.mockImplementationOnce(async () => {
+        storage.files.q1 = node('Q1', saga);
+      });
+      await (provider as any).refreshTree();
+      await vi.advanceTimersByTimeAsync(600);
+      expect(seen).toEqual([[SQ, 'Example Saga']]);
+
+      seen.length = 0;
+      storage.reload.mockImplementationOnce(async () => {
+        saga.children.splice(saga.children.indexOf(storage.files.q1), 1);
+        delete storage.files.q1;
+        storage.files.q2 = node('Q2', other);
+      });
+      await (provider as any).refreshTree();
+      await vi.advanceTimersByTimeAsync(600);
+      expect(seen.sort()).toEqual([
+        [SQ, 'Example Saga'],
+        [SQ, 'Other Saga']
+      ]);
+
+      seen.length = 0;
+      await (provider as any).refreshTree();
+      await vi.advanceTimersByTimeAsync(600);
+      expect(seen).toEqual([]);
+    });
   });
 
   it('stops firing after unsubscribe, and keeps working after listeners are re-attached', async () => {

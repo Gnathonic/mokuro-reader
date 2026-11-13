@@ -6,6 +6,7 @@ import {
   addMutations,
   beginHistoryPatch,
   removeMutations,
+  replaceFolderInStore,
   type HistoryListingPatch
 } from '../../listing-mutations';
 import { webdavProvider } from './webdav-provider';
@@ -173,6 +174,10 @@ class WebDAVCacheManager implements CloudCache<CloudFileMetadata> {
 
   removeById(fileId: string): void {
     this.cache.update(...removeMutations(fileId));
+  }
+
+  replaceFolderEntries(folder: string, list: () => Promise<CloudFileMetadata[]>): Promise<boolean> {
+    return replaceFolderInStore(this.cache, this.isLoaded(), folder, list);
   }
 
   update(fileId: string, updates: Partial<CloudFileMetadata>): void {

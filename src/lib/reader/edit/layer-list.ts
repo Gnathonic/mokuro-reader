@@ -16,6 +16,10 @@ import { db } from '$lib/catalog/db';
 import { listLayerMetas } from '$lib/catalog/layer-store';
 import type { VolumeOcrLayer, VolumeOcrLayerKind } from '$lib/types';
 import { ORIGINAL_LAYER_ID } from './edit-persist';
+import { layerDisplayName } from './ocr-label';
+
+/** The primary's name (`ocr-label.ts`), re-exported for the picker and the settings panel. */
+export { primaryLayerName } from './ocr-label';
 
 export interface LayerSummary {
   layer_id: string;
@@ -34,13 +38,14 @@ export function summarizeLayers(rows: VolumeOcrLayer[]): LayerSummary[] {
       if (b.layer_id === ORIGINAL_LAYER_ID) return 1;
       return a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0;
     })
-    .map(({ layer_id, name, kind, engine, updated_at, cloud }) => ({
-      layer_id,
-      name,
-      kind,
-      ...(engine ? { engine } : {}),
-      updated_at,
-      ...(cloud ? { cloud: { provider: cloud.provider } } : {})
+    .map((row) => ({
+      layer_id: row.layer_id,
+      // What the row's file says made it, unless the user renamed it (`ocr-label.ts`).
+      name: layerDisplayName(row),
+      kind: row.kind,
+      ...(row.engine ? { engine: row.engine } : {}),
+      updated_at: row.updated_at,
+      ...(row.cloud ? { cloud: { provider: row.cloud.provider } } : {})
     }));
 }
 
@@ -55,17 +60,6 @@ export function layerSummaries(volumeUuid: string): Readable<LayerSummary[]> {
     });
     return () => sub.unsubscribe();
   });
-}
-
-/**
- * What the primary OCR row is called in the layer picker, settings select and
- * switch toasts: the mokuro name with the version that produced it
- * (`mokuro 0.2.2`), so it reads as one engine among the layers rather than a
- * status word. An image-only volume (empty version) is plain `mokuro`.
- */
-export function primaryLayerName(mokuroVersion: string | undefined | null): string {
-  const v = (mokuroVersion ?? '').trim();
-  return v ? `mokuro ${v}` : 'mokuro';
 }
 
 /**

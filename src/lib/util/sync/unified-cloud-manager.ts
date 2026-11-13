@@ -1957,6 +1957,65 @@ class UnifiedCloudManager {
   }
 
   /**
+   * Bring ONE series folder's listing current, then its `series.json`: the
+   * scoped pull after a Bunko finished OCR for volumes of that series (queue
+   * file v2, §8.6). Never a whole-account listing:
+   *
+   * 1. Google Drive with a usable change feed reads the feed (one
+   *    `changes.list` when nothing else moved). Otherwise the folder is
+   *    listed on its own (`listFolder`: OneDrive, WebDAV and a Local Folder
+   *    walk that folder; MEGA filters the tree it holds, no request) and
+   *    ONLY the cached entries under `<folder>/` are replaced
+   *    (`replaceFolderEntries`). The listing-wide `series.json` pass is never
+   *    handed this partial view: it deletes the cached index of every folder
+   *    missing from its map.
+   * 2. `refreshSeriesIndexForSeries` re-reads `series.json` if its stamp moved.
+   *
+   * Null when nothing could be listed: no provider, no first listing yet (it
+   * is coming, and it runs the same passes), or a provider without a scoped
+   * listing. Otherwise the folder as the listing spells it, its files now,
+   * and the paths under it that are new or changed since before the pull.
+   * Rejects when the provider's listing does.
+   */
+  async refreshSeriesFolder(seriesTitle: string): Promise<{
+    providerType: ProviderType;
+    folder: string;
+    files: CloudFileMetadata[];
+    changed: string[];
+  } | null> {
+    const provider = this.getActiveProvider();
+    if (!provider) return null;
+    const cache = cacheManager.getCache(provider.type);
+    if (!cache?.isLoaded()) return null;
+    const folder = this.resolveCloudFolderTitle(seriesTitle);
+    if (!folder) return null;
+    const stampOf = (f: CloudFileMetadata) =>
+      `${f.fileId}\u0000${f.size ?? ''}\u0000${f.modifiedTime ?? ''}`;
+    const before = new Map<string, Set<string>>();
+    for (const f of this.getCloudVolumesBySeries(folder)) {
+      const stamps = before.get(f.path) ?? new Set<string>();
+      stamps.add(stampOf(f));
+      before.set(f.path, stamps);
+    }
+
+    if (cache.refreshFromChanges && cache.changeFeedUsable?.()) {
+      await cache.refreshFromChanges();
+    } else if (provider.listFolder && cache.replaceFolderEntries) {
+      const list = provider.listFolder.bind(provider);
+      if (!(await cache.replaceFolderEntries(folder, () => list(folder)))) return null;
+    } else {
+      return null;
+    }
+    // The account went away while it listed: nothing of it is ours to read.
+    if (this.getActiveProvider() !== provider) return null;
+
+    const files = this.getCloudVolumesBySeries(folder);
+    const changed = files.filter((f) => !before.get(f.path)?.has(stampOf(f))).map((f) => f.path);
+    await this.refreshSeriesIndexForSeries(folder);
+    return { providerType: provider.type, folder, files, changed };
+  }
+
+  /**
    * Everything a `series.json` build needs besides the copy to merge on top
    * of, assembled the ONE way: the folded local rows, the series facts, the
    * folder as the LISTING spells it, the archive gate, and the current

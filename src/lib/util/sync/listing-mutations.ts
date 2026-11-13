@@ -1,3 +1,4 @@
+import type { CoalescedCacheStore } from './coalesced-cache-store';
 import type { CloudFileMetadata } from './provider-interface';
 import { HISTORY_FOLDER, parseHistoryPath } from '$lib/reading-history/paths';
 
@@ -53,6 +54,58 @@ export function removeMutations(fileId: string): [live: Mutation, replay: Mutati
       return rewritten ? map : remove(map, fileId);
     }
   ];
+}
+
+/**
+ * Replace every entry under `folder/` (exactly as spelled: a listing's first
+ * segment) with `entries`, a scoped listing of that folder; every other
+ * folder is left as it is. Never a whole-listing install: a series' scoped
+ * pull must not touch what other folders hold.
+ */
+export function replaceFolderMutation<T extends CloudFileMetadata>(
+  folder: string,
+  entries: T[]
+): (map: Map<string, T[]>) => Map<string, T[]> {
+  const prefix = `${folder}/`;
+  const own = entries.filter((f) => f.path.startsWith(prefix));
+  return (map) => {
+    const next = new Map(map);
+    next.delete(folder);
+    // A path under the folder filed elsewhere (never by the caches' own
+    // grouping, which is by first segment) goes too.
+    for (const [key, files] of next) {
+      const kept = files.filter((f) => !f.path.startsWith(prefix));
+      if (kept.length === 0) next.delete(key);
+      else if (kept.length !== files.length) next.set(key, kept);
+    }
+    if (own.length > 0) next.set(folder, own);
+    return next;
+  };
+}
+
+/**
+ * `CloudCache.replaceFolderEntries` over a cache's store: list `folder`, then
+ * apply the replacement with the writes made meanwhile replayed on top.
+ * `apply` is how the cache mutates (default: the store's own `update`).
+ */
+export async function replaceFolderInStore<T extends CloudFileMetadata>(
+  store: CoalescedCacheStore<T[]>,
+  loaded: boolean,
+  folder: string,
+  list: () => Promise<T[]>,
+  apply: (fn: (map: Map<string, T[]>) => Map<string, T[]>) => void = (fn) => store.update(fn)
+): Promise<boolean> {
+  if (!loaded || !folder) return false;
+  const partial = store.beginPartialListing();
+  try {
+    const entries = await list();
+    const replace = partial.finish(replaceFolderMutation(folder, entries));
+    if (!replace) return false;
+    apply(replace);
+    return true;
+  } finally {
+    partial.abandon();
+  }
 }
 
 /**

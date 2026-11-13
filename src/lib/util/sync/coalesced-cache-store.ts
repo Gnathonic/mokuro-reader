@@ -63,6 +63,8 @@ export class CoalescedCacheStore<V> {
   private setCount = 0;
   /** The listing a fetch has open, and the updates made since it began. */
   private listing: { updates: ((map: Map<string, V>) => Map<string, V>)[] } | null = null;
+  /** The scoped listings open ({@link beginPartialListing}), each with its updates since. */
+  private partials = new Set<{ updates: ((map: Map<string, V>) => Map<string, V>)[] }>();
 
   constructor(initial: Map<string, V> = new Map()) {
     this.state = initial;
@@ -123,6 +125,7 @@ export class CoalescedCacheStore<V> {
     replay: (map: Map<string, V>) => Map<string, V> = fn
   ): void {
     this.listing?.updates.push(replay);
+    for (const partial of this.partials) partial.updates.push(replay);
     this.state = fn(this.state);
     this.revisionToken = {};
     if (this.timer === null) {
@@ -145,6 +148,7 @@ export class CoalescedCacheStore<V> {
    */
   set(map: Map<string, V>): void {
     this.listing = null;
+    this.partials.clear();
     this.cancelPending();
     this.setCount++;
     this.state = map;
@@ -177,6 +181,38 @@ export class CoalescedCacheStore<V> {
       },
       abandon: () => {
         if (this.listing === listing) this.listing = null;
+      }
+    };
+  }
+
+  /**
+   * Open a SCOPED listing: one folder listed again on its own (a finished OCR
+   * job's series, `unifiedCloudManager.refreshSeriesFolder`), whose entries
+   * then replace that folder's. Like {@link beginListing}, a write this app
+   * makes while the folder is listed may be missing from what the listing
+   * saw, so every {@link update} meanwhile is recorded, and `finish` hands
+   * back the replacement with them replayed on top — for the caller to apply
+   * as an ordinary update (the Drive cache through its own `mutate`).
+   *
+   * A {@link set} meanwhile (a whole-account install, a `clear()` at sign-out)
+   * supersedes it: `finish` then answers null and nothing is applied.
+   */
+  beginPartialListing(): {
+    finish(
+      fn: (map: Map<string, V>) => Map<string, V>
+    ): ((map: Map<string, V>) => Map<string, V>) | null;
+    abandon(): void;
+  } {
+    const partial = { updates: [] as ((map: Map<string, V>) => Map<string, V>)[] };
+    this.partials.add(partial);
+    return {
+      finish: (fn) => {
+        if (!this.partials.delete(partial)) return null;
+        const since = partial.updates;
+        return (map) => since.reduce((acc, u) => u(acc), fn(map));
+      },
+      abandon: () => {
+        this.partials.delete(partial);
       }
     };
   }
