@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
+import { get } from 'svelte/store';
 
 const mocks = vi.hoisted(() => ({ updateSetting: vi.fn() }));
 
@@ -13,6 +14,7 @@ vi.mock('$lib/settings', async () => {
 });
 
 import PageAdjustCard from '../PageAdjustCard.svelte';
+import { pageAdjustPreviewing } from '$lib/reader/page-adjust-preview';
 import { settings } from '$lib/settings';
 import type { Writable } from 'svelte/store';
 
@@ -53,6 +55,56 @@ describe('PageAdjustCard (#256)', () => {
     await fireEvent.click(resetBrightness);
     await tick();
     expect(mocks.updateSetting).toHaveBeenCalledWith('pageBrightness', 100);
+  });
+
+  it('switches the adjustment off and on without touching the values (#362)', async () => {
+    const { getByRole } = render(PageAdjustCard);
+    const toggle = getByRole('checkbox', { name: /Brightness & contrast/ }) as HTMLInputElement;
+    expect(toggle.checked).toBe(true);
+    await fireEvent.click(toggle);
+    expect(mocks.updateSetting).toHaveBeenCalledWith('pageAdjustEnabled', false);
+    expect(mocks.updateSetting).not.toHaveBeenCalledWith('pageBrightness', expect.anything());
+
+    store.set({ ...base, pageAdjustEnabled: false });
+    await tick();
+    expect(toggle.checked).toBe(false);
+    mocks.updateSetting.mockClear();
+    await fireEvent.click(toggle);
+    expect(mocks.updateSetting).toHaveBeenCalledWith('pageAdjustEnabled', true);
+  });
+
+  it('flipping the switch clears the dim for a moment, so the change can be judged (#363)', async () => {
+    vi.useFakeTimers();
+    try {
+      const { getByRole, unmount } = render(PageAdjustCard);
+      const toggle = getByRole('checkbox', { name: /Brightness & contrast/ });
+      expect(get(pageAdjustPreviewing)).toBe(false);
+      await fireEvent.click(toggle);
+      expect(get(pageAdjustPreviewing)).toBe(true);
+      vi.runAllTimers();
+      expect(get(pageAdjustPreviewing)).toBe(false);
+      unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('moving a slider while switched off switches the adjustment back on (#362)', async () => {
+    store.set({ ...base, pageAdjustEnabled: false });
+    const { getByLabelText } = render(PageAdjustCard);
+    const brightness = getByLabelText('Brightness: 130%') as HTMLInputElement;
+    brightness.value = '140';
+    await fireEvent.input(brightness);
+    expect(mocks.updateSetting).toHaveBeenCalledWith('pageBrightness', 140);
+    expect(mocks.updateSetting).toHaveBeenCalledWith('pageAdjustEnabled', true);
+  });
+
+  it('a slider move while on writes only the value', async () => {
+    const { getByLabelText } = render(PageAdjustCard);
+    const brightness = getByLabelText('Brightness: 130%') as HTMLInputElement;
+    brightness.value = '140';
+    await fireEvent.input(brightness);
+    expect(mocks.updateSetting).toHaveBeenCalledTimes(1);
   });
 
   it('offers ink color off/auto/seven colors, showing the stored choice', () => {

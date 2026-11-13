@@ -1,6 +1,6 @@
 <script lang="ts">
   import { settings, updateSetting } from '$lib/settings';
-  import { Button, Label, Range, Select } from 'flowbite-svelte';
+  import { Button, Label, Range, Select, Toggle } from 'flowbite-svelte';
   import {
     INK_COLOR_NAMES,
     INK_PALETTE,
@@ -25,8 +25,10 @@
     PAGE_ADJUST_MAX,
     PAGE_ADJUST_MIN,
     PAGE_ADJUST_STEP,
-    clampPageAdjust
+    clampPageAdjust,
+    sanitizePageAdjustEnabled
   } from '$lib/reader/page-filter';
+  import { previewAfterChange, previewWhileAdjusting } from '$lib/reader/page-adjust-preview';
 
   // Page images only (#256): washed-out scans. The OCR text is never filtered.
   // (Ink color below does recolour the OCR text, to match the ink.)
@@ -91,15 +93,30 @@
   ];
   let swatchName = $derived(inkColor !== 'off' && inkColor !== 'auto' ? inkColor : null);
 
-  // Live while dragging: the page behind the drawer follows the thumb.
+  // On/off without losing the values (#362) — the reader's B key flips it too.
+  let adjustEnabled = $derived(sanitizePageAdjustEnabled($settings.pageAdjustEnabled));
+
+  // Live while dragging: the page behind the drawer follows the thumb (and the
+  // drawer's backdrop stops dimming it meanwhile, #363). Moving a slider while
+  // the adjustment is off switches it back on: otherwise the drag shows nothing.
   function onInput(key: AdjustKey, e: Event) {
     updateSetting(key, clampPageAdjust(Number((e.target as HTMLInputElement).value)));
+    if (!adjustEnabled) updateSetting('pageAdjustEnabled', true);
   }
 </script>
 
 <div class="mt-2 rounded-lg border border-gray-200 p-3 dark:border-gray-700">
   <div class="mb-2 text-sm font-medium text-gray-900 dark:text-white">Page image</div>
   <div class="space-y-3">
+    <Toggle
+      size="small"
+      checked={adjustEnabled}
+      onchange={() => updateSetting('pageAdjustEnabled', !adjustEnabled)}
+      {@attach previewAfterChange}
+    >
+      Brightness &amp; contrast
+      <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">(B)</span>
+    </Toggle>
     {#each sliders as { key, label } (key)}
       {@const value = clampPageAdjust($settings[key])}
       <div>
@@ -123,6 +140,7 @@
           step={PAGE_ADJUST_STEP}
           {value}
           oninput={(e: Event) => onInput(key, e)}
+          {@attach previewWhileAdjusting}
         />
       </div>
     {/each}
@@ -181,6 +199,7 @@
             {value}
             oninput={(e: Event) =>
               updateSetting(slider.key, slider.clamp(Number((e.target as HTMLInputElement).value)))}
+            {@attach previewWhileAdjusting}
           />
         </div>
       {/each}

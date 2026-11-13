@@ -4,7 +4,12 @@ import { isMobilePlatform } from '$lib/util/platform';
 import { PRESETS, resolveTheme, type ResolvedTheme } from './theme';
 import { isDisplayTitleLanguage } from '$lib/metadata/sanitize';
 import type { DisplayTitleLanguage } from '$lib/metadata/types';
-import { clampPageAdjust, pageFilterCss, PAGE_ADJUST_DEFAULT } from '$lib/reader/page-filter';
+import {
+  clampPageAdjust,
+  pageFilterCss,
+  sanitizePageAdjustEnabled,
+  PAGE_ADJUST_DEFAULT
+} from '$lib/reader/page-filter';
 import {
   INK_STRENGTH_DEFAULT,
   PAPER_AGE_DEFAULT,
@@ -179,6 +184,11 @@ export type Settings = {
   invertColorsSchedule: TimeSchedule;
   grayscale: boolean;
   grayscaleSchedule: TimeSchedule;
+  /**
+   * Apply `pageBrightness`/`pageContrast` at all (#362). Off keeps the values
+   * and renders the images unadjusted; the reader's B key flips it.
+   */
+  pageAdjustEnabled: boolean;
   /** Page image brightness, % (100 = unchanged). Images only, never the OCR text. #256 */
   pageBrightness: number;
   /** Page image contrast, % (100 = unchanged). Images only, never the OCR text. #256 */
@@ -342,6 +352,7 @@ const defaultSettings: Settings = {
     startTime: '21:00',
     endTime: '06:00'
   },
+  pageAdjustEnabled: true,
   pageBrightness: PAGE_ADJUST_DEFAULT,
   pageContrast: PAGE_ADJUST_DEFAULT,
   pageInkColor: 'off',
@@ -519,6 +530,9 @@ export function migrateProfiles(profiles: Profiles): Profiles {
     // anything; the slider and the filter both expect a whole in-range percent.
     migratedProfile.pageBrightness = clampPageAdjust(migratedProfile.pageBrightness);
     migratedProfile.pageContrast = clampPageAdjust(migratedProfile.pageContrast);
+    migratedProfile.pageAdjustEnabled = sanitizePageAdjustEnabled(
+      migratedProfile.pageAdjustEnabled
+    );
     migratedProfile.pageInkColor = sanitizeInkColor(migratedProfile.pageInkColor);
     migratedProfile.pageInkStrength = clampInkStrength(migratedProfile.pageInkStrength);
     migratedProfile.pagePaperTint = clampPaperTint(migratedProfile.pagePaperTint);
@@ -760,12 +774,12 @@ export const imageFilter = derived(
 
 /**
  * CSS filter for the page IMAGES only (brightness/contrast, #256) — `none` at
- * the defaults. A primitive string, so subscribers rerun only when it changes,
+ * the defaults, and while the adjustment is switched off (#362). A primitive string, so subscribers rerun only when it changes,
  * not on every settings write. The reader sets it once as `--page-filter`;
  * each page's image layer reads the variable, so no per-page work.
  */
 export const pageFilter: Readable<string> = derived(settings, ($settings) =>
-  pageFilterCss($settings?.pageBrightness, $settings?.pageContrast)
+  pageFilterCss($settings?.pageBrightness, $settings?.pageContrast, $settings?.pageAdjustEnabled)
 );
 
 /**

@@ -4,7 +4,9 @@ import {
   PAGE_ADJUST_MAX,
   PAGE_ADJUST_MIN,
   clampPageAdjust,
-  pageFilterCss
+  pageAdjustToggleMessage,
+  pageFilterCss,
+  sanitizePageAdjustEnabled
 } from './page-filter';
 
 describe('clampPageAdjust', () => {
@@ -54,5 +56,40 @@ describe('pageFilterCss', () => {
 
   it('is none when out-of-range garbage clamps back to identity', () => {
     expect(pageFilterCss('x', NaN)).toBe('none');
+  });
+});
+
+describe('the on/off switch (#362)', () => {
+  it('is none while switched off, whatever the values', () => {
+    expect(pageFilterCss(130, 150, false)).toBe('none');
+  });
+
+  it('applies the values while switched on', () => {
+    expect(pageFilterCss(130, 150, true)).toBe('brightness(130%) contrast(150%)');
+  });
+
+  it('only an explicit false switches it off — absent or garbage keeps it on', () => {
+    expect(sanitizePageAdjustEnabled(false)).toBe(false);
+    for (const v of [true, undefined, null, 0, '', 'false', {}]) {
+      expect(sanitizePageAdjustEnabled(v)).toBe(true);
+    }
+    expect(pageFilterCss(130, 150, undefined)).toBe('brightness(130%) contrast(150%)');
+  });
+});
+
+describe("the B key's notice (#362)", () => {
+  it('names the new state', () => {
+    expect(pageAdjustToggleMessage(false, 130, 100)).toBe('Brightness/Contrast Off');
+    expect(pageAdjustToggleMessage(true, 130, 100)).toBe('Brightness/Contrast On');
+    expect(pageAdjustToggleMessage(true, 100, 80)).toBe('Brightness/Contrast On');
+  });
+
+  it('says why switching on changes nothing when both are at 100%', () => {
+    expect(pageAdjustToggleMessage(true, 100, 100)).toBe('Brightness/Contrast On (both at 100%)');
+    // Unset and garbage read as 100%, like the filter itself.
+    expect(pageAdjustToggleMessage(true, undefined, 'x')).toBe(
+      'Brightness/Contrast On (both at 100%)'
+    );
+    expect(pageAdjustToggleMessage(false, 100, 100)).toBe('Brightness/Contrast Off');
   });
 });

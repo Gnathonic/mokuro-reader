@@ -1,5 +1,6 @@
 <script lang="ts">
   import { pageImageUrlFrom } from '$lib/reader/page-image-url';
+  import { pageAdjustToggleMessage, sanitizePageAdjustEnabled } from '$lib/reader/page-filter';
   import { run } from 'svelte/legacy';
   import type { TransitionConfig } from 'svelte/transition';
 
@@ -454,6 +455,9 @@
         return;
       case 'KeyG':
         toggleScheduledFilter('grayscale', 'grayscaleSchedule', 'B&W', 'grayscale');
+        return;
+      case 'KeyB':
+        togglePageAdjust();
         return;
       case 'KeyC':
         if (volume) {
@@ -1587,6 +1591,16 @@
       updateSetting(settingKey, next);
       showNotification(next ? `${label} On` : `${label} Off`, `${notifPrefix}-toggle`);
     }
+  }
+
+  /** Brightness/contrast on or off, values kept (#362) — e.g. for a cover. */
+  function togglePageAdjust() {
+    const next = !sanitizePageAdjustEnabled($settings.pageAdjustEnabled);
+    updateSetting('pageAdjustEnabled', next);
+    showNotification(
+      pageAdjustToggleMessage(next, $settings.pageBrightness, $settings.pageContrast),
+      'page-adjust-toggle'
+    );
   }
 
   function rotateScrollMode() {
