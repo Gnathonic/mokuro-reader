@@ -16,12 +16,15 @@ import {
   compressVolumeFromDb,
   generateVolumeSidecarsFromDb
 } from './compress-volume';
-import { parseSeriesFile } from '$lib/metadata/series-file';
-import { createEmptySeriesMetadata } from '$lib/metadata/types';
-import { MOKURO_DB_NAME, declareMokuroSchema } from '$lib/catalog/db-schema';
-import { clearAllLayers, putLayerWithPages } from '$lib/catalog/layer-store';
-import { contentDigest, provenanceOfFile } from '$lib/catalog/ocr-provenance';
-import { RUNNER_OUTPUT_DOCUMENT, RUNNER_OUTPUT_SEAL } from '$lib/catalog/__fixtures__/seal-vector';
+import { parseSeriesFile } from '#lib/metadata/series-file.js';
+import { createEmptySeriesMetadata } from '#lib/metadata/types.js';
+import { MOKURO_DB_NAME, declareMokuroSchema } from '#lib/catalog/db-schema.js';
+import { clearAllLayers, putLayerWithPages } from '#lib/catalog/layer-store.js';
+import { contentDigest, provenanceOfFile } from '#lib/catalog/ocr-provenance.js';
+import {
+  RUNNER_OUTPUT_DOCUMENT,
+  RUNNER_OUTPUT_SEAL
+} from '#lib/catalog/__fixtures__/seal-vector.js';
 
 // zip.js writes the archive through a Blob stream; jsdom's Blob has none.
 if (typeof Blob !== 'undefined' && !Blob.prototype.stream) {

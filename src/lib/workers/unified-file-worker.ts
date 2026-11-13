@@ -14,9 +14,9 @@ import {
   compressVolumeFromDb,
   generateVolumeSidecarsFromDb,
   type MokuroMetadata
-} from '$lib/util/compress-volume';
-import { matchFileToVolume } from '$lib/import/archive-extraction';
-import { hasCoverSidecarExtension } from '$lib/metadata/cloud-sidecar-stamps';
+} from '#lib/util/compress-volume.js';
+import { matchFileToVolume } from '#lib/import/archive-extraction.js';
+import { hasCoverSidecarExtension } from '#lib/metadata/cloud-sidecar-stamps.js';
 import { getWorkerCloudProvider } from './cloud-providers';
 import type {
   WorkerCloudProviderAdapter,
@@ -28,13 +28,13 @@ import {
   isAuthRefreshResult,
   refreshInto,
   type WorkerAuthRefresher
-} from '$lib/util/worker-auth-refresh';
-import { sha256Hex } from '$lib/catalog/mokuro-hash';
-import { uploadVolumeFiles } from '$lib/util/volume-upload-order';
-import { mayBeImageType } from '$lib/util/image-content-type';
-import { assertNoRedirectEscape } from '$lib/util/link-safety';
-import { workerFailureKind, type WorkerFailureKind } from '$lib/util/sync/core/storage-full';
-import { forwardWorkerCspViolations } from '$lib/security/csp-violations';
+} from '#lib/util/worker-auth-refresh.js';
+import { sha256Hex } from '#lib/catalog/mokuro-hash.js';
+import { uploadVolumeFiles } from '#lib/util/volume-upload-order.js';
+import { mayBeImageType } from '#lib/util/image-content-type.js';
+import { assertNoRedirectEscape } from '#lib/util/link-safety.js';
+import { workerFailureKind, type WorkerFailureKind } from '#lib/util/sync/core/storage-full.js';
+import { forwardWorkerCspViolations } from '#lib/security/csp-violations.js';
 
 // A violation here fires on this worker, where the page's buffer cannot see it.
 forwardWorkerCspViolations();

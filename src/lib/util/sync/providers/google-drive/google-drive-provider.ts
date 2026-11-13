@@ -1,4 +1,4 @@
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 import type {
   ControlFileResult,
   SyncProvider,
@@ -13,24 +13,24 @@ import type {
 } from '../../provider-interface';
 import { isLoginCancelled, LOGIN_CANCELLED, ProviderError } from '../../provider-interface';
 import { isCbzFile, isSidecarFile, isRootConfigFile, isSyncableFile } from '../../syncable-file';
-import { isHistoryFileName } from '$lib/reading-history/paths';
+import { isHistoryFileName } from '#lib/reading-history/paths.js';
 import { driveHistoryPath } from './drive-history-path';
-import { tokenManager } from '$lib/util/sync/providers/google-drive/token-manager';
+import { tokenManager } from '#lib/util/sync/providers/google-drive/token-manager.js';
 import {
   registerWorkerAuthRefresher,
   TransientAuthRefreshError
-} from '$lib/util/worker-auth-refresh';
-import { waitFor } from '$lib/util/store-wait';
+} from '#lib/util/worker-auth-refresh.js';
+import { waitFor } from '#lib/util/store-wait.js';
 import {
   driveApiClient,
   escapeNameForDriveQuery
-} from '$lib/util/sync/providers/google-drive/api-client';
-import { driveFilesCache } from '$lib/util/sync/providers/google-drive/drive-files-cache';
+} from '#lib/util/sync/providers/google-drive/api-client.js';
+import { driveFilesCache } from '#lib/util/sync/providers/google-drive/drive-files-cache.js';
 import {
   GOOGLE_DRIVE_CONFIG,
   type DriveFile
-} from '$lib/util/sync/providers/google-drive/constants';
-import { findFile } from '$lib/util/backup';
+} from '#lib/util/sync/providers/google-drive/constants.js';
+import { findFile } from '#lib/util/backup.js';
 import { cacheManager } from '../../cache-manager';
 import { providerManager } from '../../provider-manager';
 import { setActiveProviderKey, clearActiveProviderKey } from '../../provider-detection';
@@ -42,7 +42,7 @@ import {
 } from '../../folder-deduplicator';
 import { getCloudProviderCore } from '../../core/cloud-provider-core-registry';
 import { ControlNodeCache, controlReadKey, readControlNodes } from '../../control-file-read';
-import { withCloudBunkoStatus } from '$lib/catalog/cloud-bunko-marker';
+import { withCloudBunkoStatus } from '#lib/catalog/cloud-bunko-marker.js';
 import { cloudTestCredentials } from '../../cloud-test-hooks';
 import {
   classifyDriveFailure,
@@ -1017,7 +1017,7 @@ class GoogleDriveProvider implements SyncProvider {
 
       // Update cache
       const { driveFilesCache } =
-        await import('$lib/util/sync/providers/google-drive/drive-files-cache');
+        await import('#lib/util/sync/providers/google-drive/drive-files-cache.js');
       driveFilesCache.removeById(fileId);
 
       console.log(`✅ Deleted file from Google Drive (${fileId})`);

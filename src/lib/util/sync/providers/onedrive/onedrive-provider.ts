@@ -1,4 +1,4 @@
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 import type {
   ControlFileResult,
   SyncProvider,
@@ -34,7 +34,7 @@ import {
   isPathSafeFolderName,
   readControlNodes
 } from '../../control-file-read';
-import { withCloudBunkoStatus } from '$lib/catalog/cloud-bunko-marker';
+import { withCloudBunkoStatus } from '#lib/catalog/cloud-bunko-marker.js';
 
 /** Worth retrying later; a full drive (507) is not, so it is excluded. */
 const RETRYABLE_MESSAGE = /network|timed out|\b429\b|\b5(?!07)\d\d\b/i;

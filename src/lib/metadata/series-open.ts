@@ -1,6 +1,6 @@
-import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
-import { materializeSeriesVolumes } from '$lib/catalog/materialize';
-import { installCoversForSeries } from '$lib/catalog/cover-install';
+import { unifiedCloudManager } from '#lib/util/sync/unified-cloud-manager.js';
+import { materializeSeriesVolumes } from '#lib/catalog/materialize.js';
+import { installCoversForSeries } from '#lib/catalog/cover-install.js';
 import { backfillSeriesEntries } from './series-backfill';
 import { normalizeSeriesKey } from './series-key';
 
@@ -96,7 +96,7 @@ function startOcrUpgrade(seriesTitle: string): void {
     const provider = unifiedCloudManager.getActiveProvider();
     if (!provider) return;
     const title = unifiedCloudManager.resolveCloudFolderTitle(seriesTitle);
-    void import('$lib/catalog/ocr-upgrade-pass')
+    void import('#lib/catalog/ocr-upgrade-pass.js')
       .then(({ requestOcrUpgradePass }) => requestOcrUpgradePass(provider.type, [{ title }]))
       .catch((error) => console.debug('[series-open] OCR upgrade pass failed:', error));
   } catch (error) {

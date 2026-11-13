@@ -14,7 +14,7 @@ import { Uint8ArrayReader, Uint8ArrayWriter, ZipWriter } from '@zip.js/zip.js';
 
 // ---------------------------------------------------------------- mocks
 
-vi.mock('$lib/catalog/db', async () => {
+vi.mock('#lib/catalog/db.js', async () => {
   const { default: Dexie } = await import('dexie');
   const db: any = new Dexie('keep-folder-names-test');
   db.version(1).stores({
@@ -28,7 +28,7 @@ vi.mock('$lib/catalog/db', async () => {
   return { db };
 });
 
-vi.mock('$lib/catalog/thumbnails', () => ({
+vi.mock('#lib/catalog/thumbnails.js', () => ({
   generateThumbnail: async () => ({
     file: new File([new Uint8Array([1])], 'thumb.webp', { type: 'image/webp' }),
     width: 10,
@@ -36,9 +36,9 @@ vi.mock('$lib/catalog/thumbnails', () => ({
   })
 }));
 
-vi.mock('$lib/util/snackbar', () => ({ showSnackbar: vi.fn() }));
+vi.mock('#lib/util/snackbar.js', () => ({ showSnackbar: vi.fn() }));
 
-vi.mock('$lib/util/progress-tracker', () => ({
+vi.mock('#lib/util/progress-tracker.js', () => ({
   progressTrackerStore: {
     addProcess: vi.fn(),
     updateProcess: vi.fn(),
@@ -46,25 +46,25 @@ vi.mock('$lib/util/progress-tracker', () => ({
   }
 }));
 
-vi.mock('$lib/util/modals', () => ({
+vi.mock('#lib/util/modals.js', () => ({
   promptMissingFiles: (_info: unknown, onContinue: () => void) => onContinue()
 }));
 
-vi.mock('$lib/metadata/series-file-sync', () => ({ scheduleSeriesFileWrite: vi.fn() }));
+vi.mock('#lib/metadata/series-file-sync.js', () => ({ scheduleSeriesFileWrite: vi.fn() }));
 
-vi.mock('$lib/util/file-processing-pool', () => ({
+vi.mock('#lib/util/file-processing-pool.js', () => ({
   getFileProcessingPool: async () => ({ addTask: () => {} }),
   incrementPoolUsers: () => {},
   decrementPoolUsers: () => {}
 }));
 
-import { db } from '$lib/catalog/db';
-import { miscSettings } from '$lib/settings/misc';
+import { db } from '#lib/catalog/db.js';
+import { miscSettings } from '#lib/settings/misc.js';
 import {
   extractFolderTitlesFromPath,
   extractTitlesFromPath,
   generateDeterministicUUID
-} from '$lib/util/series-extraction';
+} from '#lib/util/series-extraction.js';
 import { importFiles, importQueue, isImporting } from '../import-service';
 import { processVolume } from '../processing';
 import { nameGroup } from '../image-only-review';

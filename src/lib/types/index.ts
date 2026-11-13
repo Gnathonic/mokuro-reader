@@ -1,4 +1,4 @@
-import type { ProviderType } from '$lib/util/sync/provider-interface';
+import type { ProviderType } from '#lib/util/sync/provider-interface.js';
 
 export type Block = {
   box: number[];
@@ -86,7 +86,7 @@ export interface VolumeMetadata {
    * stamps still match this one. Cleared whenever the hash is set from bytes
    * that did not come from a listed cloud file.
    */
-  mokuro_sha256_cloud?: import('$lib/catalog/mokuro-hash').MokuroCloudAttestation;
+  mokuro_sha256_cloud?: import('#lib/catalog/mokuro-hash.js').MokuroCloudAttestation;
 
   /**
    * The provenance blocks (`ocr_engine`, or an EDITED file's `edited`) of the
@@ -99,7 +99,7 @@ export interface VolumeMetadata {
    * regenerated primary carries a block only while its pages reproduce that
    * entry's digest — the reader never mints one. Not indexed (no schema version).
    */
-  ocr_provenance?: import('$lib/catalog/ocr-provenance').OcrProvenance[];
+  ocr_provenance?: import('#lib/catalog/ocr-provenance.js').OcrProvenance[];
   /**
    * What made the CURRENT main OCR (engine id, parts, version): set when a
    * main is installed, replaced by the OCR upgrade or promoted from a layer;
@@ -107,7 +107,7 @@ export interface VolumeMetadata {
    * from before it was recorded, and after installing an EDITED main (its
    * maker is unknown). Unindexed.
    */
-  ocr_maker?: import('$lib/reader/edit/ocr-label').MainOcrMaker;
+  ocr_maker?: import('#lib/reader/edit/ocr-label.js').MainOcrMaker;
 
   /**
    * Edited volumes only: the newest cloud primary OCR (by `mokuro_sha256`) the
@@ -233,7 +233,7 @@ export interface VolumeOcrLayer {
    * a server's OCR was made with): what the layer is called while nobody
    * renamed it (`ocr-label.ts`). Unindexed; absent on older rows.
    */
-  ocr_parts?: import('$lib/reader/edit/ocr-label').OcrPart[];
+  ocr_parts?: import('#lib/reader/edit/ocr-label.js').OcrPart[];
   /**
    * That file's own `version`: names a set-aside main sidecar mokuro made
    * (`pre-upgrade…`, `previous-ocr…` → "mokuro 0.2.2"). Unindexed; absent on

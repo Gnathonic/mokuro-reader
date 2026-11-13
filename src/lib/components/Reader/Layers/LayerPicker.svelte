@@ -5,15 +5,15 @@
    * `ocrLayer` setting through the reader (`onSelect`); actions go to the
    * shared orchestrator (`onAction`).
    */
-  import type { LayerSummary } from '$lib/reader/edit/layer-list';
-  import { LAYER_KIND_LABEL } from '$lib/reader/edit/layers';
-  import { ORIGINAL_LAYER_ID } from '$lib/reader/edit/edit-persist';
+  import type { LayerSummary } from '#lib/reader/edit/layer-list.js';
+  import { LAYER_KIND_LABEL } from '#lib/reader/edit/layers.js';
+  import { ORIGINAL_LAYER_ID } from '#lib/reader/edit/edit-persist.js';
   import {
     TRANSLATION_PROMOTE_BLOCKED,
     isTranslationLayer,
     layerRowActions
-  } from '$lib/reader/edit/layer-kind';
-  import { isCuratedLayerId, isPersonalLayerId } from '$lib/reader/edit/layer-names';
+  } from '#lib/reader/edit/layer-kind.js';
+  import { isCuratedLayerId, isPersonalLayerId } from '#lib/reader/edit/layer-names.js';
   import type { LayerAction } from './layer-actions';
   import {
     ArrowUpOutline,

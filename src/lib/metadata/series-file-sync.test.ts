@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { generateDeterministicUUID } from '$lib/util/series-extraction';
+import { generateDeterministicUUID } from '#lib/util/series-extraction.js';
 
-vi.mock('$app/environment', () => ({ browser: true }));
+vi.mock('$app/env', () => ({ browser: true }));
 
 const providerStatus = vi.hoisted(() => {
   let value = {
@@ -24,7 +24,7 @@ const providerStatus = vi.hoisted(() => {
   };
 });
 
-vi.mock('$lib/util/sync/provider-manager', () => ({
+vi.mock('#lib/util/sync/provider-manager.js', () => ({
   providerManager: { status: providerStatus }
 }));
 
@@ -76,7 +76,7 @@ const cloudVolumeTitlesFor = vi.hoisted(() =>
   })
 );
 const fetchAllCloudVolumes = vi.hoisted(() => vi.fn(async (_options?: unknown) => {}));
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: { writeSeriesFile, cloudVolumeTitlesFor, fetchAllCloudVolumes }
 }));
 
@@ -97,7 +97,7 @@ const { volumeRows, metaRows, volumesToArraySpy, metaToArraySpy } = vi.hoisted((
   metaToArraySpy: vi.fn(async () => [] as Record<string, unknown>[])
 }));
 
-vi.mock('$lib/catalog/db', () => ({
+vi.mock('#lib/catalog/db.js', () => ({
   db: {
     volumes: {
       toArray: (...args: Parameters<typeof volumesToArraySpy>) => volumesToArraySpy(...args),
@@ -161,7 +161,7 @@ import {
   scheduleSeriesFileWrite,
   settleSeriesFileWrites
 } from './series-file-sync';
-import { updateSeriesReadingState } from '$lib/settings/series-data';
+import { updateSeriesReadingState } from '#lib/settings/series-data.js';
 import { updateSeriesMetadata, unlinkSeries, upsertFromSeriesFile } from './store';
 
 function addVolume(seriesTitle: string, volumeTitle: string, extra: object = {}) {

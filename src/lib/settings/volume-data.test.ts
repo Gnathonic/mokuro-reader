@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
 
-vi.mock('$app/environment', () => ({ browser: true }));
+vi.mock('$app/env', () => ({ browser: true }));
 const catalogRows = new Map<string, Record<string, unknown>>();
 const bulkGet = vi.fn(async (uuids: string[]) => uuids.map((uuid) => catalogRows.get(uuid)));
 const toArray = vi.fn(async () => {
@@ -11,7 +11,7 @@ const toArray = vi.fn(async () => {
   // every installed volume's thumbnail blob deserialized — pass unnoticed.
   throw new Error('volumes.toArray(): the whole table must not be scanned here');
 });
-vi.mock('$lib/catalog/db', () => ({
+vi.mock('#lib/catalog/db.js', () => ({
   db: {
     volumes: {
       get: vi.fn().mockResolvedValue(undefined),
@@ -263,7 +263,7 @@ describe('VolumeData.completedAt', () => {
 
   it('dates a SECOND reading, so a re-read counts toward the new period', async () => {
     const { _resetHistoryTurns, _setHistoryTurnsForTest } =
-      await import('$lib/reading-history/turns-store');
+      await import('#lib/reading-history/turns-store.js');
     vi.useFakeTimers();
     try {
       // Write-once meant a volume finished in 2025, paged back to the start and
@@ -438,7 +438,7 @@ describe('VolumeData.forgotAt', () => {
 describe('page turns after the cut-over', () => {
   beforeEach(async () => {
     clearVolumes();
-    const { _resetHistoryTurns } = await import('$lib/reading-history/turns-store');
+    const { _resetHistoryTurns } = await import('#lib/reading-history/turns-store.js');
     _resetHistoryTurns();
   });
 
@@ -458,7 +458,7 @@ describe('page turns after the cut-over', () => {
   });
 
   it('stats read projected turns once loaded; the stored record keeps its own', async () => {
-    const { _setHistoryTurnsForTest } = await import('$lib/reading-history/turns-store');
+    const { _setHistoryTurnsForTest } = await import('#lib/reading-history/turns-store.js');
     volumesWithTrash.set({ v: new VolumeData({ progress: 2 }) });
     _setHistoryTurnsForTest(
       new Map([
@@ -479,7 +479,7 @@ describe('page turns after the cut-over', () => {
   });
 
   it("a record's unconverted turns count beside the projection (another device's, merged from the file)", async () => {
-    const { _setHistoryTurnsForTest } = await import('$lib/reading-history/turns-store');
+    const { _setHistoryTurnsForTest } = await import('#lib/reading-history/turns-store.js');
     volumesWithTrash.set({
       v: new VolumeData({
         progress: 9,
@@ -517,7 +517,7 @@ describe('page turns after the cut-over', () => {
   });
 
   it('keeps record identity across emissions when the record holds turns too', async () => {
-    const { _setHistoryTurnsForTest } = await import('$lib/reading-history/turns-store');
+    const { _setHistoryTurnsForTest } = await import('#lib/reading-history/turns-store.js');
     volumesWithTrash.set({
       v: new VolumeData({ progress: 9, recentPageTurns: [[9, 9, 90]] }),
       w: new VolumeData({ progress: 1 })
@@ -535,13 +535,13 @@ describe('page turns after the cut-over', () => {
   it("before history loads, or for a volume it has nothing for, the record's own turns stand", async () => {
     volumesWithTrash.set({ v: new VolumeData({ progress: 2, recentPageTurns: [[9, 9, 90]] }) });
     expect(get(volumes).v.recentPageTurns).toEqual([[9, 9, 90]]);
-    const { _setHistoryTurnsForTest } = await import('$lib/reading-history/turns-store');
+    const { _setHistoryTurnsForTest } = await import('#lib/reading-history/turns-store.js');
     _setHistoryTurnsForTest(new Map([['other', [[1, 1, 1]]]]));
     expect(get(volumes).v.recentPageTurns).toEqual([[9, 9, 90]]);
   });
 
   it('keeps record identity across emissions when nothing about it changed', async () => {
-    const { _setHistoryTurnsForTest } = await import('$lib/reading-history/turns-store');
+    const { _setHistoryTurnsForTest } = await import('#lib/reading-history/turns-store.js');
     const turns = new Map([['v', [[1, 1, 10]] as [number, number, number][]]]);
     volumesWithTrash.set({
       v: new VolumeData({ progress: 1 }),
@@ -554,7 +554,7 @@ describe('page turns after the cut-over', () => {
   });
 
   it('a re-read is re-dated from projected turns alone', async () => {
-    const { _setHistoryTurnsForTest } = await import('$lib/reading-history/turns-store');
+    const { _setHistoryTurnsForTest } = await import('#lib/reading-history/turns-store.js');
     const done = '2026-01-01T00:00:00.000Z';
     volumesWithTrash.set({
       v: new VolumeData({ progress: 3, completed: false, completedAt: done })
@@ -588,7 +588,7 @@ describe('page turns after the cut-over', () => {
   });
 
   it("a record's forget horizon hides earlier projected turns (forgets older than history events)", async () => {
-    const { _setHistoryTurnsForTest } = await import('$lib/reading-history/turns-store');
+    const { _setHistoryTurnsForTest } = await import('#lib/reading-history/turns-store.js');
     volumesWithTrash.set({
       v: new VolumeData({ progress: 2, forgotAt: new Date(5000).toISOString() })
     });

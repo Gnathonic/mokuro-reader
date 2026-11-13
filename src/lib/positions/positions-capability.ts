@@ -8,7 +8,7 @@
  * server's identity, or a cloud-direct folder's lease-holder marker).
  */
 
-import type { ProviderStatus } from '$lib/util/sync/provider-interface';
+import type { ProviderStatus } from '#lib/util/sync/provider-interface.js';
 
 type PositionsGates = Pick<
   ProviderStatus,

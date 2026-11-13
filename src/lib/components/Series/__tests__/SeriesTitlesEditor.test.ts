@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import { createEmptySeriesMetadata, type SeriesMetadata } from '$lib/metadata/types';
+import { createEmptySeriesMetadata, type SeriesMetadata } from '#lib/metadata/types.js';
 
 // vi.hoisted: `vi.mock` factories are hoisted above every other top-level statement
 // (including this file's own imports), so the store the factory closes over must be
@@ -38,11 +38,11 @@ const h = vi.hoisted(() => {
   };
 });
 
-vi.mock('$lib/metadata/store', () => ({
+vi.mock('#lib/metadata/store.js', () => ({
   seriesMetadataMap: h.seriesMetadataMap,
   updateSeriesMetadata: h.updateSeriesMetadata
 }));
-vi.mock('$lib/util/sync', () => ({ providerManager: { status: h.providerStatus } }));
+vi.mock('#lib/util/sync/index.js', () => ({ providerManager: { status: h.providerStatus } }));
 
 import SeriesTitlesEditor from '../SeriesTitlesEditor.svelte';
 

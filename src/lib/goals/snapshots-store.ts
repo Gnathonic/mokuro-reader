@@ -6,7 +6,7 @@
  * it through a module that reaches IndexedDB would drag a database into every
  * sync test — and did, until this split.
  */
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 import { get, writable } from 'svelte/store';
 import { parseSnapshots } from './goals-file';
 import { persistToLocalStorage } from './persist';

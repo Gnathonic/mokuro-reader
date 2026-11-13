@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import 'fake-indexeddb/auto';
 import { readable } from 'svelte/store';
-import type { VolumeMetadata } from '$lib/types';
-import type { CloudFileMetadata } from '$lib/util/sync/provider-interface';
+import type { VolumeMetadata } from '#lib/types/index.js';
+import type { CloudFileMetadata } from '#lib/util/sync/provider-interface.js';
 import type { CloudThumbnailResult } from './cloud-thumbnails';
 
 /**
@@ -23,11 +23,11 @@ import type { CloudThumbnailResult } from './cloud-thumbnails';
  * `unifiedCloudManager.writeSeriesFile` itself.
  */
 
-vi.mock('$app/environment', () => ({ browser: true }));
+vi.mock('$app/env', () => ({ browser: true }));
 
-vi.mock('$lib/catalog/db', async () => {
+vi.mock('#lib/catalog/db.js', async () => {
   const { CatalogDexieV3 } =
-    await vi.importActual<typeof import('$lib/catalog/db-v3')>('$lib/catalog/db-v3');
+    await vi.importActual<typeof import('#lib/catalog/db-v3.js')>('#lib/catalog/db-v3.js');
   return { db: new CatalogDexieV3('mokuro_v3_cover_service_publish_test') };
 });
 
@@ -40,7 +40,7 @@ let status = {
     { isReadOnly?: boolean; serverCompilesMetadata?: boolean } | null
   >
 };
-vi.mock('$lib/util/sync/provider-manager', () => ({
+vi.mock('#lib/util/sync/provider-manager.js', () => ({
   providerManager: {
     get status() {
       return readable(status);
@@ -48,7 +48,7 @@ vi.mock('$lib/util/sync/provider-manager', () => ({
   }
 }));
 
-vi.mock('$lib/catalog/cover-install', () => ({
+vi.mock('#lib/catalog/cover-install.js', () => ({
   installCoversForSeries: vi.fn(async () => 0)
 }));
 
@@ -73,7 +73,7 @@ const {
       'written' as const
   )
 }));
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: {
     getActiveProvider: (...a: Parameters<typeof getActiveProvider>) => getActiveProvider(...a),
     resolveCloudFolderTitle: (...a: Parameters<typeof resolveCloudFolderTitle>) =>
@@ -91,7 +91,7 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
 const { fetchCloudThumbnailMock } = vi.hoisted(() => ({
   fetchCloudThumbnailMock: vi.fn(async (_v: unknown) => null as CloudThumbnailResult | null)
 }));
-vi.mock('$lib/catalog/cloud-thumbnails', () => ({
+vi.mock('#lib/catalog/cloud-thumbnails.js', () => ({
   fetchCloudThumbnail: (...a: Parameters<typeof fetchCloudThumbnailMock>) =>
     fetchCloudThumbnailMock(...a),
   getCachedCloudThumbnail: vi.fn(() => undefined)
@@ -111,8 +111,8 @@ const { pullMokuroEntryMock } = vi.hoisted(() => ({
         | undefined
   )
 }));
-vi.mock('$lib/metadata/sidecar-pull', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('$lib/metadata/sidecar-pull')>();
+vi.mock('#lib/metadata/sidecar-pull.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('#lib/metadata/sidecar-pull.js')>();
   return {
     ...actual,
     pullMokuroEntry: (...a: Parameters<typeof pullMokuroEntryMock>) => pullMokuroEntryMock(...a)
@@ -122,12 +122,12 @@ vi.mock('$lib/metadata/sidecar-pull', async (importOriginal) => {
 // `$lib/metadata/series-file-sync` is DELIBERATELY NOT mocked here — that is
 // the whole point of this file.
 
-import { db } from '$lib/catalog/db';
+import { db } from '#lib/catalog/db.js';
 import {
   _resetListingRefreshForTests,
   _resetWriteSlotsForTests,
   flushSeriesFileWrites
-} from '$lib/metadata/series-file-sync';
+} from '#lib/metadata/series-file-sync.js';
 import { _resetCoverPersistForTests } from './cover-persist';
 import {
   _resetCoverServiceForTests,

@@ -4,7 +4,7 @@ import { tick } from 'svelte';
 
 const mocks = vi.hoisted(() => ({ updateSetting: vi.fn() }));
 
-vi.mock('$lib/settings', async () => {
+vi.mock('#lib/settings/index.js', async () => {
   const { writable } = await import('svelte/store');
   return {
     settings: writable({ pageBrightness: 130, pageContrast: 100, pageInkColor: 'auto' }),
@@ -13,7 +13,7 @@ vi.mock('$lib/settings', async () => {
 });
 
 import PageAdjustCard from '../PageAdjustCard.svelte';
-import { settings } from '$lib/settings';
+import { settings } from '#lib/settings/index.js';
 import type { Writable } from 'svelte/store';
 
 const store = settings as unknown as Writable<Record<string, unknown>>;

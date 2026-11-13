@@ -1,9 +1,9 @@
 import { writable, get } from 'svelte/store';
-import type { VolumeMetadata } from '$lib/types';
+import type { VolumeMetadata } from '#lib/types/index.js';
 import { progressTrackerStore } from './progress-tracker';
 import type { WorkerTask } from './worker-pool';
 import type { VolumeMetadata as WorkerVolumeMetadata } from './worker-pool';
-import { db } from '$lib/catalog/db';
+import { db } from '#lib/catalog/db.js';
 import { driveApiClient } from './sync/providers/google-drive/api-client';
 import { driveFilesCache } from './sync/providers/google-drive/drive-files-cache';
 import { unifiedCloudManager } from './sync/unified-cloud-manager';
@@ -28,25 +28,25 @@ import {
   saveVolume,
   deleteVolumeCompletely,
   isSystemFile
-} from '$lib/import';
-import type { DecompressedVolume } from '$lib/import';
+} from '#lib/import/index.js';
+import type { DecompressedVolume } from '#lib/import/index.js';
 import { extractTitlesFromPath, generateDeterministicUUID } from './series-extraction';
 import { shouldReplaceDownloadedVolume } from './download-volume-repair';
-import { hasWritableNonServerProvider } from '$lib/metadata/series-backfill';
-import { scheduleSeriesFileWrite } from '$lib/metadata/series-file-sync';
-import { dropStrandedMetadataOnlyRow } from '$lib/catalog/stranded-rows';
-import { isMetadataOnly, needsDownload } from '$lib/catalog/volume-state';
-import { recordArchiveSize } from '$lib/catalog/archive-size';
+import { hasWritableNonServerProvider } from '#lib/metadata/series-backfill.js';
+import { scheduleSeriesFileWrite } from '#lib/metadata/series-file-sync.js';
+import { dropStrandedMetadataOnlyRow } from '#lib/catalog/stranded-rows.js';
+import { isMetadataOnly, needsDownload } from '#lib/catalog/volume-state.js';
+import { recordArchiveSize } from '#lib/catalog/archive-size.js';
 import { foldStem, miscasedLayerStem, splitLayerSidecarName } from './sync/syncable-file';
-import { attachLayerToVolume, readLayerFile } from '$lib/reader/edit/layer-import';
-import { pullLayersForVolume } from '$lib/metadata/layer-sync';
+import { attachLayerToVolume, readLayerFile } from '#lib/reader/edit/layer-import.js';
+import { pullLayersForVolume } from '#lib/metadata/layer-sync.js';
 import {
   queueSidecarBackfillForVolume,
   queueSidecarBackfillFromImport
 } from './sync/sidecar-backfill';
-import type { SavedVolumeData } from '$lib/import/database';
-import type { MokuroCloudAttestation } from '$lib/catalog/mokuro-hash';
-import { isoToEpochSeconds } from '$lib/metadata/cloud-sidecar-stamps';
+import type { SavedVolumeData } from '#lib/import/database.js';
+import type { MokuroCloudAttestation } from '#lib/catalog/mokuro-hash.js';
+import { isoToEpochSeconds } from '#lib/metadata/cloud-sidecar-stamps.js';
 
 export interface QueueItem {
   volumeUuid: string;

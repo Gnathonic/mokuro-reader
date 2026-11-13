@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('$app/environment', () => ({ browser: true }));
+vi.mock('$app/env', () => ({ browser: true }));
 
 const providerStatus = vi.hoisted(() => {
   let value = {
@@ -23,7 +23,7 @@ const providerStatus = vi.hoisted(() => {
   };
 });
 
-vi.mock('$lib/util/sync/provider-manager', () => ({
+vi.mock('#lib/util/sync/provider-manager.js', () => ({
   providerManager: { status: providerStatus }
 }));
 
@@ -53,7 +53,7 @@ const cloudVolumeTitlesFor = vi.hoisted(() =>
   })
 );
 
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: {
     writeSeriesFile,
     cloudVolumeTitlesFor,
@@ -63,7 +63,7 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
 }));
 
 const scheduleCatalogFileWrite = vi.hoisted(() => vi.fn());
-vi.mock('$lib/metadata/catalog-file-sync', () => ({ scheduleCatalogFileWrite }));
+vi.mock('#lib/metadata/catalog-file-sync.js', () => ({ scheduleCatalogFileWrite }));
 
 const { volumeRows, dbScans, metaRows, metaToArraySpy } = vi.hoisted(() => ({
   // A whole-table read of `series_metadata`. Its own spy so a regression back
@@ -74,7 +74,7 @@ const { volumeRows, dbScans, metaRows, metaToArraySpy } = vi.hoisted(() => ({
   dbScans: { count: 0 },
   metaRows: new Map<string, Record<string, unknown>>()
 }));
-vi.mock('$lib/catalog/db', () => ({
+vi.mock('#lib/catalog/db.js', () => ({
   db: {
     volumes: {
       // `locallyKnownSeriesKeys` (one full read per pass — the assertion

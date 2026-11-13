@@ -1,6 +1,6 @@
 import { writable } from 'svelte/store';
-import type { Page } from '$lib/types';
-import type { VolumeMetadata } from '$lib/anki-connect';
+import type { Page } from '#lib/types/index.js';
+import type { VolumeMetadata } from '#lib/anki-connect/index.js';
 
 interface TextBoxPickerState {
   open: boolean;

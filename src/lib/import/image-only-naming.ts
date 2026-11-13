@@ -20,8 +20,8 @@ import {
   generateDeterministicUUID,
   isBareVolumeName,
   isSuspectParentFolder
-} from '$lib/util/series-extraction';
-import { sanitizeTitleSegment } from '$lib/util/sanitize-title';
+} from '#lib/util/series-extraction.js';
+import { sanitizeTitleSegment } from '#lib/util/sanitize-title.js';
 import type { PairedSource } from './types';
 
 /** The names one image-only volume is saved under. */

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { onedriveCore } from '../onedrive-core';
-import { ProviderError } from '$lib/util/sync/provider-interface';
+import { ProviderError } from '#lib/util/sync/provider-interface.js';
 
 describe('onedriveCore', () => {
   beforeEach(() => {

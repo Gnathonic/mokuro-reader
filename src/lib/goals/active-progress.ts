@@ -4,7 +4,7 @@ import { volumes } from '../settings/volume-data';
 // rows this device has. A volume read to the end on the phone and never
 // downloaded here has no row, so its page count read as 0 and it earned no
 // goal credit at all. Placeholders carry the page counts from `series.json`.
-import { volumesWithPlaceholders as catalogVolumes } from '$lib/catalog';
+import { volumesWithPlaceholders as catalogVolumes } from '#lib/catalog/index.js';
 import { isCompletedInPeriod, partialProgressInPeriod } from './goal-counting';
 import { customGoals, activeGoalSelection, goalTargets } from './goals-data';
 import { getDaysRemainingInPeriod, getExpectedProgressPercent } from './goal-math';

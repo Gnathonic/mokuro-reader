@@ -1,15 +1,15 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 // Constructor should not attempt to restore a stored handle in tests.
-vi.mock('$app/environment', () => ({ browser: false }));
+vi.mock('$app/env', () => ({ browser: false }));
 
 import { FilesystemProvider } from '../filesystem-provider';
 import { ProviderError } from '../../../provider-interface';
 import {
   refreshCloudBunkoMarker,
   resetCloudBunkoMarkersForTest
-} from '$lib/catalog/cloud-bunko-marker';
-import { servedMarker } from '$lib/catalog/__fixtures__/bunko-marker';
+} from '#lib/catalog/cloud-bunko-marker.js';
+import { servedMarker } from '#lib/catalog/__fixtures__/bunko-marker.js';
 
 // ---------------------------------------------------------------------------
 // Minimal in-memory File System Access API fake (just enough for the provider:

@@ -9,17 +9,17 @@
     formatRelativeDate,
     type FiguresOf,
     type VolumeSpeedData
-  } from '$lib/util/reading-speed-history';
-  import { figuresFor, readingStats } from '$lib/reading-history/stats-store';
+  } from '#lib/util/reading-speed-history.js';
+  import { figuresFor, readingStats } from '#lib/reading-history/stats-store.js';
   import {
     volumes,
     deleteVolume as deleteVolumeStats,
     clearOrphanedVolumeData,
     isOrphanedVolumeData
-  } from '$lib/settings/volume-data';
-  import { volumes as catalogStore } from '$lib/catalog';
-  import { enrichAllOrphanedVolumes } from '$lib/settings';
-  import { personalizedReadingSpeed } from '$lib/settings/reading-speed';
+  } from '#lib/settings/volume-data.js';
+  import { volumes as catalogStore } from '#lib/catalog/index.js';
+  import { enrichAllOrphanedVolumes } from '#lib/settings/index.js';
+  import { personalizedReadingSpeed } from '#lib/settings/reading-speed.js';
   import {
     Badge,
     Card,
@@ -42,7 +42,7 @@
     ChartLineUpOutline,
     TrashBinSolid
   } from 'flowbite-svelte-icons';
-  import type { VolumeMetadata } from '$lib/types';
+  import type { VolumeMetadata } from '#lib/types/index.js';
   import Chart from 'chart.js/auto';
 
   // All possible achievements for test mode (10 levels per category + 1 special)

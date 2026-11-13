@@ -24,24 +24,24 @@ import type { CloudVolumeWithProvider } from './unified-cloud-manager';
  */
 
 const getActiveProvider = vi.fn();
-vi.mock('$lib/util/sync/provider-manager', () => ({
+vi.mock('#lib/util/sync/provider-manager.js', () => ({
   providerManager: {
     getActiveProvider: () => getActiveProvider()
   }
 }));
 
-vi.mock('$lib/util/sync/unified-sync-service', () => ({
+vi.mock('#lib/util/sync/unified-sync-service.js', () => ({
   unifiedSyncService: {
     isSyncing: { subscribe: vi.fn() },
     syncProvider: vi.fn()
   }
 }));
 
-vi.mock('$lib/util/compress-volume', () => ({
+vi.mock('#lib/util/compress-volume.js', () => ({
   generateVolumeSidecarsFromDb: vi.fn()
 }));
 
-vi.mock('$lib/catalog/db', () => ({
+vi.mock('#lib/catalog/db.js', () => ({
   db: {
     volumes: {
       toArray: async () => [],
@@ -50,7 +50,7 @@ vi.mock('$lib/catalog/db', () => ({
   }
 }));
 
-vi.mock('$lib/metadata/store', () => ({
+vi.mock('#lib/metadata/store.js', () => ({
   getSeriesMetadataForTitle: vi.fn(async () => undefined),
   getAllSeriesMetadata: vi.fn(async () => ({})),
   getSeriesMetadataByFoldedTitle: vi.fn(async () => []),
@@ -58,9 +58,9 @@ vi.mock('$lib/metadata/store', () => ({
   upsertFromSeriesFile: vi.fn(async () => true)
 }));
 
-vi.mock('$lib/metadata/series-index', async () => {
-  const actual = await vi.importActual<typeof import('$lib/metadata/series-index')>(
-    '$lib/metadata/series-index'
+vi.mock('#lib/metadata/series-index.js', async () => {
+  const actual = await vi.importActual<typeof import('#lib/metadata/series-index.js')>(
+    '#lib/metadata/series-index.js'
   );
   return {
     indexNeedsRefresh: actual.indexNeedsRefresh,
@@ -72,9 +72,9 @@ vi.mock('$lib/metadata/series-index', async () => {
   };
 });
 
-vi.mock('$lib/metadata/catalog-index', async () => {
-  const actual = await vi.importActual<typeof import('$lib/metadata/catalog-index')>(
-    '$lib/metadata/catalog-index'
+vi.mock('#lib/metadata/catalog-index.js', async () => {
+  const actual = await vi.importActual<typeof import('#lib/metadata/catalog-index.js')>(
+    '#lib/metadata/catalog-index.js'
   );
   return {
     catalogNeedsRefresh: actual.catalogNeedsRefresh,
@@ -85,22 +85,22 @@ vi.mock('$lib/metadata/catalog-index', async () => {
   };
 });
 
-vi.mock('$lib/metadata/series-index-sync', () => ({
+vi.mock('#lib/metadata/series-index-sync.js', () => ({
   refreshSeriesIndexes: vi.fn(async () => {})
 }));
 
-vi.mock('$lib/metadata/catalog-index-sync', () => ({
+vi.mock('#lib/metadata/catalog-index-sync.js', () => ({
   refreshCatalogIndex: vi.fn(async () => {})
 }));
 
-vi.mock('$lib/metadata/series-file-sync', () => ({
+vi.mock('#lib/metadata/series-file-sync.js', () => ({
   reconcileMissingMetadataFiles: vi.fn(async () => {}),
   markListingFresh: vi.fn()
 }));
 
 const isAuthenticated = vi.fn(() => true);
 const listCloudVolumes = vi.fn(async (): Promise<unknown[]> => []);
-vi.mock('$lib/util/sync/providers/webdav/webdav-provider', () => ({
+vi.mock('#lib/util/sync/providers/webdav/webdav-provider.js', () => ({
   webdavProvider: {
     isAuthenticated: () => isAuthenticated(),
     listCloudVolumes: () => listCloudVolumes()

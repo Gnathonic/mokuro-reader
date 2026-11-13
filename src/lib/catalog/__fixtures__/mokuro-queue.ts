@@ -9,7 +9,7 @@
  * Without a Bunko checkout (and without `BUNKO_CONTRACT_REQUIRED=1`) the base
  * is the snapshot below, taken from that fixture.
  */
-import { bunkoBody, editExisting as edit } from '$lib/interop/contract';
+import { bunkoBody, editExisting as edit } from '#lib/interop/contract.js';
 
 interface QueueJobDoc {
   kind: string;

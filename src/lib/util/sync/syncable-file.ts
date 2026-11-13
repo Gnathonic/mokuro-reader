@@ -22,13 +22,13 @@
  * keep ignoring them.
  */
 
-import { CATALOG_FILE_NAME, isCatalogFilePath } from '$lib/metadata/catalog-file';
-import { SERIES_FILE_NAME, isSeriesFilePath } from '$lib/metadata/series-file';
-import { GOALS_FILE_NAME } from '$lib/goals/goals-file';
-import { naturalSort } from '$lib/util/natural-sort';
-import { isHistoryFilePath } from '$lib/reading-history/paths';
-import { POSITIONS_FILE_NAME } from '$lib/positions/positions-file';
-import { isReservedLayerId } from '$lib/reader/edit/layer-names';
+import { CATALOG_FILE_NAME, isCatalogFilePath } from '#lib/metadata/catalog-file.js';
+import { SERIES_FILE_NAME, isSeriesFilePath } from '#lib/metadata/series-file.js';
+import { GOALS_FILE_NAME } from '#lib/goals/goals-file.js';
+import { naturalSort } from '#lib/util/natural-sort.js';
+import { isHistoryFilePath } from '#lib/reading-history/paths.js';
+import { POSITIONS_FILE_NAME } from '#lib/positions/positions-file.js';
+import { isReservedLayerId } from '#lib/reader/edit/layer-names.js';
 
 const ROOT_CONFIG_FILENAMES = new Set([
   'volume-data.json',

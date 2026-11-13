@@ -1,12 +1,12 @@
-import { db } from '$lib/catalog/db';
-import { parseMokuroFile } from '$lib/import/processing';
-import type { Page, VolumeMetadata } from '$lib/types';
+import { db } from '#lib/catalog/db.js';
+import { parseMokuroFile } from '#lib/import/processing.js';
+import type { Page, VolumeMetadata } from '#lib/types/index.js';
 import {
   unifiedCloudManager,
   type CloudVolumeWithProvider
-} from '$lib/util/sync/unified-cloud-manager';
-import { isVolumeInstalled } from '$lib/catalog/volume-state';
-import type { CloudFileMetadata, ProviderType } from '$lib/util/sync/provider-interface';
+} from '#lib/util/sync/unified-cloud-manager.js';
+import { isVolumeInstalled } from '#lib/catalog/volume-state.js';
+import type { CloudFileMetadata, ProviderType } from '#lib/util/sync/provider-interface.js';
 import {
   deleteLayerRows,
   getLayerMeta,
@@ -14,13 +14,13 @@ import {
   layerTables,
   putLayerWithPages
 } from './layer-store';
-import { notePendingLayerDelete } from '$lib/metadata/layer-sync';
+import { notePendingLayerDelete } from '#lib/metadata/layer-sync.js';
 import { isUntouchedUpgradeLayer, sha256Hex, type MokuroCloudAttestation } from './mokuro-hash';
 export { isUntouchedUpgradeLayer };
 import { firstImageSizeMismatch, fitPagesToVolume, sameOcrPages } from './ocr-upgrade-pages';
 import { addProvenance, provenanceOfFile, type OcrProvenance } from './ocr-provenance';
-import { UPDATED_OCR_LAYER_ID, UPDATED_OCR_LAYER_NAME } from '$lib/reader/edit/layer-names';
-import { layerNameOnWrite, mainMakerOfFile } from '$lib/reader/edit/ocr-label';
+import { UPDATED_OCR_LAYER_ID, UPDATED_OCR_LAYER_NAME } from '#lib/reader/edit/layer-names.js';
+import { layerNameOnWrite, mainMakerOfFile } from '#lib/reader/edit/ocr-label.js';
 
 /**
  * Upgrading an installed volume's OCR from the cloud's `.mokuro`/`.mokuro.gz`

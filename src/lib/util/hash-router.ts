@@ -10,7 +10,7 @@ import {
   handleAniListCallbackHash,
   isAniListCallbackHash,
   noteRefusedAniListCallback
-} from '$lib/metadata/anilist-auth';
+} from '#lib/metadata/anilist-auth.js';
 
 /**
  * View types for in-app navigation

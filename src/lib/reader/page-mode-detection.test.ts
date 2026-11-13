@@ -5,7 +5,7 @@ import {
   isPortraitOrientation,
   shouldShowSinglePage
 } from './page-mode-detection';
-import type { Page } from '$lib/types';
+import type { Page } from '#lib/types/index.js';
 
 // Helper to create minimal page data
 function createPage(width: number, height: number): Page {

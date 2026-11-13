@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import 'fake-indexeddb/auto';
 
-vi.mock('$lib/catalog/db', async () => {
+vi.mock('#lib/catalog/db.js', async () => {
   const { default: Dexie } = await import('dexie');
   const db = new Dexie('cloud-ocr-upgrade-test');
   db.version(1).stores({ volumes: 'volume_uuid', volume_ocr: 'volume_uuid' });
@@ -9,19 +9,19 @@ vi.mock('$lib/catalog/db', async () => {
 });
 
 const parseMokuroFile = vi.fn();
-vi.mock('$lib/import/processing', () => ({
+vi.mock('#lib/import/processing.js', () => ({
   parseMokuroFile: (...args: unknown[]) => parseMokuroFile(...args)
 }));
 
 const downloadFile = vi.fn();
 const getActiveProvider = vi.fn();
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: { getActiveProvider: () => getActiveProvider() }
 }));
 
-import { db } from '$lib/catalog/db';
+import { db } from '#lib/catalog/db.js';
 import { enqueueCloudOcrUpgrade, upgradeOcrFromSidecarBlob } from './cloud-ocr-upgrade';
-import type { VolumeMetadata } from '$lib/types';
+import type { VolumeMetadata } from '#lib/types/index.js';
 
 const imageOnlyVolume = {
   volume_uuid: 'vol-1',

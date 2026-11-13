@@ -1,23 +1,23 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import 'fake-indexeddb/auto';
-import type { Page, VolumeOcrLayer } from '$lib/types';
-import type { CloudFileMetadata } from '$lib/util/sync/provider-interface';
+import type { Page, VolumeOcrLayer } from '#lib/types/index.js';
+import type { CloudFileMetadata } from '#lib/util/sync/provider-interface.js';
 
-vi.mock('$lib/catalog/db', async () => {
+vi.mock('#lib/catalog/db.js', async () => {
   const { CatalogDexieV3 } =
-    await vi.importActual<typeof import('$lib/catalog/db-v3')>('$lib/catalog/db-v3');
+    await vi.importActual<typeof import('#lib/catalog/db-v3.js')>('#lib/catalog/db-v3.js');
   return { db: new CatalogDexieV3('mokuro_v3_layer_sync_test') };
 });
-vi.mock('$lib/util/sync/sidecar-backfill', () => ({ noteOcrEdited: vi.fn() }));
+vi.mock('#lib/util/sync/sidecar-backfill.js', () => ({ noteOcrEdited: vi.fn() }));
 
 const getActiveProvider = vi.fn();
-vi.mock('$lib/util/sync/provider-manager', () => ({
+vi.mock('#lib/util/sync/provider-manager.js', () => ({
   providerManager: { getActiveProvider: () => getActiveProvider() }
 }));
 const cacheAdd = vi.fn();
 const cacheRemove = vi.fn();
 let cachedFiles: CloudFileMetadata[] = [];
-vi.mock('$lib/util/sync/cache-manager', () => ({
+vi.mock('#lib/util/sync/cache-manager.js', () => ({
   cacheManager: {
     getCache: () => ({
       add: cacheAdd,
@@ -27,17 +27,17 @@ vi.mock('$lib/util/sync/cache-manager', () => ({
   }
 }));
 
-import { db } from '$lib/catalog/db';
-import { forksOnEdit } from '$lib/reader/edit/layer-kind';
-import { layerDisplayName } from '$lib/reader/edit/ocr-label';
-import { contentDigest, provenanceFromParsed } from '$lib/catalog/ocr-provenance';
-import { countIdbOps } from '$lib/catalog/__tests__/idb-op-counter';
+import { db } from '#lib/catalog/db.js';
+import { forksOnEdit } from '#lib/reader/edit/layer-kind.js';
+import { layerDisplayName } from '#lib/reader/edit/ocr-label.js';
+import { contentDigest, provenanceFromParsed } from '#lib/catalog/ocr-provenance.js';
+import { countIdbOps } from '#lib/catalog/__tests__/idb-op-counter.js';
 import {
   clearAllLayers,
   deleteLayerRows,
   getLayerWithPages,
   putLayerWithPages
-} from '$lib/catalog/layer-store';
+} from '#lib/catalog/layer-store.js';
 import {
   clearPendingLayerDelete,
   collectLayerFiles,
@@ -467,7 +467,7 @@ describe('syncLayersFromListing', () => {
       'webdav'
     );
     expect((await getLayerWithPages(db, 'v1', 'tr-en'))?.kind).toBe('translation');
-    const { promoteLayer } = await import('$lib/reader/edit/layers');
+    const { promoteLayer } = await import('#lib/reader/edit/layers.js');
     await expect(promoteLayer('v1', 'tr-en')).rejects.toThrow(/translation/i);
     expect((await db.volumes.get('v1'))?.character_count).toBe(2);
   });
@@ -543,7 +543,7 @@ describe('syncLayersFromListing', () => {
   });
 
   it('a push the server refuses (403) is not asked again until the layer changes', async () => {
-    const { ProviderError } = await import('$lib/util/sync/provider-interface');
+    const { ProviderError } = await import('#lib/util/sync/provider-interface.js');
     const { resetRefusedLayerPushesForTest } = await import('./layer-sync');
     resetRefusedLayerPushesForTest();
     await seedRow();
@@ -2727,7 +2727,7 @@ describe('Publish and Unpublish the shared curated layer', () => {
   it("a 403 is 'refused' and writes no row", async () => {
     await seedRow();
     await seedEdit();
-    const { ProviderError } = await import('$lib/util/sync/provider-interface');
+    const { ProviderError } = await import('#lib/util/sync/provider-interface.js');
     uploadFile.mockRejectedValue(
       new ProviderError('no', 'webdav', 'PERMISSION_DENIED', false, false)
     );
@@ -2873,7 +2873,7 @@ describe('Publish and Unpublish the shared curated layer', () => {
     // The next listing shows the plain file (this account's publish) and a
     // `.gz` an engine wrote, which the server will not let this account delete.
     deleteFile.mockReset();
-    const { ProviderError } = await import('$lib/util/sync/provider-interface');
+    const { ProviderError } = await import('#lib/util/sync/provider-interface.js');
     deleteFile.mockImplementation(async (f: CloudFileMetadata) => {
       if (f.path.endsWith('.gz')) {
         throw new ProviderError('no', 'webdav', 'PERMISSION_DENIED', false, false);
@@ -2936,7 +2936,7 @@ describe('Publish and Unpublish the shared curated layer', () => {
     await seedEdit();
     await publishCuratedLayer('v1');
     cachedFiles.push(cloudFile('Series/VOL 1.curated.mokuro', { size: 77 }));
-    const { ProviderError } = await import('$lib/util/sync/provider-interface');
+    const { ProviderError } = await import('#lib/util/sync/provider-interface.js');
     deleteFile.mockRejectedValue(
       new ProviderError('no', 'webdav', 'PERMISSION_DENIED', false, false)
     );
@@ -2956,7 +2956,7 @@ describe('Publish and Unpublish the shared curated layer', () => {
       cloudFile('Series/VOL 1.curated.mokuro', { size: 77 }),
       cloudFile('Series/VOL 1.curated.mokuro.gz')
     );
-    const { ProviderError } = await import('$lib/util/sync/provider-interface');
+    const { ProviderError } = await import('#lib/util/sync/provider-interface.js');
     deleteFile.mockImplementation(async (f: CloudFileMetadata) => {
       if (f.path.endsWith('.gz')) {
         throw new ProviderError('no', 'webdav', 'PERMISSION_DENIED', false, false);
@@ -2977,7 +2977,7 @@ describe('Publish and Unpublish the shared curated layer', () => {
       cloudFile('Series/VOL 1.curated.mokuro', { size: 77 }),
       cloudFile('Series/VOL 1.curated.mokuro.gz')
     );
-    const { ProviderError } = await import('$lib/util/sync/provider-interface');
+    const { ProviderError } = await import('#lib/util/sync/provider-interface.js');
     deleteFile.mockImplementation(async (f: CloudFileMetadata) => {
       if (!f.path.endsWith('.gz')) {
         throw new ProviderError('no', 'webdav', 'PERMISSION_DENIED', false, false);

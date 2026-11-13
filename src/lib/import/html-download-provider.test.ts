@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const workerTasks = vi.hoisted(() => [] as Array<Record<string, unknown>>);
 /** The shared pool's user tally, and what it was when each task was handed over. */
 const poolUsers = vi.hoisted(() => ({ count: 0, atAddTask: [] as number[] }));
-vi.mock('$lib/util/file-processing-pool', () => ({
+vi.mock('#lib/util/file-processing-pool.js', () => ({
   incrementPoolUsers: () => {
     poolUsers.count++;
   },

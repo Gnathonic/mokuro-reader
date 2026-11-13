@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { devices } from '$lib/reading-history/device-stats';
-  import { offerDeviceName } from '$lib/reading-history/position-offer';
-  import { answerPosition, positionPlan, showsChip } from '$lib/reading-history/position-store';
+  import { devices } from '#lib/reading-history/device-stats.js';
+  import { offerDeviceName } from '#lib/reading-history/position-offer.js';
+  import { answerPosition, positionPlan, showsChip } from '#lib/reading-history/position-store.js';
 
   /**
    * The volume card's reminder of an unanswered cross-device position offer,

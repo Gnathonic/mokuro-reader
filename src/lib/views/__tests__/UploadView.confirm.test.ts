@@ -17,7 +17,7 @@ const h = vi.hoisted(() => ({
   fetch: vi.fn()
 }));
 
-vi.mock('$lib/util', async () => ({
+vi.mock('#lib/util/index.js', async () => ({
   confirmationPopupStore: (await import('svelte/store')).writable<unknown>(undefined),
   normalizeFilename: (name: string) => name,
   promptConfirmationWith: h.promptConfirmationWith,
@@ -25,9 +25,9 @@ vi.mock('$lib/util', async () => ({
 }));
 // The real parsers, reached lazily: importing the provider inside this factory
 // would wait on modules that import `$lib/import` itself — a cycle that hangs.
-type Provider = typeof import('$lib/import/html-download-provider');
+type Provider = typeof import('#lib/import/html-download-provider.js');
 let provider: Provider;
-vi.mock('$lib/import', () => ({
+vi.mock('#lib/import/index.js', () => ({
   describeImportOutcome: () => '',
   importFiles: vi.fn(),
   htmlDownloadProvider: { download: h.download },
@@ -36,15 +36,15 @@ vi.mock('$lib/import', () => ({
   parseHtmlDownloadRequest: (...args: Parameters<Provider['parseHtmlDownloadRequest']>) =>
     provider.parseHtmlDownloadRequest(...args)
 }));
-vi.mock('$lib/import/deep-link-import', () => ({
+vi.mock('#lib/import/deep-link-import.js', () => ({
   importDeepLinkedArchive: h.importDeepLinkedArchive,
   localSeriesKeys: h.localSeriesKeys
 }));
-vi.mock('$lib/catalog/db', () => ({ db: { volumes: { toArray: async () => [] } } }));
-vi.mock('$lib/catalog/thumbnail-cache', () => ({ thumbnailCache: { invalidate: vi.fn() } }));
-vi.mock('$lib/util/upload', () => ({ requestPersistentStorage: vi.fn(async () => true) }));
-vi.mock('$lib/util/hash-router', () => ({ nav: { toCatalog: h.toCatalog } }));
-vi.mock('$lib/util/progress-tracker', () => ({
+vi.mock('#lib/catalog/db.js', () => ({ db: { volumes: { toArray: async () => [] } } }));
+vi.mock('#lib/catalog/thumbnail-cache.js', () => ({ thumbnailCache: { invalidate: vi.fn() } }));
+vi.mock('#lib/util/upload.js', () => ({ requestPersistentStorage: vi.fn(async () => true) }));
+vi.mock('#lib/util/hash-router.js', () => ({ nav: { toCatalog: h.toCatalog } }));
+vi.mock('#lib/util/progress-tracker.js', () => ({
   progressTrackerStore: { addProcess: vi.fn(), updateProcess: vi.fn(), removeProcess: vi.fn() }
 }));
 
@@ -73,7 +73,7 @@ async function mountAndGetPrompt(): Promise<Prompt> {
 const cbzLink = (cbz: string, extra = '') => `#/upload?cbz=${encodeURIComponent(cbz)}${extra}`;
 
 beforeAll(async () => {
-  provider = await vi.importActual<Provider>('$lib/import/html-download-provider');
+  provider = await vi.importActual<Provider>('#lib/import/html-download-provider.js');
 });
 
 beforeEach(() => {
@@ -119,7 +119,7 @@ describe('UploadView (import by link)', () => {
   });
 
   it('leaving the page takes the open question with it, and its “no” sends no one anywhere', async () => {
-    const { confirmationPopupStore } = await import('$lib/util');
+    const { confirmationPopupStore } = await import('#lib/util/index.js');
     setLink(cbzLink('https://books.example.com/S/V.cbz'));
     const view = render(UploadView);
     await waitFor(() => expect(h.promptConfirmationWith).toHaveBeenCalledTimes(1));

@@ -23,7 +23,7 @@
  * Pure scheduling: what a read and a pull ARE is the caller's
  * (`server-ocr-queue.ts`), injected for tests.
  */
-import { normalizeSeriesKey } from '$lib/metadata/series-key';
+import { normalizeSeriesKey } from '#lib/metadata/series-key.js';
 import type { WatchEntry } from './server-ocr-queue';
 
 /** The longest wait between two reads of a watched series. */

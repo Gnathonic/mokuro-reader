@@ -5,14 +5,14 @@ import { get } from 'svelte/store';
 const { existingVolumeCount } = vi.hoisted(() => ({
   existingVolumeCount: vi.fn(async (_series: string, _exclude?: Iterable<string>) => 0)
 }));
-vi.mock('$lib/import/library-series', () => ({
+vi.mock('#lib/import/library-series.js', () => ({
   existingVolumeCount,
   listLibrarySeries: vi.fn(async () => [])
 }));
 
 import ImageOnlyReviewStep from '../ImageOnlyReviewStep.svelte';
-import { groupCandidates, type ReviewGroup } from '$lib/import/image-only-review';
-import { miscSettings } from '$lib/settings/misc';
+import { groupCandidates, type ReviewGroup } from '#lib/import/image-only-review.js';
+import { miscSettings } from '#lib/settings/misc.js';
 
 const candidate = (id: string, path: string) => ({
   id,

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CSP_NOOP_REPORT_GROUP, cspDirectives, kitCsp, parseCspMode } from './csp-policy.js';
-import { GOOGLE_SCRIPT_URLS } from '$lib/util/sync/providers/google-drive/google-scripts';
+import { GOOGLE_SCRIPT_URLS } from '#lib/util/sync/providers/google-drive/google-scripts.js';
 
 describe('parseCspMode', () => {
   it('is off when unset or empty', () => {

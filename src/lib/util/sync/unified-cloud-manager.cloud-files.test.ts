@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { get, type Writable } from 'svelte/store';
 
-vi.mock('$lib/util/sync/cache-manager', async () => {
+vi.mock('#lib/util/sync/cache-manager.js', async () => {
   const { writable } = await import('svelte/store');
   return {
     cacheManager: {
@@ -12,15 +12,15 @@ vi.mock('$lib/util/sync/cache-manager', async () => {
     }
   };
 });
-vi.mock('$lib/util/sync/provider-manager', () => ({
+vi.mock('#lib/util/sync/provider-manager.js', () => ({
   providerManager: { getActiveProvider: vi.fn(() => ({ type: 'webdav' })) }
 }));
-vi.mock('$lib/util/sync/unified-sync-service', () => ({
+vi.mock('#lib/util/sync/unified-sync-service.js', () => ({
   unifiedSyncService: { isSyncing: { subscribe: vi.fn() }, syncProvider: vi.fn() }
 }));
 
 import { unifiedCloudManager } from './unified-cloud-manager';
-import { cacheManager } from '$lib/util/sync/cache-manager';
+import { cacheManager } from '#lib/util/sync/cache-manager.js';
 
 const allFiles = cacheManager.allFiles as unknown as Writable<
   Map<string, Array<Record<string, unknown>>>

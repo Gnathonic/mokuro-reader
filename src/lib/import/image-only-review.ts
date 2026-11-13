@@ -29,10 +29,10 @@ import {
   generateDeterministicUUID,
   isBareVolumeName,
   seriesFromVolumeName
-} from '$lib/util/series-extraction';
-import { naturalSort } from '$lib/util/natural-sort';
-import { generateUUID } from '$lib/util/uuid';
-import { normalizeSeriesKey } from '$lib/metadata/series-key';
+} from '#lib/util/series-extraction.js';
+import { naturalSort } from '#lib/util/natural-sort.js';
+import { generateUUID } from '#lib/util/uuid.js';
+import { normalizeSeriesKey } from '#lib/metadata/series-key.js';
 import { locateVolume, storedTitle, type ImportNames } from './image-only-naming';
 
 export type NamingMode = 'cleaned' | 'folder';

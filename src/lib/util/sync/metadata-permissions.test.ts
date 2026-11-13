@@ -27,7 +27,7 @@ const h = vi.hoisted(() => {
   };
 });
 
-vi.mock('$lib/util/sync', () => ({ providerManager: { status: h.status } }));
+vi.mock('#lib/util/sync/index.js', () => ({ providerManager: { status: h.status } }));
 
 import { canDeleteSeriesOnServer, canEditSeriesMetadata } from './metadata-permissions';
 

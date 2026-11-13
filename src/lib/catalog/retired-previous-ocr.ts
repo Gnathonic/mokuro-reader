@@ -13,7 +13,7 @@
 import { get } from 'svelte/store';
 import { db } from './db';
 import { deleteRetiredPreviousOcrLayers } from './layer-store';
-import { volumesWithTrash } from '$lib/settings/volume-data';
+import { volumesWithTrash } from '#lib/settings/volume-data.js';
 
 export const PREVIOUS_OCR_RETIRED_KEY = 'layers:previous-ocr-retired';
 

@@ -8,7 +8,7 @@ import {
   uploadFileWithClient,
   uploadWithRetry
 } from './webdav-upload';
-import { describeContract, loadBunkoFixture } from '$lib/interop/contract';
+import { describeContract, loadBunkoFixture } from '#lib/interop/contract.js';
 
 /** What the fake server answers each PUT with, in order. */
 type Answer =

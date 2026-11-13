@@ -1,5 +1,5 @@
-import { db } from '$lib/catalog/db';
-import { isArchiveSize } from '$lib/metadata/series-file';
+import { db } from '#lib/catalog/db.js';
+import { isArchiveSize } from '#lib/metadata/series-file.js';
 
 /**
  * Record how big this volume's `.cbz` is, from a moment where we just held the

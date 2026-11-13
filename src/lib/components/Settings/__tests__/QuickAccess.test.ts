@@ -1,14 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render } from '@testing-library/svelte';
 import QuickAccess from '../QuickAccess.svelte';
-import { isReader } from '$lib/util';
-import * as hashRouter from '$lib/util/hash-router';
+import { isReader } from '#lib/util/index.js';
+import * as hashRouter from '#lib/util/hash-router.js';
 
-vi.mock('$lib/util', () => ({
+vi.mock('#lib/util/index.js', () => ({
   isReader: vi.fn()
 }));
 
-vi.mock('$lib/util/hash-router', () => ({
+vi.mock('#lib/util/hash-router.js', () => ({
   navigateBack: vi.fn()
 }));
 

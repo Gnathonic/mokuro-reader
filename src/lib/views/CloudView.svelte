@@ -1,33 +1,33 @@
 <script lang="ts">
-  import { miscSettings, updateMiscSetting } from '$lib/settings/misc';
+  import { miscSettings, updateMiscSetting } from '#lib/settings/misc.js';
 
-  import { promptConfirmation, showSnackbar, showWebDAVError } from '$lib/util';
-  import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
-  import { isVolumeInstalled } from '$lib/catalog/volume-state';
+  import { promptConfirmation, showSnackbar, showWebDAVError } from '#lib/util/index.js';
+  import { unifiedCloudManager } from '#lib/util/sync/unified-cloud-manager.js';
+  import { isVolumeInstalled } from '#lib/catalog/volume-state.js';
   import {
     ProviderError,
     type ProviderType,
     type StorageQuota
-  } from '$lib/util/sync/provider-interface';
-  import { backupQueue } from '$lib/util/backup-queue';
+  } from '#lib/util/sync/provider-interface.js';
+  import { backupQueue } from '#lib/util/backup-queue.js';
   import { Alert, Badge, Button, Modal, Radio, Toggle, Spinner } from 'flowbite-svelte';
   import { onMount } from 'svelte';
   import { GoogleSolid, InfoCircleSolid } from 'flowbite-svelte-icons';
-  import { catalog } from '$lib/catalog';
-  import type { VolumeMetadata } from '$lib/types';
+  import { catalog } from '#lib/catalog/index.js';
+  import type { VolumeMetadata } from '#lib/types/index.js';
 
   // Import multi-provider sync
   // Note: Provider instances are lazy-loaded via providerManager.getOrLoadProvider()
-  import { providerManager } from '$lib/util/sync';
-  import { queueVolumesFromCloudFiles } from '$lib/util/download-queue';
-  import { cacheManager } from '$lib/util/sync/cache-manager';
-  import { isFilesystemProviderSupported } from '$lib/util/sync/providers/filesystem/feature-detect';
-  import { PROVIDER_LABELS } from '$lib/util/sync/provider-display';
-  import { isLoginCancelled } from '$lib/util/sync/provider-interface';
-  import { reconcileMissingMetadataFiles } from '$lib/metadata/series-file-sync';
-  import { backendAuthEnabled } from '$lib/util/sync/providers/google-drive/auth-backend';
-  import { parseCloudLinkPrefill, type CloudLinkPrefill } from '$lib/util/link-safety';
-  import { preloadGoogleScripts } from '$lib/util/sync/providers/google-drive/google-scripts';
+  import { providerManager } from '#lib/util/sync/index.js';
+  import { queueVolumesFromCloudFiles } from '#lib/util/download-queue.js';
+  import { cacheManager } from '#lib/util/sync/cache-manager.js';
+  import { isFilesystemProviderSupported } from '#lib/util/sync/providers/filesystem/feature-detect.js';
+  import { PROVIDER_LABELS } from '#lib/util/sync/provider-display.js';
+  import { isLoginCancelled } from '#lib/util/sync/provider-interface.js';
+  import { reconcileMissingMetadataFiles } from '#lib/metadata/series-file-sync.js';
+  import { backendAuthEnabled } from '#lib/util/sync/providers/google-drive/auth-backend.js';
+  import { parseCloudLinkPrefill, type CloudLinkPrefill } from '#lib/util/link-safety.js';
+  import { preloadGoogleScripts } from '#lib/util/sync/providers/google-drive/google-scripts.js';
 
   const CLOUD_ROOT_FOLDER = 'mokuro-reader';
 

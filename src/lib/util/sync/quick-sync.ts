@@ -19,7 +19,7 @@
  * Never throws; one line in the console says what it did.
  */
 
-import { historySyncAllowed } from '$lib/reading-history/history-capability';
+import { historySyncAllowed } from '#lib/reading-history/history-capability.js';
 import type { SyncProvider } from './provider-interface';
 import { unifiedSyncService } from './unified-sync-service';
 
@@ -42,7 +42,7 @@ async function quickProgress(provider: SyncProvider): Promise<QuickSyncReport['p
 
 async function quickPositions(provider: SyncProvider): Promise<number> {
   try {
-    const { probePositions } = await import('$lib/positions/positions-sync');
+    const { probePositions } = await import('#lib/positions/positions-sync.js');
     return (await probePositions(provider)).adopted.length;
   } catch (error) {
     console.warn('[quick-sync] positions failed (the full sync follows):', error);
@@ -56,9 +56,9 @@ async function quickHistory(provider: SyncProvider): Promise<QuickSyncReport['hi
   try {
     const [{ importHistory }, { historyDb }, { HISTORY_FOLDER, isHistoryFilePath }] =
       await Promise.all([
-        import('$lib/reading-history/history-sync'),
-        import('$lib/reading-history/history-db'),
-        import('$lib/reading-history/paths')
+        import('#lib/reading-history/history-sync.js'),
+        import('#lib/reading-history/history-db.js'),
+        import('#lib/reading-history/paths.js')
       ]);
     const listing = (await provider.listFolder(HISTORY_FOLDER)).filter((file) =>
       isHistoryFilePath(file.path)

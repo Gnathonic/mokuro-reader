@@ -1,5 +1,5 @@
 import { writable } from 'svelte/store';
-import { READER_VERSION, GITHUB_REPO } from '$lib/consts';
+import { READER_VERSION, GITHUB_REPO } from '#lib/consts/index.js';
 
 export interface ReleaseInfo {
   version: string;

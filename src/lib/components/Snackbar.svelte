@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { snackbarStore } from '$lib/util/snackbar';
+  import { snackbarStore } from '#lib/util/snackbar.js';
   import { Toast } from 'flowbite-svelte';
 </script>
 

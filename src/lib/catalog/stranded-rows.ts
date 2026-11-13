@@ -1,8 +1,8 @@
-import { db } from '$lib/catalog/db';
-import { deleteVolumeCompletely } from '$lib/import/database';
-import { isMetadataOnly } from '$lib/catalog/volume-state';
-import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
-import { volumesForFoldedSeriesTitle } from '$lib/catalog/volumes-by-series';
+import { db } from '#lib/catalog/db.js';
+import { deleteVolumeCompletely } from '#lib/import/database.js';
+import { isMetadataOnly } from '#lib/catalog/volume-state.js';
+import { normalizeSeriesKey, normalizeVolumeTitleKey } from '#lib/metadata/series-key.js';
+import { volumesForFoldedSeriesTitle } from '#lib/catalog/volumes-by-series.js';
 
 /**
  * After a download lands: drop the metadata-only row this volume used to occupy

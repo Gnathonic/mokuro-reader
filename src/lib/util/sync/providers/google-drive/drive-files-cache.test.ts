@@ -34,8 +34,11 @@ import { folderDeduplicator } from '../../folder-deduplicator';
 import { googleDriveProvider } from './google-drive-provider';
 import { driveFilesCache } from './drive-files-cache';
 import { CACHE_MUTATION_COALESCE_MS } from '../../coalesced-cache-store';
-import { COLD_START_GRACE_S, resetCloudBunkoMarkersForTest } from '$lib/catalog/cloud-bunko-marker';
-import { servedMarker } from '$lib/catalog/__fixtures__/bunko-marker';
+import {
+  COLD_START_GRACE_S,
+  resetCloudBunkoMarkersForTest
+} from '#lib/catalog/cloud-bunko-marker.js';
+import { servedMarker } from '#lib/catalog/__fixtures__/bunko-marker.js';
 
 describe('driveFilesCache', () => {
   beforeEach(() => {

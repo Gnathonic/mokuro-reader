@@ -1,8 +1,8 @@
-import { buildPageCharCounts, decodeMokuroSidecar } from '$lib/catalog/cloud-ocr-upgrade';
-import { sha256Hex } from '$lib/catalog/mokuro-hash';
-import { parseMokuroFile } from '$lib/import/processing';
-import { generateDeterministicUUID } from '$lib/util/series-extraction';
-import type { CloudFileMetadata, SyncProvider } from '$lib/util/sync/provider-interface';
+import { buildPageCharCounts, decodeMokuroSidecar } from '#lib/catalog/cloud-ocr-upgrade.js';
+import { sha256Hex } from '#lib/catalog/mokuro-hash.js';
+import { parseMokuroFile } from '#lib/import/processing.js';
+import { generateDeterministicUUID } from '#lib/util/series-extraction.js';
+import type { CloudFileMetadata, SyncProvider } from '#lib/util/sync/provider-interface.js';
 import { isArchiveSize, type SeriesFileVolume } from './series-file';
 
 /**

@@ -1,29 +1,29 @@
-import { db } from '$lib/catalog/db';
-import type { VolumeData, VolumeMetadata } from '$lib/types';
+import { db } from '#lib/catalog/db.js';
+import type { VolumeData, VolumeMetadata } from '#lib/types/index.js';
 import { liveQuery } from 'dexie';
 import { derived, readable, type Readable } from 'svelte/store';
-import { deriveSeriesFromVolumes } from '$lib/catalog/catalog';
-import { createSeriesIdentityMemo } from '$lib/catalog/series-identity';
+import { deriveSeriesFromVolumes } from '#lib/catalog/catalog.js';
+import { createSeriesIdentityMemo } from '#lib/catalog/series-identity.js';
 import {
   unifiedCloudManager,
   type CloudVolumeWithProvider
-} from '$lib/util/sync/unified-cloud-manager';
+} from '#lib/util/sync/unified-cloud-manager.js';
 import {
   cloudFieldsForRemovedVolume,
   indexCloudFilesByUuid,
   generatePlaceholders,
   indexCloudFilesByPath,
   indexCoverFilesByArchiveKey
-} from '$lib/catalog/placeholders';
-import { routeParams } from '$lib/util/hash-router';
-import { getLegacyImageOnlyVolumeUuid } from '$lib/util/download-volume-repair';
-import { normalizeSeriesKey } from '$lib/metadata/series-key';
-import { isCatalogVisible } from '$lib/util/cloud-fields';
-import { seriesIndexMap, type SeriesIndexRecord } from '$lib/metadata/series-index';
-import { seriesMetadataMap } from '$lib/metadata/store';
-import { preferredTitleLanguage } from '$lib/settings/settings';
-import { isMetadataOnly } from '$lib/catalog/volume-state';
-import { volumeRowSignature } from '$lib/catalog/volume-row-signature';
+} from '#lib/catalog/placeholders.js';
+import { routeParams } from '#lib/util/hash-router.js';
+import { getLegacyImageOnlyVolumeUuid } from '#lib/util/download-volume-repair.js';
+import { normalizeSeriesKey } from '#lib/metadata/series-key.js';
+import { isCatalogVisible } from '#lib/util/cloud-fields.js';
+import { seriesIndexMap, type SeriesIndexRecord } from '#lib/metadata/series-index.js';
+import { seriesMetadataMap } from '#lib/metadata/store.js';
+import { preferredTitleLanguage } from '#lib/settings/settings.js';
+import { isMetadataOnly } from '#lib/catalog/volume-state.js';
+import { volumeRowSignature } from '#lib/catalog/volume-row-signature.js';
 
 async function loadCurrentVolumeData(volume: VolumeMetadata): Promise<VolumeData | undefined> {
   let [ocr, files] = await Promise.all([

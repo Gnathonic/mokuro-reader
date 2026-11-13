@@ -6,7 +6,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('$app/environment', () => ({ browser: true, dev: false, building: false }));
+vi.mock('$app/env', () => ({ browser: true, dev: false, building: false }));
 
 /**
  * The sync a re-auth starts (`pendingPostReauthSync`). `rejects`: the API still

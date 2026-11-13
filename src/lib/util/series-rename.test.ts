@@ -5,7 +5,7 @@ import {
   generateRenameSeriesPreview
 } from './series-rename';
 
-vi.mock('$lib/catalog/db', () => ({
+vi.mock('#lib/catalog/db.js', () => ({
   db: {
     volumes: {
       where: vi.fn(),
@@ -17,14 +17,14 @@ vi.mock('$lib/catalog/db', () => ({
   }
 }));
 
-vi.mock('$lib/settings/volume-data', () => ({
+vi.mock('#lib/settings/volume-data.js', () => ({
   volumes: {
     subscribe: vi.fn()
   },
   updateVolumeSeriesTitle: vi.fn()
 }));
 
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: {
     renameSeries: vi.fn()
   }
@@ -35,12 +35,12 @@ vi.mock('svelte/store', () => ({
 }));
 
 const moveSeriesMetadataKey = vi.fn();
-vi.mock('$lib/metadata/store', () => ({
+vi.mock('#lib/metadata/store.js', () => ({
   moveSeriesMetadataKey: (...args: unknown[]) => moveSeriesMetadataKey(...args)
 }));
 
 const moveSeriesReadingStateKey = vi.fn();
-vi.mock('$lib/settings/series-data', () => ({
+vi.mock('#lib/settings/series-data.js', () => ({
   moveSeriesReadingStateKey: (...args: unknown[]) => moveSeriesReadingStateKey(...args)
 }));
 
@@ -50,7 +50,7 @@ describe('Series rename cloud propagation', () => {
   });
 
   it('includes matching local storage rows in the preview', async () => {
-    const { db } = await import('$lib/catalog/db');
+    const { db } = await import('#lib/catalog/db.js');
     const { get } = await import('svelte/store');
 
     vi.mocked(db.volumes.where).mockReturnValue({
@@ -87,10 +87,10 @@ describe('Series rename cloud propagation', () => {
   });
 
   it('renames the cloud series before updating local metadata', async () => {
-    const { db } = await import('$lib/catalog/db');
+    const { db } = await import('#lib/catalog/db.js');
     const { get } = await import('svelte/store');
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
-    const { updateVolumeSeriesTitle } = await import('$lib/settings/volume-data');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
+    const { updateVolumeSeriesTitle } = await import('#lib/settings/volume-data.js');
 
     vi.mocked(db.volumes.where).mockReturnValue({
       toArray: vi.fn().mockResolvedValue([
@@ -126,10 +126,10 @@ describe('Series rename cloud propagation', () => {
   });
 
   it('commits ONLY the volumes whose cloud rename succeeded, and reports the rest', async () => {
-    const { db } = await import('$lib/catalog/db');
+    const { db } = await import('#lib/catalog/db.js');
     const { get } = await import('svelte/store');
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
-    const { updateVolumeSeriesTitle } = await import('$lib/settings/volume-data');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
+    const { updateVolumeSeriesTitle } = await import('#lib/settings/volume-data.js');
 
     vi.mocked(db.volumes.where).mockReturnValue({
       toArray: vi.fn().mockResolvedValue([
@@ -173,9 +173,9 @@ describe('Series rename cloud propagation', () => {
   });
 
   it('sanitizes the new series title before cloud rename and DB write', async () => {
-    const { db } = await import('$lib/catalog/db');
+    const { db } = await import('#lib/catalog/db.js');
     const { get } = await import('svelte/store');
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
 
     vi.mocked(db.volumes.where).mockReturnValue({
       toArray: vi.fn().mockResolvedValue([
@@ -206,7 +206,7 @@ describe('Series rename cloud propagation', () => {
   });
 
   it('throws when the new title sanitizes to empty', async () => {
-    const { db } = await import('$lib/catalog/db');
+    const { db } = await import('#lib/catalog/db.js');
     vi.mocked(db.volumes.where).mockReturnValue({
       toArray: vi.fn().mockResolvedValue([])
     } as any);
@@ -215,9 +215,9 @@ describe('Series rename cloud propagation', () => {
   });
 
   it('moves the series metadata record to the new title after a successful rename', async () => {
-    const { db } = await import('$lib/catalog/db');
+    const { db } = await import('#lib/catalog/db.js');
     const { get } = await import('svelte/store');
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     vi.mocked(db.volumes.where).mockReturnValue({
       toArray: vi.fn().mockResolvedValue([
         {
@@ -248,9 +248,9 @@ describe('commitLocalSeriesRename — the local half, shared with cloud spelling
   });
 
   it('moves the rows, their stats, the series metadata and the reading state', async () => {
-    const { db } = await import('$lib/catalog/db');
-    const { updateVolumeSeriesTitle } = await import('$lib/settings/volume-data');
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { db } = await import('#lib/catalog/db.js');
+    const { updateVolumeSeriesTitle } = await import('#lib/settings/volume-data.js');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
 
     await commitLocalSeriesRename('one piece', 'One Piece', ['vol-1', 'vol-2'], ['vol-1', 'gone']);
 

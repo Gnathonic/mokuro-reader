@@ -2,14 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import { get } from 'svelte/store';
 
-vi.mock('$lib/import/library-series', () => ({
+vi.mock('#lib/import/library-series.js', () => ({
   listLibrarySeries: vi.fn(async () => [{ title: 'Killing Bites', count: 2 }]),
   existingVolumeCount: vi.fn(async () => 0)
 }));
 
 import ImageOnlyReviewDialog from '../ImageOnlyReviewDialog.svelte';
-import { appendReviewGroups, reviewSession } from '$lib/import/review-session';
-import { groupCandidates } from '$lib/import/image-only-review';
+import { appendReviewGroups, reviewSession } from '#lib/import/review-session.js';
+import { groupCandidates } from '#lib/import/image-only-review.js';
 
 const groupOf = (series: string) =>
   groupCandidates([

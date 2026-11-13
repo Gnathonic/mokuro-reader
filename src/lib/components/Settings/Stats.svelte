@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { totalStats } from '$lib/reading-history/total-stats';
+  import { totalStats } from '#lib/reading-history/total-stats.js';
   import { AccordionItem } from 'flowbite-svelte';
 </script>
 

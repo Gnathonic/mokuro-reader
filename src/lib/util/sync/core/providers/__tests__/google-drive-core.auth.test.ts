@@ -8,7 +8,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { googleDriveCore } from '../google-drive-core';
 import { DriveHttpError } from '../drive-http';
-import { TransientAuthRefreshError } from '$lib/util/worker-auth-refresh';
+import { TransientAuthRefreshError } from '#lib/util/worker-auth-refresh.js';
 
 interface XhrReply {
   status: number;

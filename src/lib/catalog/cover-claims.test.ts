@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import { installIntersectionObserverStub } from '$lib/catalog/__tests__/intersection-observer-stub';
+import { installIntersectionObserverStub } from '#lib/catalog/__tests__/intersection-observer-stub.js';
 
 /**
  * THE SURFACE THAT FORGETS `use:gate`.
@@ -18,21 +18,21 @@ const { requestCoverMock, isCoverFetchTargetMock } = vi.hoisted(() => ({
   requestCoverMock: vi.fn(),
   isCoverFetchTargetMock: vi.fn(() => true)
 }));
-vi.mock('$lib/catalog/cover-service', () => ({
+vi.mock('#lib/catalog/cover-service.js', () => ({
   requestCover: (...args: Parameters<typeof requestCoverMock>) => requestCoverMock(...args),
   isCoverFetchTarget: (...args: unknown[]) =>
     (isCoverFetchTargetMock as unknown as (...a: unknown[]) => boolean)(...args)
 }));
 
 // The resolver has its own suites; here a claim just needs to be acquirable.
-vi.mock('$lib/catalog/cover-resolver', () => ({
+vi.mock('#lib/catalog/cover-resolver.js', () => ({
   acquireCover: () => ({
     subscribe: () => () => {},
     release: () => {}
   })
 }));
 
-vi.mock('$lib/catalog/account-scope-store', () => ({
+vi.mock('#lib/catalog/account-scope-store.js', () => ({
   activeAccountScopeStore: {
     subscribe(fn: (value: string | null) => void) {
       fn('webdav:https://host/dav|nathan');
@@ -41,8 +41,8 @@ vi.mock('$lib/catalog/account-scope-store', () => ({
   }
 }));
 
-import CoverClaimsHost from '$lib/catalog/__tests__/fixtures/CoverClaimsHost.svelte';
-import type { VolumeMetadata } from '$lib/types';
+import CoverClaimsHost from '#lib/catalog/__tests__/fixtures/CoverClaimsHost.svelte';
+import type { VolumeMetadata } from '#lib/types/index.js';
 
 function cloudVolume(over: Partial<VolumeMetadata> = {}): VolumeMetadata {
   return {

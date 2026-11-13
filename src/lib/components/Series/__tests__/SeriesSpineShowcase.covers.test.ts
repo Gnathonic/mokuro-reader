@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import 'fake-indexeddb/auto';
 import { render, cleanup } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import { installIntersectionObserverStub } from '$lib/catalog/__tests__/intersection-observer-stub';
+import { installIntersectionObserverStub } from '#lib/catalog/__tests__/intersection-observer-stub.js';
 
 /**
  * WHERE THE SPINE SHELF'S CLOUD COVERS COME FROM.
@@ -23,7 +23,7 @@ import { installIntersectionObserverStub } from '$lib/catalog/__tests__/intersec
  */
 
 const { getActiveProvider } = vi.hoisted(() => ({ getActiveProvider: vi.fn() }));
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: { getActiveProvider }
 }));
 
@@ -50,7 +50,7 @@ const { providerStatus, publishAccountScope } = vi.hoisted(() => {
     }
   };
 });
-vi.mock('$lib/util/sync', () => ({ providerManager: { status: providerStatus } }));
+vi.mock('#lib/util/sync/index.js', () => ({ providerManager: { status: providerStatus } }));
 
 // Fetching a cover that is NOT cached is `cover-service.ts`'s job and has its own suites;
 // this file is about one that already is — so `isCoverFetchTarget` answers no by default
@@ -60,12 +60,12 @@ const { requestCoverMock, isCoverFetchTargetMock } = vi.hoisted(() => ({
   requestCoverMock: vi.fn(),
   isCoverFetchTargetMock: vi.fn(() => false)
 }));
-vi.mock('$lib/catalog/cover-service', () => ({
+vi.mock('#lib/catalog/cover-service.js', () => ({
   requestCover: (...args: Parameters<typeof requestCoverMock>) => requestCoverMock(...args),
   isCoverFetchTarget: (...args: unknown[]) =>
     (isCoverFetchTargetMock as unknown as (...a: unknown[]) => boolean)(...args)
 }));
-vi.mock('$lib/metadata/store', () => ({
+vi.mock('#lib/metadata/store.js', () => ({
   updateSeriesMetadata: vi.fn(),
   seriesMetadataMap: {
     subscribe(fn: (v: Map<string, unknown>) => void) {
@@ -74,7 +74,7 @@ vi.mock('$lib/metadata/store', () => ({
     }
   }
 }));
-vi.mock('$lib/metadata/series-index', () => ({
+vi.mock('#lib/metadata/series-index.js', () => ({
   seriesIndexMap: {
     subscribe(fn: (v: Map<string, unknown>) => void) {
       fn(new Map());
@@ -87,7 +87,7 @@ vi.mock('$lib/metadata/series-index', () => ({
 const { compositeCanvasProps } = vi.hoisted(() => ({
   compositeCanvasProps: [] as Record<string, unknown>[]
 }));
-vi.mock('$lib/components/CompositeCanvas.svelte', async (importOriginal) => {
+vi.mock('#lib/components/CompositeCanvas.svelte', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   const Real = actual.default as (anchor: unknown, props: Record<string, unknown>) => unknown;
   return {
@@ -100,10 +100,13 @@ vi.mock('$lib/components/CompositeCanvas.svelte', async (importOriginal) => {
 });
 
 import SeriesSpineShowcase from '../SeriesSpineShowcase.svelte';
-import type { VolumeMetadata } from '$lib/types';
-import { db } from '$lib/catalog/db';
-import { putCloudCovers, type CloudCover } from '$lib/catalog/cloud-covers';
-import { _heldCoverCountForTests, _resetCoverResolverForTests } from '$lib/catalog/cover-resolver';
+import type { VolumeMetadata } from '#lib/types/index.js';
+import { db } from '#lib/catalog/db.js';
+import { putCloudCovers, type CloudCover } from '#lib/catalog/cloud-covers.js';
+import {
+  _heldCoverCountForTests,
+  _resetCoverResolverForTests
+} from '#lib/catalog/cover-resolver.js';
 
 const SCOPE = 'webdav:https://host/dav|nathan';
 const CLOUD_PATH = 'Dr Stone/Volume 01.cbz';

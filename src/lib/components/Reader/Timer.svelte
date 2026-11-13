@@ -1,20 +1,20 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
   import { get } from 'svelte/store';
-  import { volumes } from '$lib/settings';
-  import { personalizedReadingSpeed } from '$lib/settings/reading-speed';
-  import { currentVolume, currentVolumeCharacterCount } from '$lib/catalog';
-  import { calculateVolumeTimeToFinish } from '$lib/util/reading-speed';
-  import { figuresFor, readingStats } from '$lib/reading-history/stats-store';
-  import { seriesSpeeds } from '$lib/reading-history/series-speeds';
+  import { volumes } from '#lib/settings/index.js';
+  import { personalizedReadingSpeed } from '#lib/settings/reading-speed.js';
+  import { currentVolume, currentVolumeCharacterCount } from '#lib/catalog/index.js';
+  import { calculateVolumeTimeToFinish } from '#lib/util/reading-speed.js';
+  import { figuresFor, readingStats } from '#lib/reading-history/stats-store.js';
+  import { seriesSpeeds } from '#lib/reading-history/series-speeds.js';
   import {
     endedView,
     liveMinutes,
     liveView,
     readingPaused,
     type EndedView
-  } from '$lib/reading-history/live-view';
-  import { viewCap } from '$lib/reading-history/stats-engine';
+  } from '#lib/reading-history/live-view.js';
+  import { viewCap } from '#lib/reading-history/stats-engine.js';
 
   /**
    * Time read in this volume, live (phase 3a, one clock): the counted reading

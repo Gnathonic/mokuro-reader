@@ -1,18 +1,20 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
-import type { VolumeMetadata } from '$lib/types';
+import type { VolumeMetadata } from '#lib/types/index.js';
 
 const restartSeries = vi.fn();
 const dismissRereadForSession = vi.fn();
 const suppressRereadPrompt = vi.fn();
-vi.mock('$lib/metadata/reread', () => ({
+vi.mock('#lib/metadata/reread.js', () => ({
   restartSeries: (...args: unknown[]) => restartSeries(...args),
   dismissRereadForSession: (...args: unknown[]) => dismissRereadForSession(...args),
   suppressRereadPrompt: (...args: unknown[]) => suppressRereadPrompt(...args)
 }));
 
 const showSnackbar = vi.fn();
-vi.mock('$lib/util', () => ({ showSnackbar: (...args: unknown[]) => showSnackbar(...args) }));
+vi.mock('#lib/util/index.js', () => ({
+  showSnackbar: (...args: unknown[]) => showSnackbar(...args)
+}));
 
 import RereadPromptModal from '../RereadPromptModal.svelte';
 

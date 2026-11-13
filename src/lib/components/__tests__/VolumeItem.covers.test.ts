@@ -86,7 +86,7 @@ const { getActiveProvider, providerStatus, publishAccountScope } = vi.hoisted(()
   };
 });
 
-vi.mock('$lib/settings', () => ({
+vi.mock('#lib/settings/index.js', () => ({
   deleteVolume: vi.fn(),
   progress: emptyStore<Record<string, number>>({}),
   volumes: emptyStore<Record<string, unknown>>({}),
@@ -94,25 +94,25 @@ vi.mock('$lib/settings', () => ({
   markVolumeAsComplete: vi.fn(),
   markVolumeAsUnread: vi.fn()
 }));
-vi.mock('$lib/settings/reading-speed', () => ({
+vi.mock('#lib/settings/reading-speed.js', () => ({
   personalizedReadingSpeed: emptyStore({ isPersonalized: false, charsPerMinute: 0 })
 }));
-vi.mock('$lib/catalog', () => ({ volumes: catalogVolumes }));
-vi.mock('$lib/import', () => ({
+vi.mock('#lib/catalog/index.js', () => ({ volumes: catalogVolumes }));
+vi.mock('#lib/import/index.js', () => ({
   removeVolumeFiles: vi.fn(),
   deleteVolumeCompletely: vi.fn()
 }));
-vi.mock('$lib/util', () => ({ promptConfirmation: vi.fn(), showSnackbar: vi.fn() }));
-vi.mock('$lib/util/modals', () => ({ promptExtraction: vi.fn(), promptVolumeEditor: vi.fn() }));
-vi.mock('$lib/util/zip', () => ({ zipManga: vi.fn() }));
-vi.mock('$lib/util/hash-router', () => ({
+vi.mock('#lib/util/index.js', () => ({ promptConfirmation: vi.fn(), showSnackbar: vi.fn() }));
+vi.mock('#lib/util/modals.js', () => ({ promptExtraction: vi.fn(), promptVolumeEditor: vi.fn() }));
+vi.mock('#lib/util/zip.js', () => ({ zipManga: vi.fn() }));
+vi.mock('#lib/util/hash-router.js', () => ({
   nav: { toReader: vi.fn(), toSeries: vi.fn(), toCatalog: vi.fn(), toVolumeText: vi.fn() },
   routeParams
 }));
 // `cloudFiles` is here because the FIRST `acquireCover` of a session starts the keys-only
 // cover key watch (`cover-resolver.ts`'s `ensureCoverKeyWatch`), which subscribes to this
 // listing. An empty one means the watch starts, finds nothing to query, and stays inert.
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: {
     getActiveProvider,
     cloudFiles: emptyStore(new Map()),
@@ -123,15 +123,15 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
     deleteFile: vi.fn()
   }
 }));
-vi.mock('$lib/util/sync', () => ({ providerManager: { status: providerStatus } }));
-vi.mock('$lib/util/backup-queue', () => ({ backupQueue: { queueVolumeForBackup: vi.fn() } }));
-vi.mock('$lib/util/download-queue', () => ({
+vi.mock('#lib/util/sync/index.js', () => ({ providerManager: { status: providerStatus } }));
+vi.mock('#lib/util/backup-queue.js', () => ({ backupQueue: { queueVolumeForBackup: vi.fn() } }));
+vi.mock('#lib/util/download-queue.js', () => ({
   downloadQueue: {
     subscribe: (fn: (v: unknown[]) => void) => (fn([]), () => {}),
     queueVolume: vi.fn()
   }
 }));
-vi.mock('$lib/util/progress-tracker', () => ({
+vi.mock('#lib/util/progress-tracker.js', () => ({
   progressTrackerStore: {
     subscribe: (fn: (v: { processes: unknown[] }) => void) => (fn({ processes: [] }), () => {})
   }
@@ -141,20 +141,23 @@ vi.mock('../BackupButton.svelte', () => ({ default: () => ({}) }));
 // `cover-service.test.ts`); this file is about drawing one that already is. The request
 // itself is still observed — the list row has to ASK, the way the grid variant does.
 const { requestCoverMock } = vi.hoisted(() => ({ requestCoverMock: vi.fn() }));
-vi.mock('$lib/catalog/cover-service', () => ({
+vi.mock('#lib/catalog/cover-service.js', () => ({
   requestCover: (...a: Parameters<typeof requestCoverMock>) => requestCoverMock(...a),
   isCoverFetchTarget: (vol: { thumbnail?: unknown }) => !vol.thumbnail
 }));
 
 import VolumeItem from '../VolumeItem.svelte';
-import type { VolumeMetadata } from '$lib/types';
-import { db } from '$lib/catalog/db';
-import { putCloudCovers, type CloudCover } from '$lib/catalog/cloud-covers';
-import { _heldCoverCountForTests, _resetCoverResolverForTests } from '$lib/catalog/cover-resolver';
+import type { VolumeMetadata } from '#lib/types/index.js';
+import { db } from '#lib/catalog/db.js';
+import { putCloudCovers, type CloudCover } from '#lib/catalog/cloud-covers.js';
+import {
+  _heldCoverCountForTests,
+  _resetCoverResolverForTests
+} from '#lib/catalog/cover-resolver.js';
 import {
   installIntersectionObserverStub,
   type ObservedCoverGate
-} from '$lib/catalog/__tests__/intersection-observer-stub';
+} from '#lib/catalog/__tests__/intersection-observer-stub.js';
 
 const SCOPE = 'webdav:https://host/dav|nathan';
 const CLOUD_PATH = 'Dr Stone/Volume 03.cbz';

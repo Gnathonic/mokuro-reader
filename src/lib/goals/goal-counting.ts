@@ -9,8 +9,8 @@
  * snapshot.
  */
 
-import { hasFreshPassSince, isVolumeFinished } from '$lib/util/volume-helpers';
-import type { VolumeData } from '$lib/settings/volume-data';
+import { hasFreshPassSince, isVolumeFinished } from '#lib/util/volume-helpers.js';
+import type { VolumeData } from '#lib/settings/volume-data.js';
 import { completionEventsFor } from './completed-at';
 import { calculatePartialVolumeProgressInPeriod } from './goal-math';
 import { isDateWithinRange } from './periods';

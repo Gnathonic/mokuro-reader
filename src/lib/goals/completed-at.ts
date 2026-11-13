@@ -1,5 +1,5 @@
 import { derived } from 'svelte/store';
-import { FUTURE_TOLERANCE_MS } from '$lib/metadata/sanitize';
+import { FUTURE_TOLERANCE_MS } from '#lib/metadata/sanitize.js';
 import { volumes, type VolumeData } from '../settings/volume-data';
 import type { CompletedAtMap } from './types';
 

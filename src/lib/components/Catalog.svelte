@@ -21,7 +21,7 @@
 
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { catalog } from '$lib/catalog';
+  import { catalog } from '#lib/catalog/index.js';
   import { Button, Listgroup, Search } from 'flowbite-svelte';
   import CatalogItem from './CatalogItem.svelte';
   import Loader from './Loader.svelte';
@@ -32,18 +32,18 @@
     DownloadSolid,
     UploadSolid
   } from 'flowbite-svelte-icons';
-  import { miscSettings, updateMiscSetting, volumes } from '$lib/settings';
-  import { partitionCatalogSeries } from '$lib/catalog/catalog';
+  import { miscSettings, updateMiscSetting, volumes } from '#lib/settings/index.js';
+  import { partitionCatalogSeries } from '#lib/catalog/catalog.js';
   import CatalogListItem from './CatalogListItem.svelte';
-  import { isUpgrading } from '$lib/catalog/db';
-  import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
-  import { queueSeriesVolumes } from '$lib/util/download-queue';
-  import { getCloudFileId, getCloudProvider } from '$lib/util/cloud-fields';
-  import { needsDownload } from '$lib/catalog/volume-state';
-  import { isSeriesFinished } from '$lib/util/volume-helpers';
-  import { lastReadTimes, seriesLastRead } from '$lib/reading-history/last-read';
-  import { showSnackbar } from '$lib/util';
-  import type { ProviderType } from '$lib/util/sync/provider-interface';
+  import { isUpgrading } from '#lib/catalog/db.js';
+  import { unifiedCloudManager } from '#lib/util/sync/unified-cloud-manager.js';
+  import { queueSeriesVolumes } from '#lib/util/download-queue.js';
+  import { getCloudFileId, getCloudProvider } from '#lib/util/cloud-fields.js';
+  import { needsDownload } from '#lib/catalog/volume-state.js';
+  import { isSeriesFinished } from '#lib/util/volume-helpers.js';
+  import { lastReadTimes, seriesLastRead } from '#lib/reading-history/last-read.js';
+  import { showSnackbar } from '#lib/util/index.js';
+  import type { ProviderType } from '#lib/util/sync/provider-interface.js';
 
   const CATALOG_SCROLL_Y_KEY = 'mokuro:catalog:scroll-y';
 

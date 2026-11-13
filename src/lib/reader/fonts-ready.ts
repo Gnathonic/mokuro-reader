@@ -1,5 +1,5 @@
 import { readable } from 'svelte/store';
-import { webFontsRegistered } from '$lib/util/web-fonts';
+import { webFontsRegistered } from '#lib/util/web-fonts.js';
 
 /**
  * `document.fonts.ready`, read at most once per animation frame, and only

@@ -1,4 +1,4 @@
-import type { VolumeMetadata } from '$lib/types';
+import type { VolumeMetadata } from '#lib/types/index.js';
 import { driveApiClient, escapeNameForDriveQuery } from './sync/providers/google-drive/api-client';
 import { unifiedCloudManager } from './sync/unified-cloud-manager';
 import type { ProviderType } from './sync/provider-interface';

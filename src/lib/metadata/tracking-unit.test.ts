@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { VolumeMetadata } from '$lib/types';
+import type { VolumeMetadata } from '#lib/types/index.js';
 import { resolveTrackingUnit } from './tracking-unit';
 import { createEmptySeriesMetadata, type SeriesMetadata } from './types';
 

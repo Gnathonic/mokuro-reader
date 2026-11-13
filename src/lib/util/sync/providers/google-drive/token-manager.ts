@@ -1,8 +1,8 @@
 import { writable } from 'svelte/store';
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 import { GOOGLE_DRIVE_CONFIG } from './constants';
-import { showSnackbar } from '$lib/util/snackbar';
-import { onNextUserGesture } from '$lib/util/user-gesture';
+import { showSnackbar } from '#lib/util/snackbar.js';
+import { onNextUserGesture } from '#lib/util/user-gesture.js';
 import { cloudTestToken } from '../../cloud-test-hooks';
 import { loadGisScript } from './google-scripts';
 import {

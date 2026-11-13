@@ -9,7 +9,7 @@ import { Uint8ArrayReader, Uint8ArrayWriter, ZipWriter } from '@zip.js/zip.js';
 
 // ---------------------------------------------------------------- mocks
 
-vi.mock('$lib/catalog/db', async () => {
+vi.mock('#lib/catalog/db.js', async () => {
   const { default: Dexie } = await import('dexie');
   const db: any = new Dexie('series-file-import-test');
   db.version(1).stores({
@@ -23,7 +23,7 @@ vi.mock('$lib/catalog/db', async () => {
   return { db };
 });
 
-vi.mock('$lib/catalog/thumbnails', () => ({
+vi.mock('#lib/catalog/thumbnails.js', () => ({
   generateThumbnail: async () => ({
     file: new File([new Uint8Array([1])], 'thumb.webp', { type: 'image/webp' }),
     width: 10,
@@ -31,9 +31,9 @@ vi.mock('$lib/catalog/thumbnails', () => ({
   })
 }));
 
-vi.mock('$lib/util/snackbar', () => ({ showSnackbar: vi.fn() }));
+vi.mock('#lib/util/snackbar.js', () => ({ showSnackbar: vi.fn() }));
 
-vi.mock('$lib/util/progress-tracker', () => ({
+vi.mock('#lib/util/progress-tracker.js', () => ({
   progressTrackerStore: {
     addProcess: vi.fn(),
     updateProcess: vi.fn(),
@@ -41,21 +41,21 @@ vi.mock('$lib/util/progress-tracker', () => ({
   }
 }));
 
-vi.mock('$lib/util/modals', () => ({
+vi.mock('#lib/util/modals.js', () => ({
   promptMissingFiles: (_info: unknown, onContinue: () => void) => onContinue()
 }));
 
 const scheduleSeriesFileWrite = vi.hoisted(() => vi.fn());
-vi.mock('$lib/metadata/series-file-sync', () => ({ scheduleSeriesFileWrite }));
+vi.mock('#lib/metadata/series-file-sync.js', () => ({ scheduleSeriesFileWrite }));
 
-vi.mock('$lib/util/file-processing-pool', () => ({
+vi.mock('#lib/util/file-processing-pool.js', () => ({
   getFileProcessingPool: async () => ({ addTask: () => {} }),
   incrementPoolUsers: () => {},
   decrementPoolUsers: () => {}
 }));
 
-import { db } from '$lib/catalog/db';
-import { compressVolume } from '$lib/util/compress-volume';
+import { db } from '#lib/catalog/db.js';
+import { compressVolume } from '#lib/util/compress-volume.js';
 import { cancelQueuedImports, importFiles, importQueue, isImporting } from '../import-service';
 import {
   applyImportedSeriesFiles,
@@ -67,12 +67,12 @@ import {
   saveLinkVolume,
   type LinkSeriesGuard
 } from '../series-file-import';
-import { buildSeriesFile, type SeriesFile } from '$lib/metadata/series-file';
+import { buildSeriesFile, type SeriesFile } from '#lib/metadata/series-file.js';
 import { localSeriesKeys } from '../deep-link-import';
 import type { ProcessedVolume } from '../types';
-import { createEmptySeriesMetadata } from '$lib/metadata/types';
-import { buildMokuroMetadata } from '$lib/util/mokuro-metadata';
-import type { VolumeMetadata } from '$lib/types';
+import { createEmptySeriesMetadata } from '#lib/metadata/types.js';
+import { buildMokuroMetadata } from '#lib/util/mokuro-metadata.js';
+import type { VolumeMetadata } from '#lib/types/index.js';
 import { get } from 'svelte/store';
 import { approveAsDialogWould, installReviewer, type Reviewer } from './helpers/review-bridge';
 

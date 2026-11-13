@@ -2,8 +2,8 @@
   import { onMount } from 'svelte';
   import { Button, Card, Input, Label, Select } from 'flowbite-svelte';
   import { ArrowLeftOutline } from 'flowbite-svelte-icons';
-  import { nav } from '$lib/util/hash-router';
-  import { promptConfirmation } from '$lib/util';
+  import { nav } from '#lib/util/hash-router.js';
+  import { promptConfirmation } from '#lib/util/index.js';
   import {
     goalTargets,
     customGoals,
@@ -19,9 +19,9 @@
     type CustomGoal,
     getCurrentPeriodKey,
     ensureCurrentYearTarget
-  } from '$lib/goals';
-  import type { GoalRejection } from '$lib/goals/goals-data';
-  import { showSnackbar } from '$lib/util/snackbar';
+  } from '#lib/goals/index.js';
+  import type { GoalRejection } from '#lib/goals/goals-data.js';
+  import { showSnackbar } from '#lib/util/snackbar.js';
 
   const goalTypes: Exclude<GoalType, 'custom'>[] = ['year', 'season', 'month', 'today'];
   const goalTypeOptions = goalTypes.map((type) => ({ value: type, name: type }));

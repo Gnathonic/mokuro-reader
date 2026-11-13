@@ -19,12 +19,12 @@ vi.mock('../progress-tracker', () => ({
   }
 }));
 
-vi.mock('$lib/settings', async () => {
+vi.mock('#lib/settings/index.js', async () => {
   const { writable } = await import('svelte/store');
   // The series half is the real module — these tests exercise the actual
   // parse/merge rules, not a stand-in for them.
-  const seriesData = await vi.importActual<typeof import('$lib/settings/series-data')>(
-    '$lib/settings/series-data'
+  const seriesData = await vi.importActual<typeof import('#lib/settings/series-data.js')>(
+    '#lib/settings/series-data.js'
   );
   return {
     ...seriesData,
@@ -48,19 +48,19 @@ vi.mock('$lib/settings', async () => {
 // `restartSeries` is driven for real below (the store->upload seam), so the two
 // things it needs beyond the reading-state store are doubled here: the volume
 // store (the real module opens IndexedDB) and the AniList push.
-vi.mock('$lib/settings/volume-data', async () => {
+vi.mock('#lib/settings/volume-data.js', async () => {
   const { writable } = await import('svelte/store');
   return {
     volumes: writable<Record<string, { completed?: boolean }>>({}),
     archiveAndResetVolumes: vi.fn()
   };
 });
-vi.mock('$lib/metadata/progress-tracker', () => ({ onSeriesRestarted: vi.fn() }));
-vi.mock('$lib/reading-history/history-db', () => ({ historyDb: vi.fn(() => ({})) }));
+vi.mock('#lib/metadata/progress-tracker.js', () => ({ onSeriesRestarted: vi.fn() }));
+vi.mock('#lib/reading-history/history-db.js', () => ({ historyDb: vi.fn(() => ({})) }));
 // The cut-over, as the real one behaves when the history database works:
 // converted turns leave the records before the file is built.
-vi.mock('$lib/reading-history/cut-over', async () => {
-  const { volumesWithTrash } = await import('$lib/settings');
+vi.mock('#lib/reading-history/cut-over.js', async () => {
+  const { volumesWithTrash } = await import('#lib/settings/index.js');
   return {
     cutOverLegacyTurns: vi.fn(async () => {
       const store = volumesWithTrash as unknown as {
@@ -87,19 +87,19 @@ vi.mock('$lib/reading-history/cut-over', async () => {
   };
 });
 const legacyCarried = vi.hoisted(() => ({ value: true }));
-vi.mock('$lib/reading-history/history-sync', () => ({
+vi.mock('#lib/reading-history/history-sync.js', () => ({
   syncHistory: vi.fn(async () => ({ imported: 0, uploaded: [], failed: [] })),
   legacyCarriedBy: vi.fn(async () => legacyCarried.value),
   historySyncAllowed: (s: { historySync?: boolean; serverCompilesMetadata?: boolean }) =>
     s.historySync ?? !s.serverCompilesMetadata
 }));
 
-vi.mock('$lib/positions/positions-sync', () => ({
+vi.mock('#lib/positions/positions-sync.js', () => ({
   syncPositions: vi.fn(async () => ({ adopted: [], deferred: [], uploaded: false }))
 }));
 // This device's changed-marks (the position push's queue); none unless a test sets one.
 const changedMarks = vi.hoisted(() => new Map<string, number>());
-vi.mock('$lib/positions/positions-local', () => ({
+vi.mock('#lib/positions/positions-local.js', () => ({
   changedMark: (volume: string) => changedMarks.get(volume)
 }));
 
@@ -108,24 +108,27 @@ import {
   unifiedSyncService,
   type SyncOptions
 } from './unified-sync-service';
-import { _resetEscapesForTests, newestUploaded, watchEscapes } from '$lib/positions/escapes';
-import { noteReaderClosed, noteReaderOpened } from '$lib/positions/reader-open';
-import { _resetCloudPositionsForTests, noteCloudPositions } from '$lib/positions/positions-cloud';
+import { _resetEscapesForTests, newestUploaded, watchEscapes } from '#lib/positions/escapes.js';
+import { noteReaderClosed, noteReaderOpened } from '#lib/positions/reader-open.js';
+import {
+  _resetCloudPositionsForTests,
+  noteCloudPositions
+} from '#lib/positions/positions-cloud.js';
 import { clearVolumeDataDeferred, volumeDataDeferred } from './reading-session';
-import { restartSeries } from '$lib/metadata/reread';
-import { volumes as volumeCompletion } from '$lib/settings/volume-data';
-import type { VolumeMetadata } from '$lib/types';
+import { restartSeries } from '#lib/metadata/reread.js';
+import { volumes as volumeCompletion } from '#lib/settings/volume-data.js';
+import type { VolumeMetadata } from '#lib/types/index.js';
 import {
   profilesWithTrash,
   seriesReadingState,
   setSeriesReadingStates,
   updateSeriesReadingState,
   volumesWithTrash
-} from '$lib/settings';
-import { goalsWithTrash, setGoalSections } from '$lib/goals/goals-data';
-import { setTrackingStates, trackingState } from '$lib/settings/tracking-data';
-import { goalSnapshots, setGoalSnapshots } from '$lib/goals/snapshots-store';
-import { setVolumeDeadlineEntries } from '$lib/goals/goal-settings';
+} from '#lib/settings/index.js';
+import { goalsWithTrash, setGoalSections } from '#lib/goals/goals-data.js';
+import { setTrackingStates, trackingState } from '#lib/settings/tracking-data.js';
+import { goalSnapshots, setGoalSnapshots } from '#lib/goals/snapshots-store.js';
+import { setVolumeDeadlineEntries } from '#lib/goals/goal-settings.js';
 
 // downloadVolumeDataFile is private; these tests target it directly because it
 // owns the duplicate-merge behavior that broke MEGA sync (ghost duplicates).
@@ -1605,7 +1608,7 @@ describe('reading on two devices survives the volume merge', () => {
 
 describe('reading history rides every sync', () => {
   it('passes only history files from a loaded listing, forced on a manual sync', async () => {
-    const { syncHistory } = await import('$lib/reading-history/history-sync');
+    const { syncHistory } = await import('#lib/reading-history/history-sync.js');
     const files = [
       {
         provider: 'mega',
@@ -1638,7 +1641,7 @@ describe('reading history rides every sync', () => {
   });
 
   it('a failing history pass never fails the sync', async () => {
-    const { syncHistory } = await import('$lib/reading-history/history-sync');
+    const { syncHistory } = await import('#lib/reading-history/history-sync.js');
     vi.mocked(syncHistory).mockRejectedValueOnce(new Error('boom'));
     getCache.mockReturnValue({
       isLoaded: () => true,
@@ -1651,7 +1654,7 @@ describe('reading history rides every sync', () => {
   });
 
   it('skips while the listing has not loaded', async () => {
-    const { syncHistory } = await import('$lib/reading-history/history-sync');
+    const { syncHistory } = await import('#lib/reading-history/history-sync.js');
     vi.mocked(syncHistory).mockClear();
     getCache.mockReturnValue({
       isLoaded: () => false,
@@ -1698,7 +1701,7 @@ describe('the cut-over rides the volume sync', () => {
 
   it('keeps the turns in the file until the history copy is confirmed — converted turns only', async () => {
     legacyCarried.value = false;
-    const { attachProjectedTurns } = await import('$lib/reading-history/cut-over');
+    const { attachProjectedTurns } = await import('#lib/reading-history/cut-over.js');
     vi.mocked(attachProjectedTurns).mockClear();
     seed();
     stubCache([]);
@@ -1714,7 +1717,7 @@ describe('the cut-over rides the volume sync', () => {
     'on %o (history cannot sync) never strips, and the file carries the turns',
     async (status) => {
       legacyCarried.value = true;
-      const { cutOverLegacyTurns } = await import('$lib/reading-history/cut-over');
+      const { cutOverLegacyTurns } = await import('#lib/reading-history/cut-over.js');
       vi.mocked(cutOverLegacyTurns).mockClear();
       seed();
       stubCache([]);
@@ -1723,7 +1726,7 @@ describe('the cut-over rides the volume sync', () => {
       expect(cutOverLegacyTurns).not.toHaveBeenCalled();
       expect(uploads[0]['vol-1'].recentPageTurns).toEqual([[9, 9, 90]]);
       // The file is the only copy that reaches other devices: every turn rides.
-      const { attachProjectedTurns } = await import('$lib/reading-history/cut-over');
+      const { attachProjectedTurns } = await import('#lib/reading-history/cut-over.js');
       expect(attachProjectedTurns).toHaveBeenCalledWith(expect.anything(), {
         historySyncs: false
       });
@@ -1732,7 +1735,7 @@ describe('the cut-over rides the volume sync', () => {
 
   it('a bunko that keeps history per user (0.7.8+) is cut over like plain storage', async () => {
     legacyCarried.value = true;
-    const { cutOverLegacyTurns } = await import('$lib/reading-history/cut-over');
+    const { cutOverLegacyTurns } = await import('#lib/reading-history/cut-over.js');
     vi.mocked(cutOverLegacyTurns).mockClear();
     seed();
     stubCache([]);
@@ -2235,7 +2238,7 @@ describe('positions.json rides every sync', () => {
   } as unknown as SyncProvider;
 
   it('runs right after the volume data', async () => {
-    const { syncPositions } = await import('$lib/positions/positions-sync');
+    const { syncPositions } = await import('#lib/positions/positions-sync.js');
     const order: string[] = [];
     vi.mocked(syncPositions).mockImplementationOnce(async () => {
       order.push('syncPositions');
@@ -2252,7 +2255,7 @@ describe('positions.json rides every sync', () => {
   });
 
   it('a rejecting position sync does not fail the sync', async () => {
-    const { syncPositions } = await import('$lib/positions/positions-sync');
+    const { syncPositions } = await import('#lib/positions/positions-sync.js');
     vi.mocked(syncPositions).mockRejectedValueOnce(new Error('boom'));
     const order: string[] = [];
     const spies = stubSteps(order);

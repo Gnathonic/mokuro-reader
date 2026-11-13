@@ -5,7 +5,7 @@
  * its own state; the one thing held here is the reader's registration for
  * `beforeLayerMutation`.
  */
-import type { LayerAction } from '$lib/components/Reader/Layers/layer-actions';
+import type { LayerAction } from '#lib/components/Reader/Layers/layer-actions.js';
 
 /**
  * Save pending edits when the page is about to stop running: the tab is

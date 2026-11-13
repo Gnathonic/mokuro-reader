@@ -2,15 +2,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from '@testing-library/svelte';
 import { get, writable, type Writable } from 'svelte/store';
 import TextBoxes from '../TextBoxes.svelte';
-import { settings } from '$lib/settings';
-import type { Page } from '$lib/types';
-import fixturePage from '$lib/reader/__fixtures__/ocr-page.json';
-import { processLine } from '$lib/reader/line-coords-layout';
+import { settings } from '#lib/settings/index.js';
+import type { Page } from '#lib/types/index.js';
+import fixturePage from '#lib/reader/__fixtures__/ocr-page.json';
+import { processLine } from '#lib/reader/line-coords-layout.js';
 import textBoxesSource from '../TextBoxes.svelte?raw';
-import { getLastCardInfo } from '$lib/anki-connect';
-import { snackbarStore } from '$lib/util/snackbar';
+import { getLastCardInfo } from '#lib/anki-connect/index.js';
+import { snackbarStore } from '#lib/util/snackbar.js';
 
-vi.mock('$lib/settings', async () => {
+vi.mock('#lib/settings/index.js', async () => {
   const { writable } = await import('svelte/store');
   return {
     settings: writable({
@@ -25,11 +25,11 @@ vi.mock('$lib/settings', async () => {
   };
 });
 
-vi.mock('$lib/catalog/db', () => ({
+vi.mock('#lib/catalog/db.js', () => ({
   db: { volumes: { get: vi.fn() } }
 }));
 
-vi.mock('$lib/anki-connect', () => ({
+vi.mock('#lib/anki-connect/index.js', () => ({
   showCropper: vi.fn(),
   openCreateModal: vi.fn(),
   openUpdateModal: vi.fn(),

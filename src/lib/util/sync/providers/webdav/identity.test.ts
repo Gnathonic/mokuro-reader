@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fetchServerIdentity } from './identity';
-import { describeContract, loadBunkoFixture } from '$lib/interop/contract';
+import { describeContract, loadBunkoFixture } from '#lib/interop/contract.js';
 import { bunkoLoginMe } from './__fixtures__/bunko-login-me';
 
 type MockResponse = { status: number; body: string; contentType?: string };

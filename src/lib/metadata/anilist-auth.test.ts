@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
 
-vi.mock('$app/environment', () => ({ browser: true }));
-vi.mock('$lib/util/snackbar', () => ({ showSnackbar: vi.fn() }));
+vi.mock('$app/env', () => ({ browser: true }));
+vi.mock('#lib/util/snackbar.js', () => ({ showSnackbar: vi.fn() }));
 vi.mock('./providers/anilist', async () => {
   // Keep the real AniListError class (tests need to throw/inspect real
   // instances) while replacing only the network call itself.
@@ -11,7 +11,7 @@ vi.mock('./providers/anilist', async () => {
 });
 
 import { anilistRequest, AniListError } from './providers/anilist';
-import { showSnackbar } from '$lib/util/snackbar';
+import { showSnackbar } from '#lib/util/snackbar.js';
 import {
   ANILIST_LOGIN_MARKER_TTL_MS,
   anilistUser,

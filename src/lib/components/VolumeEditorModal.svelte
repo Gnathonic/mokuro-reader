@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { Button, Modal, Label, Input, Select, Spinner } from 'flowbite-svelte';
-  import { volumeEditorModalStore, closeVolumeEditor } from '$lib/util/modals';
+  import { volumeEditorModalStore, closeVolumeEditor } from '#lib/util/modals.js';
   import {
     getAllSeriesOptions,
     generateNewSeriesUuid,
@@ -15,20 +15,20 @@
     getNextVolumeUuidInSeries,
     completionDateInputValue,
     completedAtFromDateInput
-  } from '$lib/util/volume-editor';
-  import { showSnackbar } from '$lib/util';
-  import { sanitizeRenameTitle } from '$lib/util/sanitize-title';
-  import { ProviderError } from '$lib/util/sync/provider-interface';
-  import { renameRefusalMessage } from '$lib/util/sync/account-capabilities';
-  import type { VolumeMetadata } from '$lib/types';
+  } from '#lib/util/volume-editor.js';
+  import { showSnackbar } from '#lib/util/index.js';
+  import { sanitizeRenameTitle } from '#lib/util/sanitize-title.js';
+  import { ProviderError } from '#lib/util/sync/provider-interface.js';
+  import { renameRefusalMessage } from '#lib/util/sync/account-capabilities.js';
+  import type { VolumeMetadata } from '#lib/types/index.js';
   import { get } from 'svelte/store';
-  import { figuresFor, readingStats, readingStatsReady } from '$lib/reading-history/stats-store';
+  import { figuresFor, readingStats, readingStatsReady } from '#lib/reading-history/stats-store.js';
   import VolumeEditorCoverPicker from './VolumeEditorCoverPicker.svelte';
   import {
     RASTER_FORMAT_NAMES,
     displayableCoverBlob,
     sniffRasterBlob
-  } from '$lib/util/raster-image';
+  } from '#lib/util/raster-image.js';
 
   let open = $state(false);
   let loading = $state(true);

@@ -3,8 +3,8 @@ import { readable, type Readable } from 'svelte/store';
 import { activeAccountScope, normalizeCachePath } from './cloud-cache-key';
 import { cachedCoverPaths } from './cloud-covers';
 import { refreshCoverKeys } from './cover-resolver';
-import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
-import { isCbzFile } from '$lib/util/sync/syncable-file';
+import { unifiedCloudManager } from '#lib/util/sync/unified-cloud-manager.js';
+import { isCbzFile } from '#lib/util/sync/syncable-file.js';
 
 /** The one shared empty set, so "nothing cached" never mints a new identity. */
 const EMPTY_PATHS: ReadonlySet<string> = new Set<string>();

@@ -1,16 +1,21 @@
 <script lang="ts">
-  import { changeProfile, currentProfile, profiles, profilesWithTrash } from '$lib/settings';
+  import {
+    changeProfile,
+    currentProfile,
+    profiles,
+    profilesWithTrash
+  } from '#lib/settings/index.js';
   import {
     importNotice,
     overwriteWarning,
     parseProfilesFile,
     planProfileImport,
     type ProfileImportPlan
-  } from '$lib/settings/profile-import';
+  } from '#lib/settings/profile-import.js';
   import { AccordionItem, Button, Select } from 'flowbite-svelte';
   import { get } from 'svelte/store';
   import ManageProfilesModal from './ManageProfilesModal.svelte';
-  import { promptConfirmation, showSnackbar } from '$lib/util';
+  import { promptConfirmation, showSnackbar } from '#lib/util/index.js';
 
   interface Props {
     onClose: () => void;

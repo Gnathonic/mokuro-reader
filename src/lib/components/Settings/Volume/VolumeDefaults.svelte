@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { settings, updateVolumeDefaults, type VolumeDefaultsKey } from '$lib/settings';
+  import { settings, updateVolumeDefaults, type VolumeDefaultsKey } from '#lib/settings/index.js';
   import { AccordionItem, Helper, Toggle } from 'flowbite-svelte';
 
   let toggles = $derived([

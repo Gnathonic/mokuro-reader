@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { IntersectionObserverStub } from '$lib/catalog/__tests__/intersection-observer-stub';
+import { IntersectionObserverStub } from '#lib/catalog/__tests__/intersection-observer-stub.js';
 import { render, fireEvent, cleanup } from '@testing-library/svelte';
 import { tick } from 'svelte';
 
@@ -65,10 +65,10 @@ const {
 
 // The real spine-offsets module stays in play (debounce, clamps, patch building); only the
 // Dexie-backed store underneath it is stubbed.
-vi.mock('$lib/metadata/store', () => ({ updateSeriesMetadata, seriesMetadataMap }));
-vi.mock('$lib/settings/settings', () => ({ catalogSettings }));
+vi.mock('#lib/metadata/store.js', () => ({ updateSeriesMetadata, seriesMetadataMap }));
+vi.mock('#lib/settings/settings.js', () => ({ catalogSettings }));
 // Mocked so the real module (Dexie-backed volume data) stays out of the graph.
-vi.mock('$lib/settings/volume-data', () => ({ volumes: readStates }));
+vi.mock('#lib/settings/volume-data.js', () => ({ volumes: readStates }));
 // Cover fetching/delivery is `cover-service.ts`'s job now (decision tree,
 // dedupe, retry and persistence are covered end to end in
 // `cover-service.test.ts`/`cover-service.retry.test.ts` against a real
@@ -87,15 +87,15 @@ const { requestCoverMock, isCoverFetchTargetMock } = vi.hoisted(() => ({
     }
   )
 }));
-vi.mock('$lib/catalog/cover-service', () => ({
+vi.mock('#lib/catalog/cover-service.js', () => ({
   requestCover: (...a: Parameters<typeof requestCoverMock>) => requestCoverMock(...a),
   isCoverFetchTarget: (...a: Parameters<typeof isCoverFetchTargetMock>) =>
     isCoverFetchTargetMock(...a)
 }));
-vi.mock('$lib/util/sync', () => ({ providerManager: { status: providerStatus } }));
+vi.mock('#lib/util/sync/index.js', () => ({ providerManager: { status: providerStatus } }));
 // Transparent pass-through wrapper — records the props each mount receives, then delegates
 // to the real component so rendering/behavior is untouched.
-vi.mock('$lib/components/CompositeCanvas.svelte', async (importOriginal) => {
+vi.mock('#lib/components/CompositeCanvas.svelte', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   const Real = actual.default as (anchor: unknown, props: Record<string, unknown>) => unknown;
   return {
@@ -108,15 +108,15 @@ vi.mock('$lib/components/CompositeCanvas.svelte', async (importOriginal) => {
 });
 
 import SeriesSpineShowcase from '../SeriesSpineShowcase.svelte';
-import type { VolumeMetadata } from '$lib/types';
-import type { SeriesMetadata } from '$lib/metadata/types';
-import { flushSpineOffsetWrites } from '$lib/metadata/spine-offsets';
+import type { VolumeMetadata } from '#lib/types/index.js';
+import type { SeriesMetadata } from '#lib/metadata/types.js';
+import { flushSpineOffsetWrites } from '#lib/metadata/spine-offsets.js';
 import {
   computeStepSizes,
   computeUniformHeight,
   getSpineCanvasDimensions,
   type Dimensions
-} from '$lib/util/spine-stack-geometry';
+} from '#lib/util/spine-stack-geometry.js';
 
 // Geometry the component renders with: at the default 1× zoom, a 250×360 thumbnail is
 // drawn a full 250px wide (card scale), and the default 11 % step only moves spine i by

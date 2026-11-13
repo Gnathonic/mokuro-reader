@@ -4,7 +4,10 @@ import { tick } from 'svelte';
 
 // Same stubs the shortcut suite uses: the row's dependency graph (Dexie, the sync stack)
 // has nothing to do with whether the "not on this device" badge is drawn.
-vi.mock('$lib/util/modals', () => ({ promptSeriesEditor: vi.fn(), promptConfirmation: vi.fn() }));
+vi.mock('#lib/util/modals.js', () => ({
+  promptSeriesEditor: vi.fn(),
+  promptConfirmation: vi.fn()
+}));
 // A queue we can actually drive: the row is supposed to follow it.
 const { emitQueue, resetQueue, downloadQueue } = vi.hoisted(() => {
   const subscribers = new Set<(v: unknown[]) => void>();
@@ -30,8 +33,8 @@ const { emitQueue, resetQueue, downloadQueue } = vi.hoisted(() => {
     }
   };
 });
-vi.mock('$lib/util/download-queue', () => ({ downloadQueue }));
-vi.mock('$lib/catalog', () => ({
+vi.mock('#lib/util/download-queue.js', () => ({ downloadQueue }));
+vi.mock('#lib/catalog/index.js', () => ({
   volumes: {
     subscribe: (fn: (v: Record<string, unknown>) => void) => {
       fn({});
@@ -41,8 +44,8 @@ vi.mock('$lib/catalog', () => ({
 }));
 
 import CatalogListItem from '../CatalogListItem.svelte';
-import { updateProgress } from '$lib/settings';
-import type { VolumeMetadata } from '$lib/types';
+import { updateProgress } from '#lib/settings/index.js';
+import type { VolumeMetadata } from '#lib/types/index.js';
 
 function volume(overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
   return {

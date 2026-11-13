@@ -44,7 +44,7 @@ describe('fontsReady', () => {
 
   it('waits for the web font faces to be registered before reading it', async () => {
     let finish!: () => void;
-    vi.doMock('$lib/util/web-fonts', () => ({
+    vi.doMock('#lib/util/web-fonts.js', () => ({
       webFontsRegistered: () => new Promise<void>((r) => (finish = r))
     }));
     const { fontsReady, reads } = await setup();
@@ -54,7 +54,7 @@ describe('fontsReady', () => {
     finish();
     await done;
     expect(reads()).toBe(1);
-    vi.doUnmock('$lib/util/web-fonts');
+    vi.doUnmock('#lib/util/web-fonts.js');
   });
 
   it('bumps the font load epoch on every loadingdone', async () => {

@@ -18,18 +18,18 @@ import {
   useTestFormData
 } from '../cloudsim';
 import { installGapiRestShim, removeGapiRestShim } from '../gapi-rest-shim';
-import { setCloudTestBases, setCloudTestToken } from '$lib/util/sync/cloud-test-hooks';
-import { ProviderError, type CloudFileMetadata } from '$lib/util/sync/provider-interface';
+import { setCloudTestBases, setCloudTestToken } from '#lib/util/sync/cloud-test-hooks.js';
+import { ProviderError, type CloudFileMetadata } from '#lib/util/sync/provider-interface.js';
 
-vi.mock('$app/environment', () => ({ browser: true, dev: false, building: false }));
+vi.mock('$app/env', () => ({ browser: true, dev: false, building: false }));
 
 const VOLUME = new Uint8Array(70_000).map((_, i) => (i * 31) % 251);
 const SIDECAR = JSON.stringify({ version: '0.2.5', volume: 'Vol 1', pages: [] });
 const CATALOG = JSON.stringify({ version: 1, series: [] });
 
 describe.skipIf(!cloudsimForSuite())('Google Drive provider against cloudsim', () => {
-  let provider: typeof import('$lib/util/sync/providers/google-drive/google-drive-provider').googleDriveProvider;
-  let tokenManager: typeof import('$lib/util/sync/providers/google-drive/token-manager').tokenManager;
+  let provider: typeof import('#lib/util/sync/providers/google-drive/google-drive-provider.js').googleDriveProvider;
+  let tokenManager: typeof import('#lib/util/sync/providers/google-drive/token-manager.js').tokenManager;
   let accessToken = '';
   let restoreXhr = () => {};
   let restoreLocal = () => {};
@@ -68,8 +68,8 @@ describe.skipIf(!cloudsimForSuite())('Google Drive provider against cloudsim', (
     installGapiRestShim(sim.bases().driveApi);
     setCloudTestBases(sim.bases());
     ({ googleDriveProvider: provider } =
-      await import('$lib/util/sync/providers/google-drive/google-drive-provider'));
-    ({ tokenManager } = await import('$lib/util/sync/providers/google-drive/token-manager'));
+      await import('#lib/util/sync/providers/google-drive/google-drive-provider.js'));
+    ({ tokenManager } = await import('#lib/util/sync/providers/google-drive/token-manager.js'));
     await sim.seed('google', [
       { path: 'mokuro-reader/Series A/Vol 1.cbz', data: VOLUME },
       { path: 'mokuro-reader/Series A/Vol 1.mokuro', data: SIDECAR },
@@ -180,7 +180,7 @@ describe.skipIf(!cloudsimForSuite())('Google Drive provider against cloudsim', (
   });
 
   it('a 403 userRateLimitExceeded on a worker upload is retried, never taken for an expired session', async () => {
-    const { googleDriveCore } = await import('$lib/util/sync/core/providers/google-drive-core');
+    const { googleDriveCore } = await import('#lib/util/sync/core/providers/google-drive-core.js');
     const up = {
       ...(await provider.getWorkerUploadCredentials()),
       ...(await provider.prepareUploadTarget('Series A'))
@@ -218,7 +218,7 @@ describe.skipIf(!cloudsimForSuite())('Google Drive provider against cloudsim', (
   });
 
   it('a worker transfer reaches the simulator with the bases from its credentials', async () => {
-    const { googleDriveCore } = await import('$lib/util/sync/core/providers/google-drive-core');
+    const { googleDriveCore } = await import('#lib/util/sync/core/providers/google-drive-core.js');
     const vol = await find('Series A/Vol 1.cbz');
     const down = await provider.getWorkerDownloadCredentials(vol.fileId);
     const up = {
@@ -254,7 +254,7 @@ describe.skipIf(!cloudsimForSuite())('Google Drive provider against cloudsim', (
   });
 
   it('the multipart upload (api-client) goes to the simulator', async () => {
-    const { driveApiClient } = await import('$lib/util/sync/providers/google-drive/api-client');
+    const { driveApiClient } = await import('#lib/util/sync/providers/google-drive/api-client.js');
     const series = (await find('Series A/Vol 1.cbz')) as CloudFileMetadata & { parentId?: string };
     const restoreForm = useTestFormData();
     try {

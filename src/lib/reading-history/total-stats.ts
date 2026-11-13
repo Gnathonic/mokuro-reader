@@ -1,5 +1,5 @@
 import { derived } from 'svelte/store';
-import { volumes } from '$lib/settings/volume-data';
+import { volumes } from '#lib/settings/volume-data.js';
 import { figuresFor, readingStats } from './stats-store';
 
 export interface TotalStats {

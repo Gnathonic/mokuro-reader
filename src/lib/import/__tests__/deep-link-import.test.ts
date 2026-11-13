@@ -9,36 +9,36 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import 'fake-indexeddb/auto';
 import { Uint8ArrayReader, Uint8ArrayWriter, ZipWriter } from '@zip.js/zip.js';
 
-vi.mock('$lib/catalog/db', async () => {
+vi.mock('#lib/catalog/db.js', async () => {
   const { CatalogDexieV3 } =
-    await vi.importActual<typeof import('$lib/catalog/db-v3')>('$lib/catalog/db-v3');
+    await vi.importActual<typeof import('#lib/catalog/db-v3.js')>('#lib/catalog/db-v3.js');
   const db = new CatalogDexieV3('mokuro_v3_deep_link_import_test');
   (db as unknown as { processThumbnails: () => Promise<void> }).processThumbnails = async () =>
     undefined;
   return { db };
 });
-vi.mock('$lib/catalog/thumbnails', () => ({
+vi.mock('#lib/catalog/thumbnails.js', () => ({
   generateThumbnail: async () => ({
     file: new File([new Uint8Array([1])], 'thumb.webp', { type: 'image/webp' }),
     width: 10,
     height: 14
   })
 }));
-vi.mock('$lib/util/snackbar', () => ({ showSnackbar: vi.fn() }));
-vi.mock('$lib/util/progress-tracker', () => ({
+vi.mock('#lib/util/snackbar.js', () => ({ showSnackbar: vi.fn() }));
+vi.mock('#lib/util/progress-tracker.js', () => ({
   progressTrackerStore: { addProcess: vi.fn(), updateProcess: vi.fn(), removeProcess: vi.fn() }
 }));
-vi.mock('$lib/util/modals', () => ({
+vi.mock('#lib/util/modals.js', () => ({
   promptMissingFiles: (_info: unknown, onContinue: () => void) => onContinue()
 }));
 const scheduleSeriesFileWrite = vi.hoisted(() => vi.fn());
-vi.mock('$lib/metadata/series-file-sync', () => ({ scheduleSeriesFileWrite }));
-vi.mock('$lib/util/file-processing-pool', () => ({
+vi.mock('#lib/metadata/series-file-sync.js', () => ({ scheduleSeriesFileWrite }));
+vi.mock('#lib/util/file-processing-pool.js', () => ({
   getFileProcessingPool: async () => ({ addTask: () => {} }),
   incrementPoolUsers: () => {},
   decrementPoolUsers: () => {}
 }));
-vi.mock('$lib/util/sync/provider-manager', async () => {
+vi.mock('#lib/util/sync/provider-manager.js', async () => {
   const { readable } = await import('svelte/store');
   return {
     providerManager: {
@@ -47,24 +47,24 @@ vi.mock('$lib/util/sync/provider-manager', async () => {
     }
   };
 });
-vi.mock('$lib/util/sync/cache-manager', () => ({
+vi.mock('#lib/util/sync/cache-manager.js', () => ({
   cacheManager: { getCache: () => null }
 }));
-vi.mock('$lib/util/sync/sidecar-backfill', () => ({ noteOcrEdited: vi.fn() }));
+vi.mock('#lib/util/sync/sidecar-backfill.js', () => ({ noteOcrEdited: vi.fn() }));
 const watchServerOcr = vi.hoisted(() => vi.fn());
-vi.mock('$lib/catalog/server-ocr-queue', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('$lib/catalog/server-ocr-queue')>();
+vi.mock('#lib/catalog/server-ocr-queue.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('#lib/catalog/server-ocr-queue.js')>();
   return { queueUrlForArchive: actual.queueUrlForArchive, watchServerOcr };
 });
 
-import { db } from '$lib/catalog/db';
-import { clearAllLayers, getLayerWithPages } from '$lib/catalog/layer-store';
+import { db } from '#lib/catalog/db.js';
+import { clearAllLayers, getLayerWithPages } from '#lib/catalog/layer-store.js';
 import { installedUuids } from '../cover-sidecar';
 import { importDeepLinkedArchive, localSeriesKeys } from '../deep-link-import';
 import type { HtmlDownloadResult } from '../html-download-provider';
 import { parseImportedSeriesFile, resetImportedSeriesFiles } from '../series-file-import';
-import { buildMokuroMetadata } from '$lib/util/mokuro-metadata';
-import type { Page, VolumeMetadata } from '$lib/types';
+import { buildMokuroMetadata } from '#lib/util/mokuro-metadata.js';
+import type { Page, VolumeMetadata } from '#lib/types/index.js';
 import { installReviewer, type Reviewer } from './helpers/review-bridge';
 
 // zip.js writes the archive through a Blob stream; jsdom's Blob has none.

@@ -1,4 +1,4 @@
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 import type {
   SyncProvider,
   ProviderCredentials,
@@ -18,7 +18,7 @@ import {
   readControlNodes
 } from '../../control-file-read';
 import { foldFolderName } from '../../syncable-file';
-import { clearCloudBunkoMarkers, withCloudBunkoStatus } from '$lib/catalog/cloud-bunko-marker';
+import { clearCloudBunkoMarkers, withCloudBunkoStatus } from '#lib/catalog/cloud-bunko-marker.js';
 import { folderTestHandle } from '../../cloud-test-hooks';
 import { setActiveProviderKey, clearActiveProviderKey } from '../../provider-detection';
 import { isFilesystemProviderSupported } from './feature-detect';

@@ -1,4 +1,4 @@
-import type { Page } from '$lib/types';
+import type { Page } from '#lib/types/index.js';
 
 /** Screen px per image px for a page element (zoom-aware). 1 when unmeasurable (jsdom). */
 export function pageScaleOf(el: HTMLElement | null | undefined, page: Page): number {

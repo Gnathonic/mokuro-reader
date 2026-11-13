@@ -21,8 +21,8 @@
  * virtual file over HTTP). A fleet speed change or a pause moves only the
  * clock, so the series files are not rewritten for it.
  */
-import { normalizeVolumeTitleKey } from '$lib/metadata/series-key';
-import { validParts, type OcrPart } from '$lib/reader/edit/ocr-label';
+import { normalizeVolumeTitleKey } from '#lib/metadata/series-key.js';
+import { validParts, type OcrPart } from '#lib/reader/edit/ocr-label.js';
 import type { QueueHeld, QueueJob, VolumeQueueStatus } from './server-ocr-pending';
 
 // ---------------------------------------------------------------- the format

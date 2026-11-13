@@ -4,8 +4,8 @@
 </script>
 
 <script lang="ts">
-  import { AWAY_AFTER_MS, livePause, type LivePause } from '$lib/reading-history/pause-watch';
-  import type { PauseAnswer } from '$lib/reading-history/pause-answer';
+  import { AWAY_AFTER_MS, livePause, type LivePause } from '#lib/reading-history/pause-watch.js';
+  import type { PauseAnswer } from '#lib/reading-history/pause-answer.js';
 
   /**
    * The open page reached its cutoff, so the timer stopped (phase 3b). It is

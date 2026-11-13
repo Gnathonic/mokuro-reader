@@ -36,7 +36,7 @@ function emptyStore<T>(value: T) {
   };
 }
 
-vi.mock('$lib/settings', () => ({
+vi.mock('#lib/settings/index.js', () => ({
   deleteVolume: vi.fn(),
   progress: emptyStore<Record<string, number>>({}),
   volumes: emptyStore<Record<string, unknown>>({}),
@@ -44,11 +44,11 @@ vi.mock('$lib/settings', () => ({
   markVolumeAsComplete: vi.fn(),
   markVolumeAsUnread: vi.fn()
 }));
-vi.mock('$lib/settings/reading-speed', () => ({
+vi.mock('#lib/settings/reading-speed.js', () => ({
   personalizedReadingSpeed: emptyStore({ isPersonalized: false, charsPerMinute: 0 })
 }));
-vi.mock('$lib/catalog', () => ({ volumes: catalogVolumes }));
-vi.mock('$lib/catalog/db', () => ({
+vi.mock('#lib/catalog/index.js', () => ({ volumes: catalogVolumes }));
+vi.mock('#lib/catalog/db.js', () => ({
   db: {
     volumes: { get: vi.fn(async () => undefined) },
     volume_ocr: { get: vi.fn(async () => undefined) }
@@ -57,14 +57,14 @@ vi.mock('$lib/catalog/db', () => ({
 vi.mock('dexie', () => ({
   liveQuery: () => ({ subscribe: () => ({ unsubscribe: () => {} }) })
 }));
-vi.mock('$lib/import', () => ({
+vi.mock('#lib/import/index.js', () => ({
   removeVolumeFiles: vi.fn(),
   deleteVolumeCompletely: vi.fn()
 }));
-vi.mock('$lib/util', () => ({ promptConfirmation: vi.fn(), showSnackbar: vi.fn() }));
-vi.mock('$lib/util/modals', () => ({ promptExtraction: vi.fn(), promptVolumeEditor: vi.fn() }));
-vi.mock('$lib/util/zip', () => ({ zipManga: vi.fn() }));
-vi.mock('$lib/util/hash-router', () => ({
+vi.mock('#lib/util/index.js', () => ({ promptConfirmation: vi.fn(), showSnackbar: vi.fn() }));
+vi.mock('#lib/util/modals.js', () => ({ promptExtraction: vi.fn(), promptVolumeEditor: vi.fn() }));
+vi.mock('#lib/util/zip.js', () => ({ zipManga: vi.fn() }));
+vi.mock('#lib/util/hash-router.js', () => ({
   nav: { toReader: vi.fn(), toSeries: vi.fn(), toCatalog: vi.fn(), toVolumeText: vi.fn() },
   routeParams
 }));
@@ -77,7 +77,7 @@ const cloudState = vi.hoisted(() => ({
   // `files`; a test sets it to stand in for the folded resolution.
   lookup: null as null | ((series: string, title: string) => unknown)
 }));
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: {
     // Nothing connected: a VolumeItem list row asks `activeAccountScope()` before it
     // claims a cover, and with no provider the claim is skipped entirely.
@@ -100,7 +100,7 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
     deleteFile: vi.fn()
   }
 }));
-vi.mock('$lib/util/sync', () => ({
+vi.mock('#lib/util/sync/index.js', () => ({
   providerManager: {
     status: {
       subscribe(fn: (v: unknown) => void) {
@@ -114,14 +114,14 @@ vi.mock('$lib/util/sync', () => ({
     }
   }
 }));
-vi.mock('$lib/util/backup-queue', () => ({ backupQueue: { queueVolumeForBackup: vi.fn() } }));
-vi.mock('$lib/util/download-queue', () => ({
+vi.mock('#lib/util/backup-queue.js', () => ({ backupQueue: { queueVolumeForBackup: vi.fn() } }));
+vi.mock('#lib/util/download-queue.js', () => ({
   downloadQueue: {
     subscribe: (fn: (v: unknown[]) => void) => (fn([]), () => {}),
     queueVolume: vi.fn()
   }
 }));
-vi.mock('$lib/util/progress-tracker', () => ({
+vi.mock('#lib/util/progress-tracker.js', () => ({
   progressTrackerStore: {
     subscribe: (fn: (v: { processes: unknown[] }) => void) => (fn({ processes: [] }), () => {})
   }
@@ -144,17 +144,17 @@ const { requestCoverMock, isCoverFetchTargetMock } = vi.hoisted(() => ({
     }
   )
 }));
-vi.mock('$lib/catalog/cover-service', () => ({
+vi.mock('#lib/catalog/cover-service.js', () => ({
   requestCover: (...a: Parameters<typeof requestCoverMock>) => requestCoverMock(...a),
   isCoverFetchTarget: (...a: Parameters<typeof isCoverFetchTargetMock>) =>
     isCoverFetchTargetMock(...a)
 }));
 
 import VolumeItem from '../VolumeItem.svelte';
-import { promptConfirmation, showSnackbar } from '$lib/util';
-import { removeVolumeFiles } from '$lib/import';
-import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
-import type { VolumeMetadata } from '$lib/types';
+import { promptConfirmation, showSnackbar } from '#lib/util/index.js';
+import { removeVolumeFiles } from '#lib/import/index.js';
+import { unifiedCloudManager } from '#lib/util/sync/unified-cloud-manager.js';
+import type { VolumeMetadata } from '#lib/types/index.js';
 
 function volume(overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
   return {
@@ -715,13 +715,13 @@ describe('VolumeItem server OCR status', () => {
   afterEach(async () => {
     cleanup();
     vi.useRealTimers();
-    const { queueStatusStore } = await import('$lib/catalog/server-ocr-pending');
+    const { queueStatusStore } = await import('#lib/catalog/server-ocr-pending.js');
     queueStatusStore.set({});
   });
 
   // The card looks its volume up by (series, volume) — how the queue file names it.
   async function pending(value: unknown[]) {
-    const { queueStatusStore, volumeQueueKey } = await import('$lib/catalog/server-ocr-pending');
+    const { queueStatusStore, volumeQueueKey } = await import('#lib/catalog/server-ocr-pending.js');
     queueStatusStore.set(
       value.length
         ? { [volumeQueueKey('One Piece', 'Vol 1')]: { jobs: value as never, held: null } }
@@ -800,7 +800,7 @@ describe('VolumeItem server OCR status', () => {
       { kind: 'ocr', id: 'mokuro-fp16', state: 'running', eta: at(3), progress: 0.42 },
       { kind: 'layer', id: 'hayai-nova', state: 'held', eta: null, progress: null }
     ]);
-    const { queueStatusStore, volumeQueueKey } = await import('$lib/catalog/server-ocr-pending');
+    const { queueStatusStore, volumeQueueKey } = await import('#lib/catalog/server-ocr-pending.js');
     const key = volumeQueueKey('One Piece', 'Vol 1');
     queueStatusStore.update((s) => ({ [key]: { ...s[key], held: { reason: 'no-processor' } } }));
     const { container } = render(VolumeItem, { props: { volume: volume(), variant: 'list' } });
@@ -810,7 +810,7 @@ describe('VolumeItem server OCR status', () => {
   });
 
   it('registers the volume it shows with the queue poller, and unregisters on unmount', async () => {
-    const { isVolumeShown, volumeQueueKey } = await import('$lib/catalog/server-ocr-pending');
+    const { isVolumeShown, volumeQueueKey } = await import('#lib/catalog/server-ocr-pending.js');
     const key = volumeQueueKey('One Piece', 'Vol 1');
     const { unmount } = render(VolumeItem, { props: { volume: volume(), variant: 'grid' } });
     expect(isVolumeShown(key)).toBe(true);
@@ -827,14 +827,14 @@ describe('VolumeItem server OCR status', () => {
 describe('VolumeItem failed upload (grid)', () => {
   afterEach(async () => {
     cleanup();
-    const { resetUploadFailuresForTest } = await import('$lib/util/upload-failures');
+    const { resetUploadFailuresForTest } = await import('#lib/util/upload-failures.js');
     localStorage.clear();
     resetUploadFailuresForTest();
     cloudState.authenticated = false;
   });
 
   it('marks the cover, without resizing the card, with the reason as its tooltip', async () => {
-    const { recordUploadFailure } = await import('$lib/util/upload-failures');
+    const { recordUploadFailure } = await import('#lib/util/upload-failures.js');
     recordUploadFailure({
       volume_uuid: 'uuid-1',
       volume_title: 'Vol 1',

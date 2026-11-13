@@ -7,12 +7,12 @@ import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
  * through an object URL of the file as uploaded.
  */
 
-vi.mock('$lib/util/volume-editor', () => ({ getVolumeFiles: vi.fn(async () => []) }));
+vi.mock('#lib/util/volume-editor.js', () => ({ getVolumeFiles: vi.fn(async () => []) }));
 const snackbar = vi.hoisted(() => vi.fn());
-vi.mock('$lib/util', () => ({ showSnackbar: snackbar }));
+vi.mock('#lib/util/index.js', () => ({ showSnackbar: snackbar }));
 
 import VolumeEditorCoverPicker from '../VolumeEditorCoverPicker.svelte';
-import { RASTER_IMAGE_TYPES } from '$lib/util/raster-image';
+import { RASTER_IMAGE_TYPES } from '#lib/util/raster-image.js';
 
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]);
 const SVG = '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>';

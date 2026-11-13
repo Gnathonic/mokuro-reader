@@ -12,11 +12,11 @@ import type {
   AnkiConnectionData,
   ModelConfig,
   FieldMapping
-} from '$lib/settings/settings';
-import { settings, DEFAULT_MODEL_CONFIGS } from '$lib/settings';
-import { showSnackbar } from '$lib/util';
-import { isMobilePlatform } from '$lib/util/platform';
-import { displayableCoverBlob } from '$lib/util/raster-image';
+} from '#lib/settings/settings.js';
+import { settings, DEFAULT_MODEL_CONFIGS } from '#lib/settings/index.js';
+import { showSnackbar } from '#lib/util/index.js';
+import { isMobilePlatform } from '#lib/util/platform.js';
+import { displayableCoverBlob } from '#lib/util/raster-image.js';
 import { get } from 'svelte/store';
 import { escapeFieldText, placeholderNonce, tagSafeTitle } from './field-html';
 import { effectiveAnkiUrl, isAnkiUrlTrusted, unconfirmedAnkiUrlMessage } from './url-trust';

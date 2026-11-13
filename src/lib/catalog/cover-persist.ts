@@ -1,15 +1,15 @@
 import { get } from 'svelte/store';
-import { db } from '$lib/catalog/db';
-import type { VolumeMetadata } from '$lib/types';
-import { needsDownload } from '$lib/catalog/volume-state';
-import { isArchiveSize } from '$lib/metadata/series-file';
-import { isoToEpochSeconds } from '$lib/metadata/cloud-sidecar-stamps';
-import { thumbnailCache } from '$lib/catalog/thumbnail-cache';
-import { activeAccountScope } from '$lib/catalog/cloud-cache-key';
-import { putCloudCovers, type CloudCover } from '$lib/catalog/cloud-covers';
-import { replaceCoverKeys } from '$lib/catalog/cover-resolver';
-import { volumes as readingHistoryStore } from '$lib/settings/volume-data';
-import { hasReadingActivity, type ReadingHistoryEntry } from '$lib/settings/reading-activity';
+import { db } from '#lib/catalog/db.js';
+import type { VolumeMetadata } from '#lib/types/index.js';
+import { needsDownload } from '#lib/catalog/volume-state.js';
+import { isArchiveSize } from '#lib/metadata/series-file.js';
+import { isoToEpochSeconds } from '#lib/metadata/cloud-sidecar-stamps.js';
+import { thumbnailCache } from '#lib/catalog/thumbnail-cache.js';
+import { activeAccountScope } from '#lib/catalog/cloud-cache-key.js';
+import { putCloudCovers, type CloudCover } from '#lib/catalog/cloud-covers.js';
+import { replaceCoverKeys } from '#lib/catalog/cover-resolver.js';
+import { volumes as readingHistoryStore } from '#lib/settings/volume-data.js';
+import { hasReadingActivity, type ReadingHistoryEntry } from '#lib/settings/reading-activity.js';
 import type { CloudThumbnailResult } from './cloud-thumbnails';
 
 /**

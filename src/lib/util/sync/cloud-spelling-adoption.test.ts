@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CloudFileMetadata } from './provider-interface';
 
 const localRows = vi.fn(async (): Promise<unknown[]> => []);
-vi.mock('$lib/catalog/db', () => ({
+vi.mock('#lib/catalog/db.js', () => ({
   db: {
     volumes: {
       orderBy: (_index: string) => ({
@@ -32,7 +32,7 @@ vi.mock('./provider-manager', () => ({
 
 /** The volume on screen (reader or text view), if any — what `isVolumeOpen` answers. */
 const openVolume = vi.hoisted(() => ({ uuid: null as string | null }));
-vi.mock('$lib/util/hash-router', () => ({
+vi.mock('#lib/util/hash-router.js', () => ({
   isVolumeOpen: (uuid: string) => uuid === openVolume.uuid
 }));
 
@@ -41,7 +41,7 @@ const generateRenameSeriesPreview = vi.fn(async (_from: string, _to: string) => 
   indexedDbChanges: [] as unknown[],
   localStorageChanges: [] as Array<{ volumeUuid: string }>
 }));
-vi.mock('$lib/util/series-rename', () => ({
+vi.mock('#lib/util/series-rename.js', () => ({
   commitLocalSeriesRename: (...args: unknown[]) => commitLocalSeriesRename(...args),
   generateRenameSeriesPreview: (from: string, to: string) => generateRenameSeriesPreview(from, to)
 }));

@@ -1,6 +1,6 @@
 import { derived, get, writable, type Readable } from 'svelte/store';
-import { applyMissedRestart, jumpToPosition, volumesWithTrash } from '$lib/settings/volume-data';
-import { isVolumeComplete } from '$lib/util/volume-helpers';
+import { applyMissedRestart, jumpToPosition, volumesWithTrash } from '#lib/settings/volume-data.js';
+import { isVolumeComplete } from '#lib/util/volume-helpers.js';
 import type { HistoryDexie } from './history-db';
 import { planPosition, type PositionOffer, type PositionPlan } from './position-offer';
 import type { ReadingEvent } from './types';
@@ -14,7 +14,7 @@ import {
   someVolumeEvent,
   volumeEventsVersion
 } from './turns-store';
-import { currentView } from '$lib/util/hash-router';
+import { currentView } from '#lib/util/hash-router.js';
 
 /**
  * Cross-device position offers in the app (phase 2c): the plan for a volume

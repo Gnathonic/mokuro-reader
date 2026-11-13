@@ -1,4 +1,4 @@
-import { READ_DWELL_MS, VISIT_GAP_MS } from '$lib/reading-history/visits';
+import { READ_DWELL_MS, VISIT_GAP_MS } from '#lib/reading-history/visits.js';
 
 /**
  * Utility functions for volume state and display logic

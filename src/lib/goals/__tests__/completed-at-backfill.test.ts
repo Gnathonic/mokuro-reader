@@ -1,12 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('$app/environment', () => ({ browser: true }));
-vi.mock('$lib/catalog/db', () => ({
+vi.mock('$app/env', () => ({ browser: true }));
+vi.mock('#lib/catalog/db.js', () => ({
   db: { volumes: { get: vi.fn().mockResolvedValue(undefined), bulkGet: vi.fn(async () => []) } }
 }));
 
 import { get } from 'svelte/store';
-import { VolumeData, clearVolumes, volumesWithTrash } from '$lib/settings/volume-data';
+import { VolumeData, clearVolumes, volumesWithTrash } from '#lib/settings/volume-data.js';
 import { backfillCompletedAt } from '../completed-at-backfill';
 
 const KEY = 'volumes.completedAtBackfill.v1';
@@ -55,7 +55,7 @@ describe('backfillCompletedAt', () => {
 
   it('finds the completing turn in reading history once the record has none', async () => {
     const { _resetHistoryTurns, _setHistoryTurnsForTest } =
-      await import('$lib/reading-history/turns-store');
+      await import('#lib/reading-history/turns-store.js');
     const turn = Date.parse('2025-06-01T00:00:00.000Z');
     volumesWithTrash.set({
       v1: new VolumeData({

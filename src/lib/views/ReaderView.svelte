@@ -1,18 +1,23 @@
 <script lang="ts">
-  import Reader from '$lib/components/Reader/Reader.svelte';
-  import Timer from '$lib/components/Reader/Timer.svelte';
-  import { effectiveVolumeSettings, initializeVolume, settings, volumes } from '$lib/settings';
-  import { miscSettings } from '$lib/settings/misc';
+  import Reader from '#lib/components/Reader/Reader.svelte';
+  import Timer from '#lib/components/Reader/Timer.svelte';
+  import {
+    effectiveVolumeSettings,
+    initializeVolume,
+    settings,
+    volumes
+  } from '#lib/settings/index.js';
+  import { miscSettings } from '#lib/settings/misc.js';
   import { onMount } from 'svelte';
-  import { activityTracker } from '$lib/util/activity-tracker';
+  import { activityTracker } from '#lib/util/activity-tracker.js';
   import { Spinner } from 'flowbite-svelte';
-  import { routeParams } from '$lib/util/hash-router';
-  import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
-  import { tokenManager } from '$lib/util/sync/providers/google-drive/token-manager';
-  import { foregroundSync } from '$lib/util/sync/foreground-sync';
-  import { checkPositionsOnOpen } from '$lib/positions/positions-sync';
-  import { noteReaderClosed } from '$lib/positions/reader-open';
-  import { endVisit, startVisit } from '$lib/positions/visit';
+  import { routeParams } from '#lib/util/hash-router.js';
+  import { unifiedCloudManager } from '#lib/util/sync/unified-cloud-manager.js';
+  import { tokenManager } from '#lib/util/sync/providers/google-drive/token-manager.js';
+  import { foregroundSync } from '#lib/util/sync/foreground-sync.js';
+  import { checkPositionsOnOpen } from '#lib/positions/positions-sync.js';
+  import { noteReaderClosed } from '#lib/positions/reader-open.js';
+  import { endVisit, startVisit } from '#lib/positions/visit.js';
 
   let volumeId = $derived($routeParams.volume || '');
 

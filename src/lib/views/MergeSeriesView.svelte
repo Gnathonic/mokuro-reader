@@ -5,8 +5,8 @@
     detectSeriesConflicts,
     generateMergeSeriesPreview,
     executeMergeSeries
-  } from '$lib/util/series-merge';
-  import type { SeriesConflict, MergeSeriesPreview } from '$lib/util/series-merge';
+  } from '#lib/util/series-merge.js';
+  import type { SeriesConflict, MergeSeriesPreview } from '#lib/util/series-merge.js';
 
   let conflicts: SeriesConflict[] = $state([]);
   let loading = $state(true);

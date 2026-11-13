@@ -10,7 +10,7 @@
  * Times are Bunko's epoch sentinel (946684800 = 2000-01-01T00:00:00Z) plus
  * the offsets the renderer produced.
  */
-import { bunkoBodyIfPresent } from '$lib/interop/contract';
+import { bunkoBodyIfPresent } from '#lib/interop/contract.js';
 
 const HTTP_LIVE = {
   held: { reason: 'no-processor' } as { reason: string } | null,

@@ -12,7 +12,7 @@ import { saveVolume, volumeExists, removeVolumeFiles, deleteVolumeCompletely } f
 import type { ProcessedVolume, ProcessedMetadata, ProcessedPage } from '../types';
 
 // Mock the db module to use our test database
-vi.mock('$lib/catalog/db', () => ({
+vi.mock('#lib/catalog/db.js', () => ({
   db: {
     volumes: {
       add: vi.fn(),
@@ -44,7 +44,7 @@ vi.mock('$lib/catalog/db', () => ({
 // Layer rows are reached only through the layer store (two tables, one key);
 // with a hand-mocked `db` that module is the seam to stub.
 const deleteLayersOfVolume = vi.hoisted(() => vi.fn(async () => {}));
-vi.mock('$lib/catalog/layer-store', () => ({
+vi.mock('#lib/catalog/layer-store.js', () => ({
   deleteLayersOfVolume,
   layerTables: (mockDb: { volume_ocr_layers: unknown; volume_ocr_layer_pages: unknown }) => [
     mockDb.volume_ocr_layers,
@@ -53,7 +53,7 @@ vi.mock('$lib/catalog/layer-store', () => ({
 }));
 
 // Import the mocked db
-import { db } from '$lib/catalog/db';
+import { db } from '#lib/catalog/db.js';
 
 /**
  * Helper to create a processed volume

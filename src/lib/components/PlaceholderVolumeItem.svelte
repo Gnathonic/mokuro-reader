@@ -1,21 +1,21 @@
 <script lang="ts">
-  import type { VolumeMetadata } from '$lib/types';
+  import type { VolumeMetadata } from '#lib/types/index.js';
   import { ListgroupItem, Button, Spinner, Badge } from 'flowbite-svelte';
   import { DownloadSolid, TrashBinSolid } from 'flowbite-svelte-icons';
-  import { downloadQueue } from '$lib/util/download-queue';
-  import { progressTrackerStore } from '$lib/util/progress-tracker';
-  import { showSnackbar, promptConfirmation } from '$lib/util';
-  import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
+  import { downloadQueue } from '#lib/util/download-queue.js';
+  import { progressTrackerStore } from '#lib/util/progress-tracker.js';
+  import { showSnackbar, promptConfirmation } from '#lib/util/index.js';
+  import { unifiedCloudManager } from '#lib/util/sync/unified-cloud-manager.js';
   import {
     getArchiveSize,
     getCloudFileId,
     getCloudProvider,
     getCloudSize,
     getCloudModifiedTime
-  } from '$lib/util/cloud-fields';
-  import { formatArchiveSize } from '$lib/util/format-size';
-  import type { CloudFileMetadata } from '$lib/util/sync/provider-interface';
-  import { PROVIDER_SHORT_LABELS, PROVIDER_BADGE_COLORS } from '$lib/util/sync/provider-display';
+  } from '#lib/util/cloud-fields.js';
+  import { formatArchiveSize } from '#lib/util/format-size.js';
+  import type { CloudFileMetadata } from '#lib/util/sync/provider-interface.js';
+  import { PROVIDER_SHORT_LABELS, PROVIDER_BADGE_COLORS } from '#lib/util/sync/provider-display.js';
   import PlaceholderThumbnail from './PlaceholderThumbnail.svelte';
   import DownloadBadge from './DownloadBadge.svelte';
 

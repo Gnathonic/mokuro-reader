@@ -11,10 +11,10 @@ const { requestCover, isCoverFetchTarget } = vi.hoisted(() => ({
   requestCover: vi.fn(async () => 'row' as const),
   isCoverFetchTarget: vi.fn(() => true)
 }));
-vi.mock('$lib/catalog/cover-service', () => ({ requestCover, isCoverFetchTarget }));
+vi.mock('#lib/catalog/cover-service.js', () => ({ requestCover, isCoverFetchTarget }));
 
 import VolumeCard from '../VolumeCard.svelte';
-import type { VolumeMetadata } from '$lib/types';
+import type { VolumeMetadata } from '#lib/types/index.js';
 
 function volume(uuid: string, overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
   return {

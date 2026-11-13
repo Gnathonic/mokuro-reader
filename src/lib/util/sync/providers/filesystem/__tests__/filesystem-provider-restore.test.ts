@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 // Restore tests exercise the real constructor path (browser + supported API),
 // unlike filesystem-provider.test.ts which pins browser:false to skip it.
-vi.mock('$app/environment', () => ({ browser: true }));
+vi.mock('$app/env', () => ({ browser: true }));
 
 vi.mock('../feature-detect', () => ({
   isFilesystemProviderSupported: vi.fn(() => true)
@@ -26,8 +26,8 @@ import {
   cloudBunkoStatus,
   refreshCloudBunkoMarker,
   resetCloudBunkoMarkersForTest
-} from '$lib/catalog/cloud-bunko-marker';
-import { servedMarker } from '$lib/catalog/__fixtures__/bunko-marker';
+} from '#lib/catalog/cloud-bunko-marker.js';
+import { servedMarker } from '#lib/catalog/__fixtures__/bunko-marker.js';
 import { clearActiveProviderKey } from '../../../provider-detection';
 
 describe('FilesystemProvider.restoreHandle', () => {

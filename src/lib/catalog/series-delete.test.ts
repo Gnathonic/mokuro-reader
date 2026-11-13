@@ -32,11 +32,11 @@ const {
   }
 }));
 
-vi.mock('$lib/util/modals', () => ({ promptConfirmation }));
-vi.mock('$lib/util/snackbar', () => ({ showSnackbar }));
-vi.mock('$lib/import', () => ({ removeVolumeFiles, deleteVolumeCompletely }));
-vi.mock('$lib/settings', () => ({ deleteVolume: deleteVolumeStats }));
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/util/modals.js', () => ({ promptConfirmation }));
+vi.mock('#lib/util/snackbar.js', () => ({ showSnackbar }));
+vi.mock('#lib/import/index.js', () => ({ removeVolumeFiles, deleteVolumeCompletely }));
+vi.mock('#lib/settings/index.js', () => ({ deleteVolume: deleteVolumeStats }));
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: {
     existsInCloud,
     deleteSeriesFolder,
@@ -46,7 +46,7 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
     getActiveProvider: () => ({ name: 'Drive' })
   }
 }));
-vi.mock('$lib/util/sync/provider-manager', () => ({
+vi.mock('#lib/util/sync/provider-manager.js', () => ({
   providerManager: {
     status: {
       subscribe: (fn: (v: unknown) => void) => {
@@ -58,8 +58,8 @@ vi.mock('$lib/util/sync/provider-manager', () => ({
 }));
 
 import { deleteSeriesFromCloudByTitle, promptSeriesRemoval } from './series-delete';
-import { normalizeVolumeTitleKey } from '$lib/metadata/series-key';
-import type { VolumeMetadata } from '$lib/types';
+import { normalizeVolumeTitleKey } from '#lib/metadata/series-key.js';
+import type { VolumeMetadata } from '#lib/types/index.js';
 
 function volume(overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
   return {

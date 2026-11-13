@@ -2,9 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import 'fake-indexeddb/auto';
 import { liveQuery } from 'dexie';
 
-vi.mock('$lib/catalog/db', async () => {
+vi.mock('#lib/catalog/db.js', async () => {
   const { CatalogDexieV3 } =
-    await vi.importActual<typeof import('$lib/catalog/db-v3')>('$lib/catalog/db-v3');
+    await vi.importActual<typeof import('#lib/catalog/db-v3.js')>('#lib/catalog/db-v3.js');
   return { db: new CatalogDexieV3('mokuro_v3_cover_persist_test') };
 });
 
@@ -14,7 +14,7 @@ vi.mock('$lib/catalog/db', async () => {
 const { thumbnailCacheInvalidate } = vi.hoisted(() => ({
   thumbnailCacheInvalidate: vi.fn()
 }));
-vi.mock('$lib/catalog/thumbnail-cache', () => ({
+vi.mock('#lib/catalog/thumbnail-cache.js', () => ({
   thumbnailCache: {
     invalidate: (...a: Parameters<typeof thumbnailCacheInvalidate>) =>
       thumbnailCacheInvalidate(...a)
@@ -27,7 +27,7 @@ vi.mock('$lib/catalog/thumbnail-cache', () => ({
 // below have a scope to attribute a cache write to, without pulling in the
 // real module's heavy dependency graph (Dexie, compress-volume, every
 // provider implementation).
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: {
     getActiveProvider: () => ({
       getStatus: () => ({ isAuthenticated: true, accountScope: 'mega:a@b.com' })
@@ -65,7 +65,7 @@ const h = vi.hoisted(() => {
   };
 });
 
-vi.mock('$lib/settings/volume-data', () => ({
+vi.mock('#lib/settings/volume-data.js', () => ({
   volumes: h.readingHistoryStore
 }));
 
@@ -83,8 +83,8 @@ vi.mock('./cover-resolver', async (importOriginal) => {
   };
 });
 
-import { db } from '$lib/catalog/db';
-import type { VolumeMetadata } from '$lib/types';
+import { db } from '#lib/catalog/db.js';
+import type { VolumeMetadata } from '#lib/types/index.js';
 import {
   _resetCoverPersistForTests,
   COVER_PERSIST_MAX_BATCH,

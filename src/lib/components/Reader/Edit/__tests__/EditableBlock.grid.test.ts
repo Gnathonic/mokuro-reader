@@ -2,23 +2,23 @@ import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import type { Writable } from 'svelte/store';
-import type { Block, Page } from '$lib/types';
+import type { Block, Page } from '#lib/types/index.js';
 
-vi.mock('$lib/settings', async () => {
+vi.mock('#lib/settings/index.js', async () => {
   const { writable } = await import('svelte/store');
   return { settings: writable({ fontSize: 'auto', boldFont: false }) };
 });
 
 import EditableBlock from '../EditableBlock.svelte';
-import { settings } from '$lib/settings';
-import { EditSession } from '$lib/reader/edit/edit-session.svelte';
+import { settings } from '#lib/settings/index.js';
+import { EditSession } from '#lib/reader/edit/edit-session.svelte.js';
 import {
   blockLineGeometries,
   lineGeometry,
   lineGrid,
   lineHandlePoints
-} from '$lib/reader/edit/block-geometry';
-import { lineFrame } from '$lib/reader/line-grid';
+} from '#lib/reader/edit/block-geometry.js';
+import { lineFrame } from '#lib/reader/line-grid.js';
 
 // The editor draws a line the way the viewer does (line-grid.ts): ONE text
 // node on the block's fixed-pitch grid, turned when the quad is tilted. Cells are

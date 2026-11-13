@@ -2,8 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 
-vi.mock('$lib/catalog/db', () => ({ db: {} }));
-vi.mock('$lib/reader/edit/layers', () => ({
+vi.mock('#lib/catalog/db.js', () => ({ db: {} }));
+vi.mock('#lib/reader/edit/layers.js', () => ({
   buildLayerExportFile: vi.fn(),
   copyIntoEditLayer: vi.fn(),
   createLayer: vi.fn(),
@@ -11,9 +11,9 @@ vi.mock('$lib/reader/edit/layers', () => ({
   promoteLayer: vi.fn(),
   renameLayer: vi.fn()
 }));
-vi.mock('$lib/util/volume-sidecars', () => ({ downloadFileBlob: vi.fn() }));
-vi.mock('$lib/util/modals', () => ({ promptConfirmation: vi.fn() }));
-vi.mock('$lib/util/snackbar', () => ({ showSnackbar: vi.fn() }));
+vi.mock('#lib/util/volume-sidecars.js', () => ({ downloadFileBlob: vi.fn() }));
+vi.mock('#lib/util/modals.js', () => ({ promptConfirmation: vi.fn() }));
+vi.mock('#lib/util/snackbar.js', () => ({ showSnackbar: vi.fn() }));
 
 import LayerNameModal from '../LayerNameModal.svelte';
 import { promptLayerName } from '../layer-actions';

@@ -1,19 +1,19 @@
 <script lang="ts">
-  import { currentVolume, currentVolumeData } from '$lib/catalog';
-  import { nav, routeParams } from '$lib/util/hash-router';
-  import { getCharCount } from '$lib/util/count-chars';
+  import { currentVolume, currentVolumeData } from '#lib/catalog/index.js';
+  import { nav, routeParams } from '#lib/util/hash-router.js';
+  import { getCharCount } from '#lib/util/count-chars.js';
   import { Button, Alert } from 'flowbite-svelte';
   import { ArrowLeftOutline, ClipboardOutline, CheckOutline } from 'flowbite-svelte-icons';
   import { Spinner } from 'flowbite-svelte';
   import { onMount } from 'svelte';
-  import type { VolumeData, VolumeMetadata } from '$lib/types';
-  import { personalizedReadingSpeed } from '$lib/settings/reading-speed';
-  import { calculateEstimatedTime } from '$lib/util/reading-speed';
-  import { preferredTitleLanguage } from '$lib/settings/settings';
-  import { seriesMetadataMap } from '$lib/metadata/store';
-  import { normalizeSeriesKey } from '$lib/metadata/series-key';
-  import { resolveDisplayTitle } from '$lib/metadata/display-title';
-  import { needsDownload } from '$lib/catalog/volume-state';
+  import type { VolumeData, VolumeMetadata } from '#lib/types/index.js';
+  import { personalizedReadingSpeed } from '#lib/settings/reading-speed.js';
+  import { calculateEstimatedTime } from '#lib/util/reading-speed.js';
+  import { preferredTitleLanguage } from '#lib/settings/settings.js';
+  import { seriesMetadataMap } from '#lib/metadata/store.js';
+  import { normalizeSeriesKey } from '#lib/metadata/series-key.js';
+  import { resolveDisplayTitle } from '#lib/metadata/display-title.js';
+  import { needsDownload } from '#lib/catalog/volume-state.js';
 
   let volumeId = $derived($routeParams.volume || '');
   let volume = $derived($currentVolume);

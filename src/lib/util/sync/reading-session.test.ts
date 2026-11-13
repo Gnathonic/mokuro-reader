@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { noteReaderClosed, noteReaderOpened } from '$lib/positions/reader-open';
+import { noteReaderClosed, noteReaderOpened } from '#lib/positions/reader-open.js';
 import {
   clearVolumeDataDeferred,
   noteVolumeDataDeferred,

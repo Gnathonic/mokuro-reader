@@ -4,7 +4,7 @@
  * the store all ask the same question, and none of them should have to pull in
  * Dexie to do it.
  */
-import type { VolumeOcrLayerKind } from '$lib/types';
+import type { VolumeOcrLayerKind } from '#lib/types/index.js';
 import { EDIT_LAYER_ID, isCuratedLayerId, isServerKeepsakeLayerId } from './layer-names';
 
 const TRANSLATION_ID_RE = /^tr-[a-z0-9-]+$/;

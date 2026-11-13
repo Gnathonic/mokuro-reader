@@ -1,14 +1,14 @@
-import { isUntouchedUpgradeLayer } from '$lib/catalog/mokuro-hash';
-import { db } from '$lib/catalog/db';
-import { listLayersWithPages } from '$lib/catalog/layer-store';
-import { mainSidecarPagesForCloud } from '$lib/catalog/main-sidecar';
-import type { VolumeMetadata } from '$lib/types';
-import { getSeriesIndex } from '$lib/metadata/series-index';
-import { normalizeSeriesKey } from '$lib/metadata/series-key';
-import { buildSeriesFileFrom, type SeriesFile } from '$lib/metadata/series-file';
-import { getSeriesMetadataForTitle } from '$lib/metadata/store';
+import { isUntouchedUpgradeLayer } from '#lib/catalog/mokuro-hash.js';
+import { db } from '#lib/catalog/db.js';
+import { listLayersWithPages } from '#lib/catalog/layer-store.js';
+import { mainSidecarPagesForCloud } from '#lib/catalog/main-sidecar.js';
+import type { VolumeMetadata } from '#lib/types/index.js';
+import { getSeriesIndex } from '#lib/metadata/series-index.js';
+import { normalizeSeriesKey } from '#lib/metadata/series-key.js';
+import { buildSeriesFileFrom, type SeriesFile } from '#lib/metadata/series-file.js';
+import { getSeriesMetadataForTitle } from '#lib/metadata/store.js';
 import { buildLayerMokuroMetadata, buildPrimaryMokuroMetadata } from './mokuro-metadata';
-import { buildPageCharCounts } from '$lib/catalog/page-char-counts';
+import { buildPageCharCounts } from '#lib/catalog/page-char-counts.js';
 import { layerSidecarName } from './sync/syncable-file';
 
 export interface VolumeSidecarFiles {

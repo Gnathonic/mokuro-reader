@@ -1,5 +1,5 @@
 /// <reference types="@sveltejs/kit" />
-import { version } from '$app/environment';
+import { version } from '$app/env';
 import { assets, immutable } from '$app/manifest';
 import { resolve } from '$app/paths';
 

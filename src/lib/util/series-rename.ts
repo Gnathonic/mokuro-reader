@@ -2,13 +2,16 @@
  * Series rename functionality for changing series titles
  */
 
-import { db } from '$lib/catalog/db';
-import { volumes as volumeDataStore } from '$lib/settings/volume-data';
-import { unifiedCloudManager, type SeriesRenameResult } from '$lib/util/sync/unified-cloud-manager';
-import { ProviderError } from '$lib/util/sync/provider-interface';
-import { sanitizeTitleSegment } from '$lib/util/sanitize-title';
+import { db } from '#lib/catalog/db.js';
+import { volumes as volumeDataStore } from '#lib/settings/volume-data.js';
+import {
+  unifiedCloudManager,
+  type SeriesRenameResult
+} from '#lib/util/sync/unified-cloud-manager.js';
+import { ProviderError } from '#lib/util/sync/provider-interface.js';
+import { sanitizeTitleSegment } from '#lib/util/sanitize-title.js';
 import { get } from 'svelte/store';
-import type { VolumeMetadata } from '$lib/types';
+import type { VolumeMetadata } from '#lib/types/index.js';
 
 export interface SeriesInfo {
   seriesTitle: string;
@@ -273,7 +276,7 @@ export async function commitLocalSeriesRename(
   });
 
   if (statsUuids.length > 0) {
-    const { updateVolumeSeriesTitle } = await import('$lib/settings/volume-data');
+    const { updateVolumeSeriesTitle } = await import('#lib/settings/volume-data.js');
     for (const volumeUuid of statsUuids) updateVolumeSeriesTitle(volumeUuid, newTitle);
   }
 
@@ -283,13 +286,13 @@ export async function commitLocalSeriesRename(
   // moved.
   if (volumeUuids.length === 0) return;
   try {
-    const { moveSeriesMetadataKey } = await import('$lib/metadata/store');
+    const { moveSeriesMetadataKey } = await import('#lib/metadata/store.js');
     await moveSeriesMetadataKey(oldTitle, newTitle);
   } catch (error) {
     console.warn('Failed to move series metadata after rename:', error);
   }
   try {
-    const { moveSeriesReadingStateKey } = await import('$lib/settings/series-data');
+    const { moveSeriesReadingStateKey } = await import('#lib/settings/series-data.js');
     moveSeriesReadingStateKey(oldTitle, newTitle);
   } catch (error) {
     console.warn('Failed to move series reading state after rename:', error);

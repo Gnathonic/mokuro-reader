@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { nightModeActive } from '$lib/settings';
-  import { browser } from '$app/environment';
+  import { nightModeActive } from '#lib/settings/index.js';
+  import { browser } from '$app/env';
   import { onDestroy } from 'svelte';
 
   // The colour maths lives in src/lib/styles/night-mode.css, which explains

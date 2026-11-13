@@ -4,23 +4,23 @@ import 'fake-indexeddb/auto';
 // The app's real schema under a private database name. Declared from the shared
 // definition rather than a hand-written subset: a fixture that quietly holds a
 // different table set from production is a test that stops testing production.
-vi.mock('$lib/catalog/db', async () => {
+vi.mock('#lib/catalog/db.js', async () => {
   const { default: Dexie } = await import('dexie');
-  const { declareMokuroSchema } = await import('$lib/catalog/db-schema');
+  const { declareMokuroSchema } = await import('#lib/catalog/db-schema.js');
   const db: any = new Dexie('volume-sidecars-test');
   declareMokuroSchema(db);
   return { db };
 });
 
-import { db } from '$lib/catalog/db';
-import { clearAllLayers, putLayerWithPages } from '$lib/catalog/layer-store';
+import { db } from '#lib/catalog/db.js';
+import { clearAllLayers, putLayerWithPages } from '#lib/catalog/layer-store.js';
 import {
   buildSeriesFileForExport,
   loadVolumeLayerFiles,
   loadVolumeSidecars
 } from './volume-sidecars';
-import { createEmptySeriesMetadata, toStoredSeriesMetadata } from '$lib/metadata/types';
-import type { VolumeMetadata } from '$lib/types';
+import { createEmptySeriesMetadata, toStoredSeriesMetadata } from '#lib/metadata/types.js';
+import type { VolumeMetadata } from '#lib/types/index.js';
 
 const volume: VolumeMetadata = {
   mokuro_version: '0.2.1',

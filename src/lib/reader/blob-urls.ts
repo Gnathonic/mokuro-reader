@@ -12,7 +12,7 @@
  * last holder lets go, so a holder that is replaced in the same frame (a
  * remount) picks the URL back up instead of minting a new one.
  */
-import { displayableImageBlob } from '$lib/util/raster-image';
+import { displayableImageBlob } from '#lib/util/raster-image.js';
 
 export const BLOB_URL_GRACE_MS = 5000;
 

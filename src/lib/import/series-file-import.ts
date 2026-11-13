@@ -14,17 +14,17 @@
  * volumes still import.
  */
 
-import { getSeriesIndex, putSeriesIndex } from '$lib/metadata/series-index';
-import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
+import { getSeriesIndex, putSeriesIndex } from '#lib/metadata/series-index.js';
+import { normalizeSeriesKey, normalizeVolumeTitleKey } from '#lib/metadata/series-key.js';
 import {
   SERIES_FILE_NAME,
   mergeSeriesFileForCache,
   parseSeriesFile,
   type SeriesFile
-} from '$lib/metadata/series-file';
-import { scheduleSeriesFileWrite } from '$lib/metadata/series-file-sync';
-import { upsertFromSeriesFile } from '$lib/metadata/store';
-import { sanitizeTitleSegment } from '$lib/util/sanitize-title';
+} from '#lib/metadata/series-file.js';
+import { scheduleSeriesFileWrite } from '#lib/metadata/series-file-sync.js';
+import { upsertFromSeriesFile } from '#lib/metadata/store.js';
+import { sanitizeTitleSegment } from '#lib/util/sanitize-title.js';
 import { saveVolume, storedTitleSegment, type SavedVolumeData } from './database';
 import type { ProcessedVolume } from './types';
 

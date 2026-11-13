@@ -1,4 +1,4 @@
-import type { Page } from '$lib/types';
+import type { Page } from '#lib/types/index.js';
 
 /**
  * @license BSD-3-Clause

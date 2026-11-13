@@ -6,17 +6,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import 'fake-indexeddb/auto';
 import { writable, type Writable } from 'svelte/store';
-import type { Page } from '$lib/types';
-import type { SyncProvider } from '$lib/util/sync/provider-interface';
+import type { Page } from '#lib/types/index.js';
+import type { SyncProvider } from '#lib/util/sync/provider-interface.js';
 
-vi.mock('$app/environment', () => ({ browser: true, dev: false, building: false }));
-vi.mock('$lib/catalog/thumbnails', () => ({ generateThumbnail: vi.fn() }));
-vi.mock('$lib/util/progress-tracker', () => ({
+vi.mock('$app/env', () => ({ browser: true, dev: false, building: false }));
+vi.mock('#lib/catalog/thumbnails.js', () => ({ generateThumbnail: vi.fn() }));
+vi.mock('#lib/util/progress-tracker.js', () => ({
   progressTrackerStore: { addProcess: vi.fn(), updateProcess: vi.fn(), removeProcess: vi.fn() }
 }));
-vi.mock('$lib/catalog/db', async () => {
+vi.mock('#lib/catalog/db.js', async () => {
   const { CatalogDexieV3 } =
-    await vi.importActual<typeof import('$lib/catalog/db-v3')>('$lib/catalog/db-v3');
+    await vi.importActual<typeof import('#lib/catalog/db-v3.js')>('#lib/catalog/db-v3.js');
   return { db: new CatalogDexieV3('mokuro_v3_rig_driver_test') };
 });
 
@@ -29,7 +29,7 @@ const provider = vi.hoisted(() => ({
   getStatus: vi.fn(() => ({ serverCompilesMetadata: true }) as Record<string, unknown>)
 }));
 
-vi.mock('$lib/util/sync/provider-manager', () => ({
+vi.mock('#lib/util/sync/provider-manager.js', () => ({
   providerManager: {
     getOrLoadProvider: vi.fn(async () => {
       h.calls.push('getOrLoadProvider');
@@ -43,7 +43,7 @@ vi.mock('$lib/util/sync/provider-manager', () => ({
     getActiveProvider: vi.fn(() => null as unknown)
   }
 }));
-vi.mock('$lib/util/sync/unified-cloud-manager', async () => {
+vi.mock('#lib/util/sync/unified-cloud-manager.js', async () => {
   const { writable } = await import('svelte/store');
   return {
     unifiedCloudManager: {
@@ -73,15 +73,15 @@ vi.mock('$lib/util/sync/unified-cloud-manager', async () => {
     }
   };
 });
-vi.mock('$lib/util/sync/active-provider-status', async () => {
+vi.mock('#lib/util/sync/active-provider-status.js', async () => {
   const { writable } = await import('svelte/store');
   return { activeProviderStatus: writable<Record<string, unknown> | null>(null) };
 });
-vi.mock('$lib/catalog/cloud-bunko-marker', () => ({
+vi.mock('#lib/catalog/cloud-bunko-marker.js', () => ({
   cloudBunkoStatus: vi.fn(() => undefined),
   cloudBunkoMergesDuplicates: vi.fn(() => false)
 }));
-vi.mock('$lib/metadata/layer-sync', () => ({
+vi.mock('#lib/metadata/layer-sync.js', () => ({
   scheduleLayerPush: vi.fn(),
   publishCuratedLayer: vi.fn(async () => 'published'),
   pullOwnEditLayerBeforeEdit: vi.fn(async () => 'none' as const),
@@ -90,41 +90,41 @@ vi.mock('$lib/metadata/layer-sync', () => ({
   deleteCloudLayerFile: vi.fn(),
   unpublishCuratedLayer: vi.fn()
 }));
-vi.mock('$lib/metadata/series-file-sync', () => ({
+vi.mock('#lib/metadata/series-file-sync.js', () => ({
   settleSeriesFileWrites: vi.fn(async () => {
     h.calls.push('settleSeriesFileWrites');
   }),
   seriesFileWritesPending: vi.fn(() => false)
 }));
-vi.mock('$lib/metadata/catalog-file-sync', () => ({
+vi.mock('#lib/metadata/catalog-file-sync.js', () => ({
   settleCatalogFileWrites: vi.fn(async () => {
     h.calls.push('settleCatalogFileWrites');
   }),
   catalogFileWritePending: vi.fn(() => false)
 }));
-vi.mock('$lib/metadata/series-backfill', () => ({
+vi.mock('#lib/metadata/series-backfill.js', () => ({
   settleSeriesBackfills: vi.fn(async () => {
     h.calls.push('settleSeriesBackfills');
   }),
   seriesBackfillsPending: vi.fn(() => false)
 }));
-vi.mock('$lib/metadata/spine-offsets', async () => ({
-  ...(await vi.importActual<typeof import('$lib/metadata/spine-offsets')>(
-    '$lib/metadata/spine-offsets'
+vi.mock('#lib/metadata/spine-offsets.js', async () => ({
+  ...(await vi.importActual<typeof import('#lib/metadata/spine-offsets.js')>(
+    '#lib/metadata/spine-offsets.js'
   )),
   scheduleSpineOffsetWrite: vi.fn(async () => undefined),
   flushSpineOffsetWrites: vi.fn(async () => {})
 }));
-vi.mock('$lib/reading-history/history-db', () => ({
+vi.mock('#lib/reading-history/history-db.js', () => ({
   historyDb: () => ({
     devices: { toArray: async () => [{ device: 'dev-b' }, { device: 'dev-a' }] }
   })
 }));
-vi.mock('$lib/reading-history/history-sync', () => ({
+vi.mock('#lib/reading-history/history-sync.js', () => ({
   historySyncAllowed: vi.fn(() => true)
 }));
-vi.mock('$lib/reader/paged-progress', () => ({ recordPagedPageView: vi.fn() }));
-vi.mock('$lib/settings/volume-data', async () => {
+vi.mock('#lib/reader/paged-progress.js', () => ({ recordPagedPageView: vi.fn() }));
+vi.mock('#lib/settings/volume-data.js', async () => {
   const { writable } = await import('svelte/store');
   return {
     volumes: writable<Record<string, unknown>>({}),
@@ -134,7 +134,7 @@ vi.mock('$lib/settings/volume-data', async () => {
     })
   };
 });
-vi.mock('$lib/import', () => ({
+vi.mock('#lib/import/index.js', () => ({
   deleteVolumeCompletely: vi.fn(async () => {
     h.calls.push('deleteVolumeCompletely');
   }),
@@ -152,7 +152,7 @@ const bq = vi.hoisted(() => ({
   queued: [] as Array<Record<string, unknown>>,
   settle: null as null | (() => void)
 }));
-vi.mock('$lib/util/backup-queue', () => ({
+vi.mock('#lib/util/backup-queue.js', () => ({
   backupQueue: {
     queueVolumeForBackup: vi.fn((volume: Record<string, unknown>) => {
       h.calls.push('queueVolumeForBackup');
@@ -170,14 +170,14 @@ vi.mock('$lib/util/backup-queue', () => ({
       })
   )
 }));
-vi.mock('$lib/util/upload-failures', async () => {
+vi.mock('#lib/util/upload-failures.js', async () => {
   const { writable } = await import('svelte/store');
   return { uploadFailures: writable<Record<string, unknown>>({}) };
 });
-vi.mock('$lib/util/hash-router', () => ({ nav: { toReader: vi.fn(), toSeries: vi.fn() } }));
+vi.mock('#lib/util/hash-router.js', () => ({ nav: { toReader: vi.fn(), toSeries: vi.fn() } }));
 /** The download queue as the cards see it; a spec plays the worker (`finishDownload`). */
 const dq = vi.hoisted(() => ({ queued: [] as Array<Record<string, unknown>> }));
-vi.mock('$lib/util/download-queue', async () => {
+vi.mock('#lib/util/download-queue.js', async () => {
   const { writable } = await import('svelte/store');
   const store = writable<Array<{ volumeUuid: string }>>([]);
   return {
@@ -192,14 +192,14 @@ vi.mock('$lib/util/download-queue', async () => {
     }
   };
 });
-vi.mock('$lib/util/series-rename', () => ({
+vi.mock('#lib/util/series-rename.js', () => ({
   executeRenameSeries: vi.fn(async (_old: string, next: string) => ({
     finalTitle: next,
     renamedCount: 1,
     failures: []
   }))
 }));
-vi.mock('$lib/util/volume-editor', () => ({
+vi.mock('#lib/util/volume-editor.js', () => ({
   renameVolumeInCloud: vi.fn(async () => {
     h.calls.push('renameVolumeInCloud');
   }),
@@ -210,43 +210,43 @@ vi.mock('$lib/util/volume-editor', () => ({
     h.calls.push('updateVolumeStats');
   })
 }));
-vi.mock('$lib/util/sync/metadata-permissions', () => ({
+vi.mock('#lib/util/sync/metadata-permissions.js', () => ({
   canDeleteSeriesOnServer: vi.fn(() => ({ allowed: true }))
 }));
-vi.mock('$lib/util/volume-sidecars', () => ({ downloadFileBlob: vi.fn() }));
-vi.mock('$lib/util/modals', () => ({ promptConfirmation: vi.fn() }));
-vi.mock('$lib/util/snackbar', () => ({ showSnackbar: vi.fn() }));
+vi.mock('#lib/util/volume-sidecars.js', () => ({ downloadFileBlob: vi.fn() }));
+vi.mock('#lib/util/modals.js', () => ({ promptConfirmation: vi.fn() }));
+vi.mock('#lib/util/snackbar.js', () => ({ showSnackbar: vi.fn() }));
 
-import { db } from '$lib/catalog/db';
+import { db } from '#lib/catalog/db.js';
 import {
   clearAllLayers,
   getLayerPages,
   listLayerIds,
   putLayerWithPages
-} from '$lib/catalog/layer-store';
-import { cloudBunkoMergesDuplicates, cloudBunkoStatus } from '$lib/catalog/cloud-bunko-marker';
-import { publishCuratedLayer, pullOwnEditLayerBeforeEdit } from '$lib/metadata/layer-sync';
-import { flushSpineOffsetWrites, scheduleSpineOffsetWrite } from '$lib/metadata/spine-offsets';
-import { seriesFileWritesPending } from '$lib/metadata/series-file-sync';
-import { historySyncAllowed } from '$lib/reading-history/history-sync';
-import { recordPagedPageView } from '$lib/reader/paged-progress';
-import { updateVolumeSetting, volumes as volumeDataStore } from '$lib/settings/volume-data';
-import { nav } from '$lib/util/hash-router';
-import { executeRenameSeries } from '$lib/util/series-rename';
-import { activeProviderStatus } from '$lib/util/sync/active-provider-status';
-import { canDeleteSeriesOnServer } from '$lib/util/sync/metadata-permissions';
-import { providerManager } from '$lib/util/sync/provider-manager';
-import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
-import { renameVolumeInCloud, updateVolumeInDb } from '$lib/util/volume-editor';
-import { downloadQueue } from '$lib/util/download-queue';
-import { queueStatusStore } from '$lib/catalog/server-ocr-pending';
-import { importFiles } from '$lib/import';
-import { getImportUiBridge } from '$lib/import/import-ui';
-import type { ReviewGroup } from '$lib/import/image-only-review';
-import { reviewSession, type GroupDecision } from '$lib/import/review-session';
-import { backupQueue } from '$lib/util/backup-queue';
-import { uploadFailures } from '$lib/util/upload-failures';
-import { folderTestHandle, setFolderTestHandle } from '$lib/util/sync/cloud-test-hooks';
+} from '#lib/catalog/layer-store.js';
+import { cloudBunkoMergesDuplicates, cloudBunkoStatus } from '#lib/catalog/cloud-bunko-marker.js';
+import { publishCuratedLayer, pullOwnEditLayerBeforeEdit } from '#lib/metadata/layer-sync.js';
+import { flushSpineOffsetWrites, scheduleSpineOffsetWrite } from '#lib/metadata/spine-offsets.js';
+import { seriesFileWritesPending } from '#lib/metadata/series-file-sync.js';
+import { historySyncAllowed } from '#lib/reading-history/history-sync.js';
+import { recordPagedPageView } from '#lib/reader/paged-progress.js';
+import { updateVolumeSetting, volumes as volumeDataStore } from '#lib/settings/volume-data.js';
+import { nav } from '#lib/util/hash-router.js';
+import { executeRenameSeries } from '#lib/util/series-rename.js';
+import { activeProviderStatus } from '#lib/util/sync/active-provider-status.js';
+import { canDeleteSeriesOnServer } from '#lib/util/sync/metadata-permissions.js';
+import { providerManager } from '#lib/util/sync/provider-manager.js';
+import { unifiedCloudManager } from '#lib/util/sync/unified-cloud-manager.js';
+import { renameVolumeInCloud, updateVolumeInDb } from '#lib/util/volume-editor.js';
+import { downloadQueue } from '#lib/util/download-queue.js';
+import { queueStatusStore } from '#lib/catalog/server-ocr-pending.js';
+import { importFiles } from '#lib/import/index.js';
+import { getImportUiBridge } from '#lib/import/import-ui.js';
+import type { ReviewGroup } from '#lib/import/image-only-review.js';
+import { reviewSession, type GroupDecision } from '#lib/import/review-session.js';
+import { backupQueue } from '#lib/util/backup-queue.js';
+import { uploadFailures } from '#lib/util/upload-failures.js';
+import { folderTestHandle, setFolderTestHandle } from '#lib/util/sync/cloud-test-hooks.js';
 import { RIG_CAPABILITIES, install } from './rig-driver';
 
 const statusStore = activeProviderStatus as unknown as Writable<Record<string, unknown> | null>;

@@ -1,9 +1,9 @@
 <script lang="ts">
-  import { confirmationPopupStore } from '$lib/util';
+  import { confirmationPopupStore } from '#lib/util/index.js';
   import { Button, Modal, Checkbox } from 'flowbite-svelte';
   import { ExclamationCircleOutline } from 'flowbite-svelte-icons';
   import { onMount } from 'svelte';
-  import { browser } from '$app/environment';
+  import { browser } from '$app/env';
 
   let open = $state(false);
   let checkboxValue = $state(false);

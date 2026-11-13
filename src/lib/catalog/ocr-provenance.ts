@@ -23,7 +23,7 @@
  * Pure and worker-safe: the backup Worker builds primaries too.
  */
 import type Dexie from 'dexie';
-import type { Page } from '$lib/types';
+import type { Page } from '#lib/types/index.js';
 import { sha256Hex } from './mokuro-hash';
 import { getLayerPages } from './layer-store';
 

@@ -1,9 +1,9 @@
 import { providerManager } from './provider-manager';
 import { unifiedCloudManager } from './unified-cloud-manager';
-import { driveApiClient } from '$lib/util/sync/providers/google-drive/api-client';
-import { tokenManager } from '$lib/util/sync/providers/google-drive/token-manager';
-import { hasPendingCallback } from '$lib/util/sync/providers/google-drive/auth-backend';
-import { preloadGoogleScripts } from '$lib/util/sync/providers/google-drive/google-scripts';
+import { driveApiClient } from '#lib/util/sync/providers/google-drive/api-client.js';
+import { tokenManager } from '#lib/util/sync/providers/google-drive/token-manager.js';
+import { hasPendingCallback } from '#lib/util/sync/providers/google-drive/auth-backend.js';
+import { preloadGoogleScripts } from '#lib/util/sync/providers/google-drive/google-scripts.js';
 import { getConfiguredProviderType } from './provider-detection';
 import type { SyncProvider, ProviderType } from './provider-interface';
 
@@ -103,7 +103,7 @@ export async function initializeProviders(): Promise<void> {
           providerManager.updateStatus();
 
           // Check if auto re-auth is enabled
-          const { miscSettings } = await import('$lib/settings/misc');
+          const { miscSettings } = await import('#lib/settings/misc.js');
           const { get } = await import('svelte/store');
           const settings = get(miscSettings);
 

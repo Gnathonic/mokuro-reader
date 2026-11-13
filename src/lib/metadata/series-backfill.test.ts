@@ -9,7 +9,7 @@ import { gzipSync } from 'node:zlib';
 // @ts-expect-error no type declarations for node:buffer in this project
 import { Blob as NodeBlob, Buffer } from 'node:buffer';
 import { readable } from 'svelte/store';
-import type { CloudFileMetadata } from '$lib/util/sync/provider-interface';
+import type { CloudFileMetadata } from '#lib/util/sync/provider-interface.js';
 import type { SeriesFile, SeriesFileVolume } from './series-file';
 
 /** The one shape `unifiedCloudManager.writeSeriesFile`'s mock is ever called with here. */
@@ -34,7 +34,7 @@ let status = {
     { isReadOnly?: boolean; serverCompilesMetadata?: boolean } | null
   >
 };
-vi.mock('$lib/util/sync/provider-manager', () => ({
+vi.mock('#lib/util/sync/provider-manager.js', () => ({
   providerManager: {
     get status() {
       return readable(status);
@@ -60,7 +60,7 @@ const previewSeriesFileBuild = vi.fn(
   ): Promise<{ built: SeriesFile | undefined; cloudTitleKeys: Set<string> } | undefined> =>
     undefined
 );
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: {
     getActiveProvider: (...a: Parameters<typeof getActiveProvider>) => getActiveProvider(...a),
     resolveCloudFolderTitle: (...a: Parameters<typeof resolveCloudFolderTitle>) =>
@@ -98,13 +98,13 @@ const materializeSeriesVolumes = vi.fn(
     cloudVolumeTitles: Set<string>;
   }) => 0
 );
-vi.mock('$lib/catalog/materialize', () => ({
+vi.mock('#lib/catalog/materialize.js', () => ({
   materializeSeriesVolumes: (...a: Parameters<typeof materializeSeriesVolumes>) =>
     materializeSeriesVolumes(...a)
 }));
 
 const installCoversForSeries = vi.fn(async (_title: string) => 0);
-vi.mock('$lib/catalog/cover-install', () => ({
+vi.mock('#lib/catalog/cover-install.js', () => ({
   installCoversForSeries: (...a: Parameters<typeof installCoversForSeries>) =>
     installCoversForSeries(...a)
 }));
@@ -112,7 +112,7 @@ vi.mock('$lib/catalog/cover-install', () => ({
 const fetchCloudThumbnail = vi.fn(
   async (_volume: unknown) => null as { file: File; width: number; height: number } | null
 );
-vi.mock('$lib/catalog/cloud-thumbnails', () => ({
+vi.mock('#lib/catalog/cloud-thumbnails.js', () => ({
   fetchCloudThumbnail: (...a: Parameters<typeof fetchCloudThumbnail>) => fetchCloudThumbnail(...a)
 }));
 
@@ -121,7 +121,7 @@ vi.mock('$lib/catalog/cloud-thumbnails', () => ({
 // the `db` stand-in below only models `volumes` — so a refresh's routing and
 // its CACHE KEY are both directly assertable.
 const putCloudCoversMock = vi.hoisted(() => vi.fn());
-vi.mock('$lib/catalog/cloud-covers', () => ({
+vi.mock('#lib/catalog/cloud-covers.js', () => ({
   putCloudCovers: (...a: unknown[]) => putCloudCoversMock(...a)
 }));
 
@@ -134,7 +134,7 @@ const { volumeRows, volumesToArray } = vi.hoisted(() => ({
   volumeRows: [] as Record<string, unknown>[],
   volumesToArray: vi.fn(async () => [] as Record<string, unknown>[])
 }));
-vi.mock('$lib/catalog/db', () => ({
+vi.mock('#lib/catalog/db.js', () => ({
   db: {
     volumes: {
       toArray: (...a: Parameters<typeof volumesToArray>) => volumesToArray(...a),
@@ -202,7 +202,7 @@ const readingHistory = vi.hoisted(() => {
     }
   };
 });
-vi.mock('$lib/settings/volume-data', () => ({
+vi.mock('#lib/settings/volume-data.js', () => ({
   volumes: readingHistory.store
 }));
 
@@ -229,7 +229,7 @@ vi.mock('./write-slot', async (importOriginal) => {
   };
 });
 
-import { _resetCoverServiceForTests, _setRetryDelaysForTests } from '$lib/catalog/cover-service';
+import { _resetCoverServiceForTests, _setRetryDelaysForTests } from '#lib/catalog/cover-service.js';
 import {
   _resetSeriesBackfillForTests,
   backfillNewlyLinkedSeries,
@@ -239,8 +239,8 @@ import {
   settleSeriesBackfills
 } from './series-backfill';
 import { buildSeriesFile, parseSeriesFile, stringifySeriesFile } from './series-file';
-import { generateDeterministicUUID } from '$lib/util/series-extraction';
-import type { VolumeMetadata } from '$lib/types';
+import { generateDeterministicUUID } from '#lib/util/series-extraction.js';
+import type { VolumeMetadata } from '#lib/types/index.js';
 import { normalizeVolumeTitleKey } from './series-key';
 import { _resetWriteSlotForTests } from './write-slot';
 

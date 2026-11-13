@@ -1,4 +1,4 @@
-import { COVER_VIEWPORT_ROOT_MARGIN } from '$lib/catalog/cover-viewport';
+import { COVER_VIEWPORT_ROOT_MARGIN } from '#lib/catalog/cover-viewport.js';
 
 /**
  * The jsdom stand-in for `IntersectionObserver`, shared by every suite that

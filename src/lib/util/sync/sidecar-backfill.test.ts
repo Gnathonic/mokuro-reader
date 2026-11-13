@@ -4,8 +4,8 @@ import 'fake-indexeddb/auto';
 // `IDBDatabase.transaction` wrapper at module load, and Dexie binds that method
 // once when it opens a database — so it must be in place before the Dexie
 // instance below is ever used. See `idb-op-counter.ts`.
-import { countIdbOps } from '$lib/catalog/__tests__/idb-op-counter';
-import type { VolumeMetadata } from '$lib/types';
+import { countIdbOps } from '#lib/catalog/__tests__/idb-op-counter.js';
+import type { VolumeMetadata } from '#lib/types/index.js';
 
 /**
  * The lazy per-volume sidecar backfill (`sidecar-backfill.ts`): installed
@@ -207,9 +207,9 @@ vi.mock('../upload-worker-credentials', () => ({
  * A REAL Dexie over `fake-indexeddb`, not a stub — see the module doc above
  * for why this suite needs the real thing rather than a hand-rolled `db`.
  */
-vi.mock('$lib/catalog/db', async () => {
+vi.mock('#lib/catalog/db.js', async () => {
   const { CatalogDexieV3 } =
-    await vi.importActual<typeof import('$lib/catalog/db-v3')>('$lib/catalog/db-v3');
+    await vi.importActual<typeof import('#lib/catalog/db-v3.js')>('#lib/catalog/db-v3.js');
   const db = new CatalogDexieV3('mokuro_v3_sidecar_backfill_test');
   // `saveVolume` (used by the import-feed tests below) fires a background
   // `processThumbnails` whenever a volume lands without a cover. Its
@@ -219,20 +219,20 @@ vi.mock('$lib/catalog/db', async () => {
   db.processThumbnails = async () => {};
   return { db };
 });
-vi.mock('$lib/metadata/series-backfill', () => ({
+vi.mock('#lib/metadata/series-backfill.js', () => ({
   hasWritableNonServerProvider: () => gate.writable
 }));
-vi.mock('$lib/metadata/series-file-sync', () => ({ scheduleSeriesFileWrite }));
-vi.mock('$lib/util/download-queue', () => ({ downloadQueue: downloadQueueMock }));
+vi.mock('#lib/metadata/series-file-sync.js', () => ({ scheduleSeriesFileWrite }));
+vi.mock('#lib/util/download-queue.js', () => ({ downloadQueue: downloadQueueMock }));
 // `loadVolumeSidecars` stays REAL (it reads the mocked db), so the `.mokuro`
 // asserted below is byte-for-byte what the backup/export paths serialize.
 // These two are imported by `volume-sidecars.ts` for its series-file export
 // helper only; stubbed so their own import graphs stay out of this suite.
-vi.mock('$lib/metadata/store', () => ({ getSeriesMetadataForTitle: vi.fn(async () => []) }));
-vi.mock('$lib/metadata/series-index', () => ({ getSeriesIndex: vi.fn(async () => undefined) }));
+vi.mock('#lib/metadata/store.js', () => ({ getSeriesMetadataForTitle: vi.fn(async () => []) }));
+vi.mock('#lib/metadata/series-index.js', () => ({ getSeriesIndex: vi.fn(async () => undefined) }));
 
-import { db } from '$lib/catalog/db';
-import { clearAllLayers, getLayerWithPages, putLayerWithPages } from '$lib/catalog/layer-store';
+import { db } from '#lib/catalog/db.js';
+import { clearAllLayers, getLayerWithPages, putLayerWithPages } from '#lib/catalog/layer-store.js';
 import {
   _drainForTests,
   _resetSidecarBackfillForTests,
@@ -243,15 +243,15 @@ import {
 // REAL import pipeline pieces for the import-feed tests: `saveVolume` writes
 // through the mocked-to-real Dexie above, and the sidecar builders are the
 // production serializers whose byte-identity the tests below pin.
-import { saveVolume } from '$lib/import/database';
-import { _resetUploadRecordsForTests } from '$lib/catalog/mokuro-upload-record';
-import type { ProcessedVolume } from '$lib/import/types';
-import { buildVolumeSidecarsFromData, loadVolumeSidecars } from '$lib/util/volume-sidecars';
+import { saveVolume } from '#lib/import/database.js';
+import { _resetUploadRecordsForTests } from '#lib/catalog/mokuro-upload-record.js';
+import type { ProcessedVolume } from '#lib/import/types.js';
+import { buildVolumeSidecarsFromData, loadVolumeSidecars } from '#lib/util/volume-sidecars.js';
 // The WORKER feed's serializer (runs inside `unified-file-worker.ts` in
 // production) and the real main schema, for the byte-identity three-way below.
-import { generateVolumeSidecarsFromDb } from '$lib/util/compress-volume';
-import { CatalogDexieV3 } from '$lib/catalog/db-v3';
-import { provenanceFromParsed, type OcrProvenance } from '$lib/catalog/ocr-provenance';
+import { generateVolumeSidecarsFromDb } from '#lib/util/compress-volume.js';
+import { CatalogDexieV3 } from '#lib/catalog/db-v3.js';
+import { provenanceFromParsed, type OcrProvenance } from '#lib/catalog/ocr-provenance.js';
 
 // ---------------------------------------------------------------------------
 // Helpers

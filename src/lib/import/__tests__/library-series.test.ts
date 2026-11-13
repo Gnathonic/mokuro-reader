@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import 'fake-indexeddb/auto';
 
-vi.mock('$lib/catalog/db', async () => {
+vi.mock('#lib/catalog/db.js', async () => {
   const { default: Dexie } = await import('dexie');
   const db: any = new Dexie('library-series-test');
   db.version(1).stores({
@@ -11,7 +11,7 @@ vi.mock('$lib/catalog/db', async () => {
   return { db };
 });
 
-import { db } from '$lib/catalog/db';
+import { db } from '#lib/catalog/db.js';
 import {
   existingVolumeCount,
   listLibrarySeries,
@@ -20,7 +20,7 @@ import {
   settleVolumesInFlight
 } from '../library-series';
 import { groupCandidates } from '../image-only-review';
-import { generateDeterministicUUID } from '$lib/util/series-extraction';
+import { generateDeterministicUUID } from '#lib/util/series-extraction.js';
 
 const row = (volume_uuid: string, series_title: string, extra: object = {}) => ({
   volume_uuid,

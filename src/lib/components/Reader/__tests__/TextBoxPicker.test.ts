@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
-import type { Page } from '$lib/types';
+import type { Page } from '#lib/types/index.js';
 
 const h = vi.hoisted(() => ({ showSnackbar: vi.fn() }));
 
-vi.mock('$lib/settings', async () => {
+vi.mock('#lib/settings/index.js', async () => {
   const { writable } = await import('svelte/store');
   return {
     settings: writable({
@@ -17,9 +17,9 @@ vi.mock('$lib/settings', async () => {
   };
 });
 
-vi.mock('$lib/util', () => ({ showSnackbar: h.showSnackbar }));
+vi.mock('#lib/util/index.js', () => ({ showSnackbar: h.showSnackbar }));
 
-vi.mock('$lib/anki-connect', () => ({
+vi.mock('#lib/anki-connect/index.js', () => ({
   expandTextBoxBounds: vi.fn(() => [0, 0, 10, 10]),
   extractFieldValues: vi.fn(),
   getCardAgeInMin: vi.fn(),
@@ -32,8 +32,8 @@ vi.mock('$lib/anki-connect', () => ({
 
 import TextBoxPicker from '../TextBoxPicker.svelte';
 import { showTextBoxPicker } from '../text-box-picker';
-import { getLastCardInfo } from '$lib/anki-connect';
-import { settings } from '$lib/settings';
+import { getLastCardInfo } from '#lib/anki-connect/index.js';
+import { settings } from '#lib/settings/index.js';
 import { get, type Writable } from 'svelte/store';
 
 const settingsStore = settings as unknown as Writable<Record<string, any>>;

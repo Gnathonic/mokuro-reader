@@ -4,7 +4,7 @@ import {
   getDaysRemainingInPeriod,
   getExpectedProgressPercent
 } from '../goal-math';
-import type { PageTurn } from '$lib/settings/volume-data';
+import type { PageTurn } from '#lib/settings/volume-data.js';
 import { pinTimeZone } from './tz';
 
 const PERIOD_START = new Date(2026, 5, 1);

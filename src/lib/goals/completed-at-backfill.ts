@@ -1,5 +1,5 @@
-import { browser } from '$app/environment';
-import { isVolumeComplete } from '$lib/util/volume-helpers';
+import { browser } from '$app/env';
+import { isVolumeComplete } from '#lib/util/volume-helpers.js';
 import { get } from 'svelte/store';
 import { VolumeData, projectedTurnsOf, volumesWithTrash } from '../settings/volume-data';
 

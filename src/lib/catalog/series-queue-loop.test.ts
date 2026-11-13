@@ -4,7 +4,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
-import type { ControlFileResult, SyncProvider } from '$lib/util/sync/provider-interface';
+import type { ControlFileResult, SyncProvider } from '#lib/util/sync/provider-interface.js';
 import type { MarkerNodeRecord } from './cloud-bunko-marker';
 import {
   publishSeriesQueueSlice,

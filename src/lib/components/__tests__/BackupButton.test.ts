@@ -25,9 +25,9 @@ const deleteManagedVolume = vi.hoisted(() =>
 const canDeleteSeriesOnServer = vi.hoisted(() =>
   vi.fn((_series: string): { allowed: boolean; reason?: string } => ({ allowed: true }))
 );
-vi.mock('$lib/util/sync/metadata-permissions', () => ({ canDeleteSeriesOnServer }));
-vi.mock('$lib/util', () => ({ showSnackbar, promptConfirmation }));
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/util/sync/metadata-permissions.js', () => ({ canDeleteSeriesOnServer }));
+vi.mock('#lib/util/index.js', () => ({ showSnackbar, promptConfirmation }));
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: {
     cloudFiles: readable(new Map()),
     getCloudFile: (series: string, title: string) => getCloudFile(series, title),
@@ -39,7 +39,7 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
       deleteManagedVolume(series, title, uuid)
   }
 }));
-vi.mock('$lib/util/sync', () => ({
+vi.mock('#lib/util/sync/index.js', () => ({
   providerManager: {
     status: readable({
       hasAnyAuthenticated: true,
@@ -49,17 +49,17 @@ vi.mock('$lib/util/sync', () => ({
     })
   }
 }));
-vi.mock('$lib/util/backup-queue', () => ({
+vi.mock('#lib/util/backup-queue.js', () => ({
   backupQueue: { subscribe: readable([]).subscribe, queueVolumeForBackup },
   isVolumeInBackupQueue: () => false
 }));
-vi.mock('$lib/util/progress-tracker', () => ({
+vi.mock('#lib/util/progress-tracker.js', () => ({
   progressTrackerStore: readable({ processes: [] })
 }));
 
 import BackupButton from '../BackupButton.svelte';
-import { recordUploadFailure, resetUploadFailuresForTest } from '$lib/util/upload-failures';
-import type { VolumeMetadata } from '$lib/types';
+import { recordUploadFailure, resetUploadFailuresForTest } from '#lib/util/upload-failures.js';
+import type { VolumeMetadata } from '#lib/types/index.js';
 
 const volume = {
   volume_uuid: 'v9',

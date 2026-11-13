@@ -1,7 +1,7 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('$app/environment', () => ({ browser: true }));
-vi.mock('$lib/util/sync/providers/google-drive/token-manager', () => ({
+vi.mock('$app/env', () => ({ browser: true }));
+vi.mock('#lib/util/sync/providers/google-drive/token-manager.js', () => ({
   tokenManager: {
     isAuthenticated: vi.fn(() => true),
     requestNewToken: vi.fn(),
@@ -10,7 +10,7 @@ vi.mock('$lib/util/sync/providers/google-drive/token-manager', () => ({
     logout: vi.fn(async () => {})
   }
 }));
-vi.mock('$lib/util/sync/providers/google-drive/api-client', () => ({
+vi.mock('#lib/util/sync/providers/google-drive/api-client.js', () => ({
   driveApiClient: {
     initialize: vi.fn(async () => {}),
     listFiles: vi.fn(async () => []),
@@ -19,7 +19,7 @@ vi.mock('$lib/util/sync/providers/google-drive/api-client', () => ({
   },
   escapeNameForDriveQuery: (name: string) => name.replace(/\\/g, '\\\\').replace(/'/g, "\\'")
 }));
-vi.mock('$lib/util/sync/providers/google-drive/drive-files-cache', () => ({
+vi.mock('#lib/util/sync/providers/google-drive/drive-files-cache.js', () => ({
   driveFilesCache: {
     getReaderFolderId: vi.fn(async () => null),
     getListedReaderFolderIds: vi.fn((): string[] | null => null),
@@ -29,7 +29,7 @@ vi.mock('$lib/util/sync/providers/google-drive/drive-files-cache', () => ({
     fetch: vi.fn(async () => {})
   }
 }));
-vi.mock('$lib/util/backup', () => ({ findFile: vi.fn() }));
+vi.mock('#lib/util/backup.js', () => ({ findFile: vi.fn() }));
 vi.mock('../../cache-manager', () => ({
   cacheManager: { registerCache: vi.fn(), clearAll: vi.fn() }
 }));
@@ -45,13 +45,16 @@ vi.mock('../../core/cloud-provider-core-registry', () => ({
 }));
 
 import { googleDriveProvider } from './google-drive-provider';
-import { driveApiClient } from '$lib/util/sync/providers/google-drive/api-client';
-import { driveFilesCache } from '$lib/util/sync/providers/google-drive/drive-files-cache';
-import { tokenManager } from '$lib/util/sync/providers/google-drive/token-manager';
+import { driveApiClient } from '#lib/util/sync/providers/google-drive/api-client.js';
+import { driveFilesCache } from '#lib/util/sync/providers/google-drive/drive-files-cache.js';
+import { tokenManager } from '#lib/util/sync/providers/google-drive/token-manager.js';
 import { ProviderError } from '../../provider-interface';
 import type { ControlFileRead } from '../../provider-interface';
 import { BUNKO_MARKER_NAME, SERIES_QUEUE_FILE_NAME } from '../../syncable-file';
-import { ingestMarkerRead, resetCloudBunkoMarkersForTest } from '$lib/catalog/cloud-bunko-marker';
+import {
+  ingestMarkerRead,
+  resetCloudBunkoMarkersForTest
+} from '#lib/catalog/cloud-bunko-marker.js';
 
 type Listed = Array<Record<string, unknown>>;
 

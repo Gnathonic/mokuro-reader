@@ -1,6 +1,6 @@
-import type { VolumeMetadata } from '$lib/types';
-import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
-import { toRasterImageFile } from '$lib/util/raster-image';
+import type { VolumeMetadata } from '#lib/types/index.js';
+import { unifiedCloudManager } from '#lib/util/sync/unified-cloud-manager.js';
+import { toRasterImageFile } from '#lib/util/raster-image.js';
 
 export interface CloudThumbnailResult {
   file: File;

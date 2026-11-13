@@ -4,8 +4,8 @@
  */
 
 import type { WebDAVClient } from 'webdav';
-import type { ServerOcrQueued } from '$lib/util/sync/provider-interface';
-import { resolveBunkoLink } from '$lib/util/bunko-links';
+import type { ServerOcrQueued } from '#lib/util/sync/provider-interface.js';
+import { resolveBunkoLink } from '#lib/util/bunko-links.js';
 import { RETRY_AFTER_MAX_RETRIES, retryAfterDelayMs } from './webdav-retry-after';
 
 /** What one PUT established. */
@@ -429,7 +429,7 @@ export async function uploadToWebDAV(
 ): Promise<string> {
   // Dynamically import webdav to support usage in workers
   const { createClient } = await import('webdav');
-  const { webdavAuthOptions } = await import('$lib/util/sync/core/providers/webdav-auth');
+  const { webdavAuthOptions } = await import('#lib/util/sync/core/providers/webdav-auth.js');
 
   // Create client with credentials (UTF-8-safe Authorization header)
   const client = createClient(serverUrl, webdavAuthOptions(username, password));

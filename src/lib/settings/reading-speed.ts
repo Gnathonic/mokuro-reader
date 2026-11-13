@@ -1,9 +1,9 @@
 import { derived } from 'svelte/store';
 import { VolumeData, volumesWithTrash } from './volume-data';
-import type { ReadingSpeedResult } from '$lib/util/reading-speed';
-import { readingStats, recentReadingSpeed } from '$lib/reading-history/stats-store';
-import { db } from '$lib/catalog/db';
-import type { Page } from '$lib/types';
+import type { ReadingSpeedResult } from '#lib/util/reading-speed.js';
+import { readingStats, recentReadingSpeed } from '#lib/reading-history/stats-store.js';
+import { db } from '#lib/catalog/db.js';
+import type { Page } from '#lib/types/index.js';
 import type { PageTurn } from './volume-data';
 
 /**

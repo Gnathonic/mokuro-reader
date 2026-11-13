@@ -64,8 +64,8 @@
    * from the quads after every quad edit (`edit-ops.ts`) — so a line drawn at
    * the stored `font_size` would not answer its own handle.
    */
-  import type { Block } from '$lib/types';
-  import type { EditSession, GestureMark } from '$lib/reader/edit/edit-session.svelte';
+  import type { Block } from '#lib/types/index.js';
+  import type { EditSession, GestureMark } from '#lib/reader/edit/edit-session.svelte.js';
   import {
     blockLineGeometries,
     lineGeometry,
@@ -73,7 +73,7 @@
     lineHandlePoints,
     resizeQuadEdge,
     type LineGeometry
-  } from '$lib/reader/edit/block-geometry';
+  } from '#lib/reader/edit/block-geometry.js';
   import { onDestroy, tick } from 'svelte';
 
   interface Props {

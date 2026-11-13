@@ -1,7 +1,6 @@
 /**
- * The server's environment variables (SvelteKit 3: `$env/dynamic/private`
- * exposes exactly the variables declared here, and nothing else from
- * `process.env`).
+ * The server's environment variables (SvelteKit 3: `$app/env/private` exposes
+ * exactly the variables declared here, and nothing else from `process.env`).
  *
  * Every one is the Drive auth backend's (`src/lib/server/gdrive-auth`), every
  * one is private (never `public`: the routes alone may import them) and dynamic

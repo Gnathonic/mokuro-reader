@@ -1,20 +1,20 @@
 import { get } from 'svelte/store';
-import { db } from '$lib/catalog/db';
-import { volumesForFoldedSeriesTitle } from '$lib/catalog/volumes-by-series';
-import { installCoversForSeries } from '$lib/catalog/cover-install';
-import { flushPendingCoverPersists } from '$lib/catalog/cover-persist';
+import { db } from '#lib/catalog/db.js';
+import { volumesForFoldedSeriesTitle } from '#lib/catalog/volumes-by-series.js';
+import { installCoversForSeries } from '#lib/catalog/cover-install.js';
+import { flushPendingCoverPersists } from '#lib/catalog/cover-persist.js';
 // Deferred-use import into the module cycle cover-service → series-file-sync →
 // series-backfill → cover-service: safe because nothing on any side calls
 // across at module-init time, only from inside function bodies (see the
 // series-file-sync note below, same reasoning).
-import { requestCover } from '$lib/catalog/cover-service';
-import { materializeSeriesVolumes } from '$lib/catalog/materialize';
-import { isVolumeInstalled, needsDownload } from '$lib/catalog/volume-state';
-import type { VolumeMetadata } from '$lib/types';
-import type { CloudFileMetadata, SyncProvider } from '$lib/util/sync/provider-interface';
-import { isCbzFile } from '$lib/util/sync/syncable-file';
-import { providerManager } from '$lib/util/sync/provider-manager';
-import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
+import { requestCover } from '#lib/catalog/cover-service.js';
+import { materializeSeriesVolumes } from '#lib/catalog/materialize.js';
+import { isVolumeInstalled, needsDownload } from '#lib/catalog/volume-state.js';
+import type { VolumeMetadata } from '#lib/types/index.js';
+import type { CloudFileMetadata, SyncProvider } from '#lib/util/sync/provider-interface.js';
+import { isCbzFile } from '#lib/util/sync/syncable-file.js';
+import { providerManager } from '#lib/util/sync/provider-manager.js';
+import { unifiedCloudManager } from '#lib/util/sync/unified-cloud-manager.js';
 import {
   groupSeriesSidecarFiles,
   isSidecarStale,

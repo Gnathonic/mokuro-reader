@@ -109,17 +109,23 @@ src/
 └── app.d.ts                   # App-level type definitions
 ```
 
-**Routing:** The app uses a hash-based router (`$lib/util/hash-router.ts`) with views loaded dynamically from `$lib/views/`. Routes like `#/series/uuid` or `#/reader/uuid` are handled client-side.
+**Routing:** The app uses a hash-based router (`src/lib/util/hash-router.ts`) with views loaded dynamically from `src/lib/views/`. Routes like `#/series/uuid` or `#/reader/uuid` are handled client-side.
 
-**Imports and config (SvelteKit 3):** `$lib` stays for now. SvelteKit 3 no longer provides it;
-`vite.config.ts` keeps it through kit's deprecated `alias` option (`alias: { $lib: 'src/lib' }`),
-which also generates the tsconfig `paths`, so write imports as before (`$lib/catalog/db`, no
-extension). `$app/environment` and `$env/dynamic/private` are deprecated too and kept likewise
-(kit 3 ships no types for them: `src/kit-deprecated-modules.d.ts` supplies them).
-The move to `#lib` subpath imports and `$app/env` is issue #359, done later so it does not
-conflict with every open branch. A worker's `new URL(…, import.meta.url)` stays relative.
+**Imports and config (SvelteKit 3):** `src/lib` is imported as `#lib/...`, a subpath import
+declared in package.json (`"imports": { "#lib/*": "./src/lib/*" }`; SvelteKit 3 provides no
+`$lib` and its `alias` option is deprecated). A subpath import names a file, so write the
+extension it resolves with: a `.ts`/`.js` module as `.js` (`#lib/catalog/db.js`), a directory
+as `/index.js`, a `.svelte` file or asset as it is, a `?query` after the extension.
+`$app/env` (not the deprecated `$app/environment`), and the server env from
+`$app/env/private` (not `$env/dynamic/private`). A worker's `new URL(…, import.meta.url)` stays
+relative: `#lib` in a URL is a fragment. A branch still carrying `$lib` imports runs
+`node scripts/migrate-lib-subpath.mjs | xargs -r npx prettier --write` (idempotent; issue #359;
+it only REPORTS `$env/dynamic/private`, whose replacement is `import * as env`, a hand fix).
+`src/migrate-lib-subpath.test.ts` runs its `--check` on the repo, so any old specifier fails
+`npm test` — including one in a `vi.mock` string, where `$app/environment` still resolves (to
+a module nothing imports) and the mock would silently never apply.
 SvelteKit's options live in `vite.config.ts` (`sveltekit({...})`); there is no
-`svelte.config.js`. The app registers its own service worker (`$lib/util/sw-register.ts`, from
+`svelte.config.js`. The app registers its own service worker (`src/lib/util/sw-register.ts`, from
 `hooks.client.ts`) with SvelteKit's registration off: SvelteKit 3 registers it
 `{ type: 'module' }` in every build, the app CLASSIC in production, as SvelteKit 2 did.
 `scripts/check-service-worker.mjs` (part of `npm run build`) runs the built worker and fails if
@@ -449,7 +455,7 @@ interface VolumeFiles {
 **Usage:**
 
 ```typescript
-import { db } from '$lib/catalog/db';
+import { db } from '#lib/catalog/db.js';
 
 // Query volumes
 const volumes = await db.volumes.toArray();
@@ -473,7 +479,7 @@ import {
   listLayerMetas,
   getLayerPages,
   putLayerWithPages
-} from '$lib/catalog/layer-store';
+} from '#lib/catalog/layer-store.js';
 
 const layers = await listLayerMetas(db, volume_uuid); // metadata only — never reads pages
 const pages = await getLayerPages(db, volume_uuid, layer_id); // one layer's pages
@@ -494,7 +500,7 @@ on "remove from device".
 
 Thumbnails are generated automatically on app load via `startThumbnailProcessing()`.
 
-**Volume states** (`$lib/catalog/volume-state.ts` — always test them through
+**Volume states** (`src/lib/catalog/volume-state.ts` — always test them through
 `isVolumeInstalled(v)` / `needsDownload(v)`, never the raw flags):
 
 | State         | Row? | `volume_ocr` / `volume_files` | Marked by             |
@@ -2280,7 +2286,7 @@ The sync system (`src/lib/util/sync/`) uses a provider abstraction. To extend:
 Always use the Dexie instance from `src/lib/catalog/db.ts`:
 
 ```typescript
-import { db } from '$lib/catalog/db';
+import { db } from '#lib/catalog/db.js';
 
 // Query volumes
 const volumes = await db.volumes.toArray();

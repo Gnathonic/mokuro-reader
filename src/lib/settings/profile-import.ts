@@ -3,7 +3,7 @@
  * would change, worked out before anything is written, so the UI can warn
  * about the profiles it would replace and about AnkiConnect URLs it brings.
  */
-import { isAnkiUrlTrusted } from '$lib/anki-connect/url-trust';
+import { isAnkiUrlTrusted } from '#lib/anki-connect/url-trust.js';
 import { migrateProfiles, type Profiles, type Settings } from './settings';
 
 export interface ProfileImportPlan {

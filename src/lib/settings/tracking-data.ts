@@ -1,10 +1,10 @@
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 import { derived, get, writable, type Readable } from 'svelte/store';
-import { FUTURE_TOLERANCE_MS, isRecord, normalizeUpdatedAt } from '$lib/metadata/sanitize';
-import { DEFAULT_K, K_MAX, type IdleSettings } from '$lib/reading-history/stats-engine';
-import { isDeviceClass, ownLabel, resolveDevice } from '$lib/reading-history/devices';
-import { isDeviceId } from '$lib/reading-history/paths';
-import type { DeviceClass, DeviceLabel, PauseCount } from '$lib/reading-history/types';
+import { FUTURE_TOLERANCE_MS, isRecord, normalizeUpdatedAt } from '#lib/metadata/sanitize.js';
+import { DEFAULT_K, K_MAX, type IdleSettings } from '#lib/reading-history/stats-engine.js';
+import { isDeviceClass, ownLabel, resolveDevice } from '#lib/reading-history/devices.js';
+import { isDeviceId } from '#lib/reading-history/paths.js';
+import type { DeviceClass, DeviceLabel, PauseCount } from '#lib/reading-history/types.js';
 
 export type { DeviceLabel };
 

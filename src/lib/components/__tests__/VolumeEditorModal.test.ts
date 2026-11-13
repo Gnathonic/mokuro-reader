@@ -22,7 +22,7 @@ const stats = vi.hoisted(() => {
   };
 });
 const readingStats = vi.hoisted(() => ({ store: null as unknown as ReturnType<typeof writable> }));
-vi.mock('$lib/reading-history/stats-store', async () => {
+vi.mock('#lib/reading-history/stats-store.js', async () => {
   const { writable } = await import('svelte/store');
   readingStats.store = writable({ ready: false });
   return {
@@ -36,10 +36,10 @@ const editor = vi.hoisted(() => ({
   updateVolumeStats: vi.fn(),
   getVolumeData: vi.fn()
 }));
-vi.mock('$lib/util/volume-editor', async (importOriginal) => ({
-  completionDateInputValue: (await importOriginal<typeof import('$lib/util/volume-editor')>())
+vi.mock('#lib/util/volume-editor.js', async (importOriginal) => ({
+  completionDateInputValue: (await importOriginal<typeof import('#lib/util/volume-editor.js')>())
     .completionDateInputValue,
-  completedAtFromDateInput: (await importOriginal<typeof import('$lib/util/volume-editor')>())
+  completedAtFromDateInput: (await importOriginal<typeof import('#lib/util/volume-editor.js')>())
     .completedAtFromDateInput,
   getAllSeriesOptions: vi.fn(async () => [{ uuid: 's1', title: 'Series' }]),
   generateNewSeriesUuid: vi.fn(() => 'new'),
@@ -52,14 +52,14 @@ vi.mock('$lib/util/volume-editor', async (importOriginal) => ({
   calculateVolumeCharacterCount: vi.fn(async () => 5000),
   getNextVolumeUuidInSeries: vi.fn(async () => null)
 }));
-vi.mock('$lib/util', () => ({ showSnackbar: vi.fn() }));
-vi.mock('$lib/util/sync/provider-interface', () => ({ ProviderError: class extends Error {} }));
-vi.mock('$lib/util/sync/account-capabilities', () => ({ renameRefusalMessage: () => null }));
+vi.mock('#lib/util/index.js', () => ({ showSnackbar: vi.fn() }));
+vi.mock('#lib/util/sync/provider-interface.js', () => ({ ProviderError: class extends Error {} }));
+vi.mock('#lib/util/sync/account-capabilities.js', () => ({ renameRefusalMessage: () => null }));
 vi.mock('../VolumeEditorCoverPicker.svelte', () => ({ default: () => {} }));
 
 import VolumeEditorModal from '../VolumeEditorModal.svelte';
-import { promptVolumeEditor, closeVolumeEditor } from '$lib/util/modals';
-import { VolumeData } from '$lib/settings/volume-data';
+import { promptVolumeEditor, closeVolumeEditor } from '#lib/util/modals.js';
+import { VolumeData } from '#lib/settings/volume-data.js';
 
 const hours = () => document.querySelector('#time-hours') as HTMLInputElement | null;
 

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { VolumeMetadata } from '$lib/types';
-import type { SeriesReadingState } from '$lib/settings/series-data';
+import type { VolumeMetadata } from '#lib/types/index.js';
+import type { SeriesReadingState } from '#lib/settings/series-data.js';
 import type { SeriesMetadata } from './types';
 
 // vi.hoisted: `vi.mock` factories are hoisted above every other top-level
@@ -57,9 +57,9 @@ const h = vi.hoisted(() => {
   };
 });
 
-vi.mock('$app/environment', () => ({ browser: true }));
+vi.mock('$app/env', () => ({ browser: true }));
 
-vi.mock('$lib/settings/volume-data', () => ({
+vi.mock('#lib/settings/volume-data.js', () => ({
   volumes: h.volumesStore,
   registerCompletionListener: vi.fn((fn: (uuid: string) => void) => {
     h.completionListeners.push(fn);
@@ -67,9 +67,9 @@ vi.mock('$lib/settings/volume-data', () => ({
   })
 }));
 
-vi.mock('$lib/settings/settings', () => ({ settings: h.settingsStore }));
+vi.mock('#lib/settings/settings.js', () => ({ settings: h.settingsStore }));
 
-vi.mock('$lib/catalog/db', () => ({
+vi.mock('#lib/catalog/db.js', () => ({
   db: {
     volumes: {
       toArray: vi.fn(async () => h.dbVolumes),
@@ -112,15 +112,15 @@ vi.mock('./anilist-auth', () => ({
   handleAniListUnauthorized: vi.fn()
 }));
 
-import { registerCompletionListener } from '$lib/settings/volume-data';
+import { registerCompletionListener } from '#lib/settings/volume-data.js';
 // The reading state is the real store: a plain synchronous store over
 // localStorage, so seeding it and reading it back needs no double.
 import {
   clearSeriesReadingState,
   getSeriesReadingState,
   updateSeriesReadingState
-} from '$lib/settings/series-data';
-import { db } from '$lib/catalog/db';
+} from '#lib/settings/series-data.js';
+import { db } from '#lib/catalog/db.js';
 import { handleAniListUnauthorized } from './anilist-auth';
 import { getSeriesIndex } from './series-index';
 import { anilistRequest } from './providers/anilist';

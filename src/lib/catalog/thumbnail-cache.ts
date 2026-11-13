@@ -15,7 +15,7 @@
  * - Visibility check: prefer on-screen items before dispatch
  */
 
-import type { DecodeRequest, DecodeResponse } from '$lib/workers/thumbnail-decode-worker';
+import type { DecodeRequest, DecodeResponse } from '#lib/workers/thumbnail-decode-worker.js';
 
 export interface CacheEntry {
   bitmap: ImageBitmap;

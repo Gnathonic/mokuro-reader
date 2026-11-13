@@ -4,7 +4,7 @@
  * This module must stay dependency-free (no Svelte / $app / webdav imports) —
  * it is used from web workers as well as the main thread.
  */
-import { basicAuthHeader } from '$lib/util/base64';
+import { basicAuthHeader } from '#lib/util/base64.js';
 
 /**
  * What a WebDAV session can authenticate with. `token` is a mokuro-bunko

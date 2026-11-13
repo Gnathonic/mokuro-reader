@@ -5,9 +5,9 @@
    * `EditableBlock`, plus the "draw new box" drag on the page background.
    * Mounted by `MangaPage` in the page's own coordinate space.
    */
-  import type { Page } from '$lib/types';
-  import type { EditSession } from '$lib/reader/edit/edit-session.svelte';
-  import { pageScaleOf } from '$lib/reader/edit/edit-context';
+  import type { Page } from '#lib/types/index.js';
+  import type { EditSession } from '#lib/reader/edit/edit-session.svelte.js';
+  import { pageScaleOf } from '#lib/reader/edit/edit-context.js';
   import EditableBlock, { isPinchPress, markPinchPress } from './EditableBlock.svelte';
   import { onDestroy } from 'svelte';
 
