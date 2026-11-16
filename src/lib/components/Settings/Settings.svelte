@@ -7,6 +7,11 @@
   import { currentView } from '#lib/util/hash-router.js';
   import AnkiConnectSettings from './AnkiConnectSettings.svelte';
   import ReaderSettings from './Reader/ReaderSettings.svelte';
+  import ReaderVolumeSettings from './Reader/ReaderVolumeSettings.svelte';
+  import ReaderTextSettings from './Reader/ReaderTextSettings.svelte';
+  import ReaderControlsSettings from './Reader/ReaderControlsSettings.svelte';
+  import ReaderFilterSettings from './Reader/ReaderFilterSettings.svelte';
+  import ReaderOverlaySettings from './Reader/ReaderOverlaySettings.svelte';
   import Profiles from './Profiles/Profiles.svelte';
   import CatalogSettings from './CatalogSettings.svelte';
   import MetadataSettings from './MetadataSettings.svelte';
@@ -87,10 +92,17 @@
   <div class="flex flex-col gap-5">
     <Accordion flush>
       <QuickAccess bind:open />
+      <!-- The reader's settings, one section per concern. -->
       <ReaderSettings />
-      {#if !isReader()}
+      {#if isReader()}
+        <ReaderVolumeSettings />
+      {:else}
         <VolumeDefaults />
       {/if}
+      <ReaderTextSettings />
+      <ReaderControlsSettings />
+      <ReaderFilterSettings />
+      <ReaderOverlaySettings />
       <Profiles {onClose} />
       <AnkiConnectSettings />
       <CatalogSettings />

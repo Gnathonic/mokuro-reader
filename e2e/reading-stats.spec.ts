@@ -170,14 +170,14 @@ test('reading is counted from the views the reader records; a fast flip is skimm
   expect(result.volume.timeMs).toBeLessThan(20000);
 });
 
-/** The settings drawer with its Reader section open, from the catalog's navbar. */
+/** The settings drawer with its "Overlays & timer" section open, from the catalog's navbar. */
 async function openTimerSettings(page: Page) {
   await page.evaluate(() => (window.location.hash = '#/catalog'));
   // The navbar's settings button carries no label; it follows Progress Tracker.
   await page.locator('button[title="Progress Tracker"] + button').click();
   const drawer = page.locator('#settings');
   await expect(drawer).toBeVisible();
-  await drawer.getByRole('button', { name: 'Reader', exact: true }).click();
+  await drawer.getByRole('button', { name: 'Overlays & timer', exact: true }).click();
   await expect(drawer.getByRole('heading', { name: 'Reading timer', exact: true })).toBeVisible();
   return drawer;
 }

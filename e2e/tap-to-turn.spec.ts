@@ -3,19 +3,23 @@ import { gotoApp } from './helpers/app';
 import { writeSyntheticVolume, type SyntheticVolume } from './helpers/synthetic-volume';
 
 /**
- * "Tap page edges to turn pages" (#54) in the real paged reader.
+ * Tap-to-turn (#54) in the real paged reader: two regions, one control each.
  *
- * Off, a tap in the margin beside the page must not turn it — but the margins
- * must stay INSIDE the paged viewport's wrapper, where its gesture tracker,
- * wheel listener and `touch-action: none` live, so a swipe, wheel or
- * ctrl+wheel zoom that starts beside the page still works.
+ * - The page IMAGE's own left / right edge: `edgeButtonWidth` px (the slider,
+ *   0 = off). On desktop the same control also runs down the screen's edge,
+ *   but only where the page is under it (a page zoomed past the screen).
+ * - OUTSIDE the image — the background beside and below the page:
+ *   `tapOutsideImageToTurn` (the toggle). Off, those zones stay as inert boxes
+ *   INSIDE the paged viewport's wrapper, where its gesture tracker, wheel
+ *   listener and `touch-action: none` live, so a swipe, wheel or ctrl+wheel
+ *   zoom that starts beside the page still works.
  *
  * The synthetic pages are 600×900 portraits: fit to a 1920×1080 screen they
  * leave wide margins either side; fit to a tall 800×1400 screen they leave a
- * band below the page, where the bottom-corner zones live.
+ * band below the page, where the bottom zones live.
  *
  * Every zone is driven both ways a reader hits it — a mouse click and a
- * touch tap — on and off. RTL (the default): the LEFT zones turn forward.
+ * touch tap. RTL (the default): the LEFT zones turn forward.
  */
 
 const MARGIN = { x: 80, y: 540 };
@@ -91,8 +95,19 @@ function shownPages(page: Page): Promise<number[]> {
 async function pageRect(page: Page) {
   return page.evaluate(() => {
     const r = document.querySelector('#manga-panel [data-page-index]')!.getBoundingClientRect();
-    return { left: r.left, right: r.right, width: r.width };
+    return { left: r.left, right: r.right, width: r.width, top: r.top, bottom: r.bottom };
   });
+}
+
+/** Points ON the page image, just inside its left / right edge, and its centre. */
+async function pageEdgePoints(page: Page) {
+  const r = await pageRect(page);
+  const y = Math.round((r.top + r.bottom) / 2);
+  return {
+    left: { x: Math.round(r.left + 8), y },
+    right: { x: Math.round(r.right - 8), y },
+    centre: { x: Math.round((r.left + r.right) / 2), y }
+  };
 }
 
 /** What a point hits, and whether that is inside the viewport wrapper. */
@@ -131,6 +146,8 @@ async function swipeRightFromMargin(page: Page) {
 
 const BUTTON = { tag: 'button', zone: false, inWrapper: true };
 const INERT_ZONE = { tag: 'div', zone: true, inWrapper: true };
+/** A desktop screen-edge strip: a button outside the viewport wrapper. */
+const SCREEN_STRIP = { tag: 'button', zone: false, inWrapper: false };
 
 /** A press, then — when it should not turn — long enough for a late turn to show. */
 async function expectNoTurn(page: Page, press: () => Promise<void>) {
@@ -170,45 +187,48 @@ async function expectBottomBand(page: Page) {
   expect(bottom).toBeLessThan(BELOW_LEFT.y - 40);
 }
 
-test.describe('tap page edges to turn pages (#54)', () => {
-  test('on (default): a click in the margin or on the screen edge turns the page', async ({
+test.describe('tap to turn pages: one region, one control (#54)', () => {
+  test('defaults: the background, the page edges and the screen edges all turn', async ({
     page
   }) => {
     await setup(page, { mobile: false });
     await expectSideMargins(page);
     expect(await shownPages(page)).toEqual([0]);
     expect(await marginTarget(page)).toEqual(BUTTON);
-    // The screen-edge strip sits outside the wrapper, over the margin.
-    expect((await targetAt(page, SCREEN_EDGE)).tag).toBe('button');
+    // The screen-edge strip sits outside the wrapper, over the background.
+    expect(await targetAt(page, SCREEN_EDGE)).toEqual(SCREEN_STRIP);
+    const edge = await pageEdgePoints(page);
+    expect(await targetAt(page, edge.left)).toEqual(BUTTON);
 
     await expectTurnTo(page, () => page.mouse.click(MARGIN.x, MARGIN.y), [1]);
     await expectTurnTo(page, () => page.mouse.click(SCREEN_EDGE.x, SCREEN_EDGE.y), [2]);
+    await expectTurnTo(page, () => page.mouse.click(edge.left.x, edge.left.y), [3]);
     // And back: the right side turns backward.
+    await expectTurnTo(page, () => page.mouse.click(edge.right.x, edge.right.y), [2]);
     await expectTurnTo(page, () => page.mouse.click(RIGHT_MARGIN.x, RIGHT_MARGIN.y), [1]);
     await expectTurnTo(page, () => page.mouse.click(RIGHT_SCREEN_EDGE.x, RIGHT_SCREEN_EDGE.y), [0]);
+    // The page's middle is neither region.
+    await expectNoTurn(page, () => page.mouse.click(edge.centre.x, edge.centre.y));
   });
 
-  test('off: a margin click does nothing, a margin ctrl+wheel still zooms', async ({ page }) => {
-    await setup(page, { mobile: false, tapPageEdgesToTurn: false });
+  test('toggle off: the background is inert, the page edges still turn', async ({ page }) => {
+    await setup(page, { mobile: false, tapOutsideImageToTurn: false, edgeButtonWidth: 40 });
     await expectSideMargins(page);
     expect(await shownPages(page)).toEqual([0]);
-    // The margin is still inside the viewport wrapper — an inert zone — and
-    // the screen-edge strips are gone, so the edge hits that zone too.
     expect(await marginTarget(page)).toEqual(INERT_ZONE);
-    expect(await targetAt(page, SCREEN_EDGE)).toEqual(INERT_ZONE);
     expect(await targetAt(page, RIGHT_MARGIN)).toEqual(INERT_ZONE);
-    expect(await targetAt(page, RIGHT_SCREEN_EDGE)).toEqual(INERT_ZONE);
+    // The screen strip is the page-edge control; over the background it defers
+    // to the toggle, so it is there but does not turn.
+    expect(await targetAt(page, SCREEN_EDGE)).toEqual(SCREEN_STRIP);
 
     for (const point of [MARGIN, SCREEN_EDGE, RIGHT_MARGIN, RIGHT_SCREEN_EDGE]) {
       await expectNoTurn(page, () => page.mouse.click(point.x, point.y));
     }
-    // Turning still works by key (only the taps are gone).
-    await expectTurnTo(page, () => page.keyboard.press('ArrowLeft'), [1]);
-    for (const point of [MARGIN, SCREEN_EDGE, RIGHT_MARGIN, RIGHT_SCREEN_EDGE]) {
-      await expectNoTurn(page, () => page.mouse.click(point.x, point.y));
-    }
-    await expectTurnTo(page, () => page.keyboard.press('ArrowRight'), [0]);
+    const edge = await pageEdgePoints(page);
+    await expectTurnTo(page, () => page.mouse.click(edge.left.x, edge.left.y), [1]);
+    await expectTurnTo(page, () => page.mouse.click(edge.right.x, edge.right.y), [0]);
 
+    // A ctrl+wheel in the inert background still zooms.
     const before = await pageRect(page);
     await page.mouse.move(MARGIN.x, MARGIN.y);
     await page.keyboard.down('Control');
@@ -223,47 +243,107 @@ test.describe('tap page edges to turn pages (#54)', () => {
     expect(await shownPages(page)).toEqual([0]);
   });
 
+  test('slider at 0: the page edges do not turn, the background still does', async ({ page }) => {
+    await setup(page, { mobile: false, tapOutsideImageToTurn: true, edgeButtonWidth: 0 });
+    await expectSideMargins(page);
+    const edge = await pageEdgePoints(page);
+    // No strip on the page: the point is the page itself.
+    expect((await targetAt(page, edge.left)).tag).not.toBe('button');
+    await expectNoTurn(page, () => page.mouse.click(edge.left.x, edge.left.y));
+    await expectNoTurn(page, () => page.mouse.click(edge.right.x, edge.right.y));
+    // No screen strips either: the screen edge is plain background here.
+    expect(await targetAt(page, SCREEN_EDGE)).toEqual(BUTTON);
+    await expectTurnTo(page, () => page.mouse.click(MARGIN.x, MARGIN.y), [1]);
+    await expectTurnTo(page, () => page.mouse.click(SCREEN_EDGE.x, SCREEN_EDGE.y), [2]);
+    await expectTurnTo(page, () => page.mouse.click(RIGHT_MARGIN.x, RIGHT_MARGIN.y), [1]);
+  });
+
+  test('both off: no tap turns the page; the keys still do', async ({ page }) => {
+    await setup(page, { mobile: false, tapOutsideImageToTurn: false, edgeButtonWidth: 0 });
+    await expectSideMargins(page);
+    const edge = await pageEdgePoints(page);
+    expect(await targetAt(page, SCREEN_EDGE)).toEqual(INERT_ZONE);
+    for (const point of [MARGIN, SCREEN_EDGE, edge.left, edge.right, RIGHT_MARGIN]) {
+      await expectNoTurn(page, () => page.mouse.click(point.x, point.y));
+    }
+    await expectTurnTo(page, () => page.keyboard.press('ArrowLeft'), [1]);
+    await expectTurnTo(page, () => page.keyboard.press('ArrowRight'), [0]);
+  });
+
+  test('zoomed past the screen, the screen edge is the page edge: the slider decides', async ({
+    page
+  }) => {
+    // Background off, so only the page-edge control can turn.
+    await setup(page, {
+      mobile: false,
+      tapOutsideImageToTurn: false,
+      edgeButtonWidth: 40,
+      zoomDefault: 'zoomFitToWidth'
+    });
+    // Zoom further in at the centre, so the page's own edges leave the screen.
+    await page.mouse.move(960, 540);
+    await page.keyboard.down('Control');
+    for (let i = 0; i < 6; i++) {
+      await page.mouse.wheel(0, -100);
+      await page.waitForTimeout(80);
+    }
+    await page.keyboard.up('Control');
+    await expect
+      .poll(async () => (await pageRect(page)).left, { timeout: 5000 })
+      .toBeLessThan(-300);
+    await page.waitForTimeout(500);
+    const rect = await pageRect(page);
+    expect(rect.right).toBeGreaterThan(1920 + 300);
+    expect(await targetAt(page, SCREEN_EDGE)).toEqual(SCREEN_STRIP);
+
+    await expectTurnTo(page, () => page.mouse.click(SCREEN_EDGE.x, SCREEN_EDGE.y), [1]);
+  });
+
   test.describe('touch', () => {
     test.use({ hasTouch: true });
 
     const tap = (page: Page, point: { x: number; y: number }) => () =>
       page.touchscreen.tap(point.x, point.y);
 
-    test('on (default): a tap in the margin or on the screen edge turns the page', async ({
+    test('defaults: a tap on the background, a page edge or a screen edge turns', async ({
       page
     }) => {
       await setup(page, { mobile: false });
       await expectSideMargins(page);
-      expect(await shownPages(page)).toEqual([0]);
+      const edge = await pageEdgePoints(page);
 
       await expectTurnTo(page, tap(page, MARGIN), [1]);
       await expectTurnTo(page, tap(page, SCREEN_EDGE), [2]);
+      await expectTurnTo(page, tap(page, edge.left), [3]);
+      await expectTurnTo(page, tap(page, edge.right), [2]);
       await expectTurnTo(page, tap(page, RIGHT_MARGIN), [1]);
       await expectTurnTo(page, tap(page, RIGHT_SCREEN_EDGE), [0]);
     });
 
-    test('on, mobile layout: a tap in the margin turns the page', async ({ page }) => {
+    test('mobile layout, defaults: background and page-edge taps turn', async ({ page }) => {
       await setup(page, { mobile: true });
       await expectSideMargins(page);
       expect(await marginTarget(page)).toEqual(BUTTON);
+      const edge = await pageEdgePoints(page);
 
       await expectTurnTo(page, tap(page, MARGIN), [1]);
+      await expectTurnTo(page, tap(page, edge.left), [2]);
+      await expectTurnTo(page, tap(page, edge.right), [1]);
       await expectTurnTo(page, tap(page, RIGHT_MARGIN), [0]);
     });
 
-    test('off: a tap in the margin or on the screen edge does nothing', async ({ page }) => {
-      await setup(page, { mobile: false, tapPageEdgesToTurn: false });
+    test('toggle off: background taps do nothing, page-edge taps still turn', async ({ page }) => {
+      await setup(page, { mobile: false, tapOutsideImageToTurn: false });
       await expectSideMargins(page);
-      await expectTurnTo(page, () => page.keyboard.press('ArrowLeft'), [1]);
-
       for (const point of [MARGIN, SCREEN_EDGE, RIGHT_MARGIN, RIGHT_SCREEN_EDGE]) {
-        expect(await targetAt(page, point)).toEqual(INERT_ZONE);
         await expectNoTurn(page, tap(page, point));
       }
+      const edge = await pageEdgePoints(page);
+      await expectTurnTo(page, tap(page, edge.left), [1]);
     });
 
-    test('off, mobile layout: a tap in either margin does nothing', async ({ page }) => {
-      await setup(page, { mobile: true, tapPageEdgesToTurn: false });
+    test('mobile layout, toggle off: a tap in either margin does nothing', async ({ page }) => {
+      await setup(page, { mobile: true, tapOutsideImageToTurn: false });
       await expectSideMargins(page);
       await expectTurnTo(page, () => page.keyboard.press('ArrowLeft'), [1]);
 
@@ -273,20 +353,19 @@ test.describe('tap page edges to turn pages (#54)', () => {
       }
     });
 
-    test('off: a swipe that starts in the margin still turns the page', async ({ page }) => {
-      await setup(page, { mobile: true, tapPageEdgesToTurn: false });
+    test('toggle off: a swipe that starts in the margin still turns the page', async ({ page }) => {
+      await setup(page, { mobile: true, tapOutsideImageToTurn: false });
       expect(await shownPages(page)).toEqual([0]);
-      expect(await marginTarget(page)).toEqual({ tag: 'div', zone: true, inWrapper: true });
+      expect(await marginTarget(page)).toEqual(INERT_ZONE);
 
       await swipeRightFromMargin(page);
       await expect.poll(() => shownPages(page)).toEqual([1]);
     });
 
-    // The toggle's description promises swipes only "with Mobile on": swipe-to-
-    // flip is a Mobile feature, so this is the state a Desktop-profile tablet
-    // user is left in after turning tap-to-turn off — keys still turn.
-    test('off, Mobile off: the same swipe does not turn the page', async ({ page }) => {
-      await setup(page, { mobile: false, tapPageEdgesToTurn: false });
+    // Swipe-to-flip is a Mobile feature: a Desktop-profile tablet user with
+    // the background off is left with the page edges and the keys.
+    test('toggle off, Mobile off: the same swipe does not turn the page', async ({ page }) => {
+      await setup(page, { mobile: false, tapOutsideImageToTurn: false });
       expect(await shownPages(page)).toEqual([0]);
       expect(await marginTarget(page)).toEqual(INERT_ZONE);
 
@@ -298,7 +377,7 @@ test.describe('tap page edges to turn pages (#54)', () => {
   test.describe('below the page (tall screen)', () => {
     test.use({ viewport: TALL, hasTouch: true });
 
-    test('on (default): a click or a tap below the page turns it', async ({ page }) => {
+    test('toggle on (default): a click or a tap below the page turns it', async ({ page }) => {
       await setup(page, { mobile: false });
       await expectBottomBand(page);
       expect(await targetAt(page, BELOW_LEFT)).toEqual(BUTTON);
@@ -309,8 +388,8 @@ test.describe('tap page edges to turn pages (#54)', () => {
       await expectTurnTo(page, () => page.touchscreen.tap(BELOW_RIGHT.x, BELOW_RIGHT.y), [0]);
     });
 
-    test('off: a click or a tap below the page does nothing', async ({ page }) => {
-      await setup(page, { mobile: false, tapPageEdgesToTurn: false });
+    test('toggle off: a click or a tap below the page does nothing', async ({ page }) => {
+      await setup(page, { mobile: false, tapOutsideImageToTurn: false });
       await expectBottomBand(page);
       await expectTurnTo(page, () => page.keyboard.press('ArrowLeft'), [1]);
 

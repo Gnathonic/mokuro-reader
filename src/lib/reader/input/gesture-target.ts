@@ -32,10 +32,10 @@
  *
  * **'interactive'** is reader chrome (buttons, links): taps belong to the
  * control, not to overlay toggling or zoom. That includes the inert
- * `[data-page-turn-zone]` margins PageTurnZones leaves when tap-to-turn is
- * off (#54): they keep the margins inside the viewport so swipes, wheel and
- * pinch still reach it, and a tap on them stays as inert as the page-turn
- * buttons they stand in for.
+ * `[data-page-turn-zone]` margins PageTurnZones leaves with
+ * `tapOutsideImageToTurn` off (#54): they keep the margins inside the
+ * viewport so swipes, wheel and pinch still reach it, and a tap on them stays
+ * as inert as the page-turn buttons they stand in for.
  *
  * **'page'** is everything else — pannable, zoomable, tappable surface.
  *

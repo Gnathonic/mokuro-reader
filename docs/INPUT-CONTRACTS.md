@@ -134,21 +134,34 @@ Wheel zoom has no release event, so a fine stream settles on an idle
 timeout (`WHEEL_ZOOM_SETTLE_MS`) — that settle is what clamps the paged
 camera into bounds and reports reading progress.
 
-### Tap-to-turn zones are optional (#54)
+### Tap-to-turn: two regions, one control each (#54)
 
-Paged mode's invisible page-turn buttons (`PageTurnZones.svelte`: the page
-margins, the bottom corners, the screen-edge strips) turn pages only while
-`tapPageEdgesToTurn` is on (default). Off, the screen-edge strips go, but the
-margin and corner zones STAY as handler-less, `aria-hidden`
-`[data-page-turn-zone]` boxes, flush with the page (no `edgeButtonWidth`
-reach onto it). They are children of PagedViewport's camera wrapper that
-overflow it into the margins, and the wrapper is where the gesture tracker,
-the wheel listener and `touch-action: none` live — without them a swipe,
-wheel, ctrl+wheel zoom or pinch that starts beside the page would land
-outside the wrapper and do nothing (or let the browser scroll/zoom
-natively). `gestureTargetRole` classes them `interactive`, so a tap there
-neither turns the page nor toggles the overlays: the margins' taps are inert,
-their gestures unchanged. The scroll readers have no such zones.
+Paged mode's invisible page-turn buttons (`PageTurnZones.svelte`) cover two
+regions that never overlap, each governed by exactly one profile setting:
+
+- **The page image's own edge** — `edgeButtonWidth` (0–100 px, 0 = off): a
+  strip inward from the spread's left/right edge, in camera px (it scales
+  with the zoom). On desktop (Mobile off) the same width also runs down the
+  screen's left/right edge, outside the viewport, for a page zoomed past the
+  screen; a release there turns only where the page is under the pointer
+  (`screenStripTurns`, hit-tested against `#manga-panel`) — over the
+  background it is the other region.
+- **Outside the image** — `tapOutsideImageToTurn` (default on): the
+  background beside the page and the band below it, flush with the page.
+  Off, these zones STAY as handler-less, `aria-hidden`
+  `[data-page-turn-zone]` boxes. They are children of PagedViewport's camera
+  wrapper that overflow it into the margins, and the wrapper is where the
+  gesture tracker, the wheel listener and `touch-action: none` live — without
+  them a swipe, wheel, ctrl+wheel zoom or pinch that starts beside the page
+  would land outside the wrapper and do nothing (or let the browser
+  scroll/zoom natively). `gestureTargetRole` classes them `interactive`, so a
+  tap there neither turns the page nor toggles the overlays.
+
+Profiles from before the split migrate in `migrateTapToTurn` (no setting:
+background on, width kept; the one-switch `tapPageEdgesToTurn: false`:
+background off, width 0). The page-edge strips lie over the page, as the
+margin buttons' old reach onto it did, so the strip, not a text box under
+it, takes a tap there. The scroll readers have no such zones.
 
 ### Page keys scroll a tall page before turning (#283)
 

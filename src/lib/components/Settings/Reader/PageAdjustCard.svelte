@@ -97,7 +97,7 @@
   }
 </script>
 
-<div class="mt-2 rounded-lg border border-gray-200 p-3 dark:border-gray-700">
+<div class="rounded-lg border border-gray-200 p-3 dark:border-gray-700">
   <div class="mb-2 text-sm font-medium text-gray-900 dark:text-white">Page image</div>
   <div class="space-y-3">
     {#each sliders as { key, label } (key)}

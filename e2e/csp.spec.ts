@@ -330,6 +330,10 @@ for (const mode of MODES) {
 
       // Settings panel → Night mode, through the real controls.
       await page.locator('button.reader-hud.right-3').click();
+      await page
+        .locator('#settings')
+        .getByRole('button', { name: 'Page filters', exact: true })
+        .click();
       await page.getByText('Enable night mode').click();
       await expect
         .poll(() => page.evaluate(() => document.documentElement.classList.contains('night-mode')))

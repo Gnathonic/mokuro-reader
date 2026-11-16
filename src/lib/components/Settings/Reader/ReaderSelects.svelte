@@ -1,13 +1,12 @@
 <script lang="ts">
   import { Label, Select } from 'flowbite-svelte';
-  import type { SettingsKey, ContinuousZoomMode } from '#lib/settings/index.js';
+  import type { SettingsKey } from '#lib/settings/index.js';
   import { settings, updateSetting } from '#lib/settings/index.js';
 
   let isContinuous = $derived($settings.continuousScroll);
 
   let zoomModeValue = $derived($settings.zoomDefault);
   let continuousZoomValue = $derived($settings.continuousZoomDefault);
-  let fontSizeValue = $derived($settings.fontSize);
   let pageTransitionValue = $derived($settings.pageTransition);
 
   let zoomModes = [
@@ -29,24 +28,6 @@
     { value: 'crossfade', name: 'Crossfade' },
     { value: 'pageTurn', name: 'Page Turn' },
     { value: 'swipe', name: 'Swipe' }
-  ];
-
-  let fontSizes = [
-    { value: 'auto', name: 'auto' },
-    { value: 'original', name: 'original' },
-    { value: '9', name: '9' },
-    { value: '10', name: '10' },
-    { value: '11', name: '11' },
-    { value: '12', name: '12' },
-    { value: '14', name: '14' },
-    { value: '16', name: '16' },
-    { value: '18', name: '18' },
-    { value: '20', name: '20' },
-    { value: '24', name: '24' },
-    { value: '32', name: '32' },
-    { value: '40', name: '40' },
-    { value: '48', name: '48' },
-    { value: '60', name: '60' }
   ];
 
   function onSelectChange(event: Event, setting: SettingsKey) {
@@ -83,7 +64,3 @@
     />
   </div>
 {/if}
-<div>
-  <Label class="text-gray-900 dark:text-white">Fontsize:</Label>
-  <Select items={fontSizes} value={fontSizeValue} onchange={(e) => onSelectChange(e, 'fontSize')} />
-</div>
