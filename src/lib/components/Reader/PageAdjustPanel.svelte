@@ -24,13 +24,21 @@
     sanitizePageAdjustEnabled
   } from '#lib/reader/page-filter.js';
   import { PAGE_ADJUST_PANEL_KEY, closePageAdjustPanel } from '#lib/reader/page-adjust-panel.js';
+  import { bottomOverlay } from '#lib/reader/bottom-overlay.js';
 
   interface Props {
     /** The reader's B: flips the adjustment and shows its notice. */
     onToggleAdjust?: () => void;
+    /**
+     * Escape outside the panel: the reader closes another non-modal control
+     * opened over it (the layer picker, the page-number popover, a text box
+     * menu, an edit-mode selection or draw tool) and returns true, or returns
+     * false when there is none — then the Escape is the panel's.
+     */
+    onEscapeElsewhere?: () => boolean;
   }
 
-  let { onToggleAdjust }: Props = $props();
+  let { onToggleAdjust, onEscapeElsewhere }: Props = $props();
 
   type AdjustKey = 'pageBrightness' | 'pageContrast';
   const sliders: { key: AdjustKey; label: string }[] = [
@@ -64,30 +72,51 @@
     }
   }
 
-  // Escape closes the panel wherever focus is — and does nothing else. The
-  // reader's shortcuts and the layout's global "Escape = back" are both
-  // bubble-phase window listeners, and the layout's ignores
-  // `defaultPrevented`, so the panel takes Escape in the capture phase and
-  // stops it there (as RereadPromptModal does). A modal dialog opened above
-  // the panel owns its own Escape.
+  // While the panel is open, Escape never leaves the reader. The reader's
+  // shortcuts and the layout's global "Escape = back" are both bubble-phase
+  // window listeners, and the layout's ignores `defaultPrevented`, so the
+  // panel takes Escape in the capture phase and stops it there (as
+  // RereadPromptModal does). One Escape closes one thing, the latest first: a
+  // modal dialog above the panel handles its own; with focus outside the
+  // panel, a reader control opened over it (`onEscapeElsewhere`) closes; only
+  // then the panel itself.
   function onWindowKeyDown(e: KeyboardEvent) {
     if (e.key !== 'Escape' || e.defaultPrevented) return;
     if (document.querySelector('dialog:modal')) return;
     e.preventDefault();
     e.stopPropagation();
+    const inPanel = root?.contains(e.target as Node) ?? false;
+    if (!inPanel && onEscapeElsewhere?.()) return;
     closePageAdjustPanel();
+  }
+
+  function focusFirstSlider() {
+    root?.querySelector<HTMLInputElement>('input[type="range"]')?.focus({ preventScroll: true });
   }
 
   onMount(() => {
     // Keyboard first: A, then the arrows. No scroll — the panel is fixed.
-    root?.querySelector<HTMLInputElement>('input[type="range"]')?.focus({ preventScroll: true });
+    focusFirstSlider();
+    // Opened from the drawer's card, the panel mounts while the drawer's
+    // <dialog> is still modal (closing), which makes the rest of the page
+    // inert: that focus() did nothing, and closing the dialog then puts focus
+    // back on whatever opened the drawer. Take it once the dialog has closed —
+    // its `close` event fires after that restore.
+    const pending = [...document.querySelectorAll('dialog')].filter((d) => d.matches(':modal'));
+    if (document.activeElement !== root?.querySelector('input[type="range"]')) {
+      for (const d of pending) d.addEventListener('close', focusFirstSlider, { once: true });
+    }
     window.addEventListener('keydown', onWindowKeyDown, true);
-    return () => window.removeEventListener('keydown', onWindowKeyDown, true);
+    return () => {
+      window.removeEventListener('keydown', onWindowKeyDown, true);
+      for (const d of pending) d.removeEventListener('close', focusFirstSlider);
+    };
   });
 </script>
 
 <div
   bind:this={root}
+  use:bottomOverlay
   data-reader-panel
   data-page-adjust-panel
   role="dialog"

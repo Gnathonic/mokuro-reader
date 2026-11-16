@@ -118,6 +118,78 @@ describe('PageAdjustPanel (#362, #363)', () => {
     }
   });
 
+  it('Escape closes a reader control opened over it first, unless focus is in the panel', async () => {
+    let otherOpen = true;
+    const onEscapeElsewhere = vi.fn(() => {
+      const had = otherOpen;
+      otherOpen = false;
+      return had;
+    });
+    const { getByLabelText } = render(PageAdjustPanel, { onEscapeElsewhere });
+    const bubbled = vi.fn();
+    window.addEventListener('keydown', bubbled);
+    const escape = (at: Element) =>
+      at.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true })
+      );
+    try {
+      // The page-number popover (say) was opened since: it closes, the panel
+      // stays — and the key goes no further ("back" would leave the reader).
+      escape(document.body);
+      expect(onEscapeElsewhere).toHaveBeenCalledTimes(1);
+      expect(get(pageAdjustPanelOpen)).toBe(true);
+      // Nothing else open now: the next Escape is the panel's.
+      escape(document.body);
+      expect(get(pageAdjustPanelOpen)).toBe(false);
+      // Typed in the panel itself: the panel's, whatever else is open.
+      openPageAdjustPanel();
+      await tick();
+      otherOpen = true;
+      onEscapeElsewhere.mockClear();
+      escape(slider(getByLabelText, 'Brightness'));
+      expect(onEscapeElsewhere).not.toHaveBeenCalled();
+      expect(get(pageAdjustPanelOpen)).toBe(false);
+      expect(bubbled).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener('keydown', bubbled);
+    }
+  });
+
+  it('opened while a modal dialog is still closing, it takes focus once the dialog closes', async () => {
+    // The drawer's <dialog> is still modal when its card opens the panel, so
+    // the page is inert and the first focus() is refused. jsdom does not do
+    // inertness: refuse focus by hand while the dialog is up.
+    let closed = false;
+    const dialog = document.createElement('dialog');
+    document.body.append(dialog);
+    const matches = Element.prototype.matches;
+    const modal = vi.spyOn(Element.prototype, 'matches').mockImplementation(function (
+      this: Element,
+      sel: string
+    ) {
+      if (sel === ':modal') return this === dialog && !closed;
+      return matches.call(this, sel);
+    });
+    const focus = HTMLElement.prototype.focus;
+    const refuse = vi.spyOn(HTMLElement.prototype, 'focus').mockImplementation(function (
+      this: HTMLElement,
+      options?: FocusOptions
+    ) {
+      if (closed) focus.call(this, options);
+    });
+    try {
+      const { getByLabelText } = render(PageAdjustPanel);
+      expect(document.activeElement).not.toBe(slider(getByLabelText, 'Brightness'));
+      closed = true;
+      dialog.dispatchEvent(new Event('close'));
+      expect(document.activeElement).toBe(slider(getByLabelText, 'Brightness'));
+    } finally {
+      refuse.mockRestore();
+      modal.mockRestore();
+      dialog.remove();
+    }
+  });
+
   it('A inside the panel closes it; B flips the adjustment through the reader', async () => {
     const onToggleAdjust = vi.fn();
     const { getByLabelText } = render(PageAdjustPanel, { onToggleAdjust });

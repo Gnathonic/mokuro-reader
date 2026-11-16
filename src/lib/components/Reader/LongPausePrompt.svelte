@@ -6,6 +6,7 @@
 <script lang="ts">
   import { AWAY_AFTER_MS, livePause, type LivePause } from '#lib/reading-history/pause-watch.js';
   import type { PauseAnswer } from '#lib/reading-history/pause-answer.js';
+  import { bottomOverlay } from '#lib/reader/bottom-overlay.js';
 
   /**
    * The open page reached its cutoff, so the timer stopped (phase 3b). It is
@@ -16,7 +17,9 @@
    * automatic cutoff this pace. If the reader comes back a while later, the
    * copy says how long the page was open and offers to count all of it or
    * none. The box keeps one width and Close one place, so the copy changing
-   * and the refreshing time never move anything around it.
+   * and the refreshing time never move anything around it. It shares the
+   * bottom centre with the page image panel: whichever shows up second stacks
+   * above the other (`reader/bottom-overlay.ts`), so neither covers the other.
    */
   let { onAnswer }: { onAnswer: (answer: PauseAnswer) => void } = $props();
 
@@ -60,6 +63,7 @@
     style="backdrop-filter: blur(8px); background-color: rgba(17, 24, 39, 0.9);"
     role="status"
     data-testid="long-pause"
+    use:bottomOverlay
   >
     <div class="flex items-start gap-3">
       <p class="min-w-0 flex-1">

@@ -41,7 +41,9 @@ async function shot(page: Page, name: string) {
   if (dir) await page.screenshot({ path: join(dir, `${name}.png`) });
 }
 
-async function openReader(page: Page, volume: SyntheticVolume) {
+async function openReader(page: Page, volume: SyntheticVolume, opts: { clock?: boolean } = {}) {
+  // Before the app loads, so every timer it arms runs on the page clock.
+  if (opts.clock) await page.clock.install();
   await gotoApp(page);
   await importVolume(page, volume);
   await page.evaluate(
@@ -176,6 +178,17 @@ test('the panel adjusts over the undimmed page; nothing flashes or moves (#363)'
   expect(near(rIdle, GREY[0])).toBe(true);
   await shot(page, '363-1-panel-open');
 
+  // Keyboard focus came with it once the drawer's dialog had closed (it is
+  // still modal, the page inert, while the panel mounts): the arrows adjust
+  // at once instead of turning the page or leaving the volume.
+  const readerHash = await page.evaluate(() => location.hash);
+  await expect(page.locator('#page-adjust-panel-pageBrightness')).toBeFocused();
+  await page.keyboard.press('ArrowRight');
+  await expect(page.locator(`${PANEL} [data-value="pageBrightness"]`)).toHaveText('105%');
+  await page.keyboard.press('ArrowLeft');
+  await expect(page.locator(`${PANEL} [data-value="pageBrightness"]`)).toHaveText('100%');
+  expect(await page.evaluate(() => location.hash)).toBe(readerHash);
+
   await watchShifts(page);
   const panelBox = (await panel.boundingBox())!;
   const slider = page.locator('#page-adjust-panel-pageBrightness');
@@ -272,6 +285,39 @@ test('A opens the panel; Escape closes it and never leaves the reader (#363)', a
   await expect(panel).toBeHidden();
   expect(await page.evaluate(() => location.hash)).toBe(readerHash);
 
+  // A control opened over the panel takes the first Escape — the page-number
+  // popover closes, the panel stays — and neither Escape leaves the reader
+  // (on its own, the popover's Escape also means "back").
+  await page.keyboard.press('a');
+  await expect(panel).toBeVisible();
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await page.locator('#page-num').click();
+  const popover = page.locator('[role="tooltip"]');
+  await expect(popover).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(popover).toBeHidden();
+  await expect(panel).toBeVisible();
+  expect(await page.evaluate(() => location.hash)).toBe(readerHash);
+  await page.keyboard.press('Escape');
+  await expect(panel).toBeHidden();
+  expect(await page.evaluate(() => location.hash)).toBe(readerHash);
+
+  // From the drawer by keyboard: Enter on "Adjust over the page" lands on the
+  // brightness slider, and the arrows adjust (not turn the page).
+  await openDrawer(page);
+  const adjustButton = page
+    .locator('#settings')
+    .getByRole('button', { name: /Adjust over the page/ });
+  await adjustButton.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.locator('#settings')).toBeHidden();
+  await expect(page.locator('#page-adjust-panel-pageBrightness')).toBeFocused();
+  await page.keyboard.press('ArrowLeft');
+  await expect(page.locator(`${PANEL} [data-value="pageBrightness"]`)).toHaveText('100%');
+  expect(await page.evaluate(() => location.hash)).toBe(readerHash);
+  await page.keyboard.press('Escape');
+  await expect(panel).toBeHidden();
+
   // A toggles it; opening the drawer puts it away (never both on screen).
   await page.keyboard.press('a');
   await expect(panel).toBeVisible();
@@ -343,6 +389,86 @@ test('phone: the quick actions open the panel, clear of the menu button (#363)',
     await ctx.close();
   }
 });
+
+/** Every control of `sel` is what a pointer at its centre reaches — nothing lies over it. */
+const reachable = (page: Page, sel: string) =>
+  page.evaluate((sel) => {
+    const root = document.querySelector(sel)!;
+    const controls = [...root.querySelectorAll('input, button')] as HTMLElement[];
+    return controls.every((el) => {
+      const r = el.getBoundingClientRect();
+      const at = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+      return !!at && root.contains(at);
+    });
+  }, sel);
+
+const apart = (a: { x: number; y: number; width: number; height: number }, b: typeof a) =>
+  a.x + a.width <= b.x || b.x + b.width <= a.x || a.y + a.height <= b.y || b.y + b.height <= a.y;
+
+for (const vp of [
+  { name: 'desktop', width: 1920, height: 1080 },
+  { name: 'phone', width: 390, height: 844 }
+]) {
+  test(`${vp.name}: the long-pause prompt and the panel never cover each other, and neither moves (#363)`, async ({
+    browser
+  }) => {
+    test.setTimeout(120_000);
+    const ctx = await browser.newContext({ viewport: { width: vp.width, height: vp.height } });
+    const page = await ctx.newPage();
+    try {
+      const volume = writeSyntheticVolume(`AdjustPause${vp.name}`, 3, GREY);
+      await openReader(page, volume, { clock: true });
+      // A 1-minute cutoff: the cap a cover (a page with no text) gets anyway.
+      await page.evaluate(async () => {
+        const { setIdleOverride } = await import('/src/lib/settings/tracking-data.ts');
+        setIdleOverride(1);
+      });
+      const panel = page.locator(PANEL);
+      const prompt = page.getByTestId('long-pause');
+
+      // Adjusting a cover past the cap: the prompt arrives while the panel is
+      // open, and stacks above it. The panel keeps its place and every one of
+      // its controls stays reachable.
+      await page.keyboard.press('a');
+      await expect(panel).toBeVisible();
+      const panelBox = (await panel.boundingBox())!;
+      await page.clock.fastForward('01:05');
+      await expect(prompt).toBeVisible();
+      expect(await panel.boundingBox()).toEqual(panelBox);
+      let promptBox = (await prompt.boundingBox())!;
+      expect(apart(panelBox, promptBox)).toBe(true);
+      expect(promptBox.y + promptBox.height).toBeLessThanOrEqual(panelBox.y);
+      expect(await reachable(page, PANEL)).toBe(true);
+      expect(await reachable(page, '[data-testid="long-pause"]')).toBe(true);
+      await shot(page, `363-6-${vp.name}-prompt-over-panel`);
+
+      // The panel closing leaves the prompt where it is.
+      await page.locator(`${PANEL} button[aria-label="Close"]`).click();
+      await expect(panel).toBeHidden();
+      expect(await prompt.boundingBox()).toEqual(promptBox);
+
+      // The other order: a prompt already waiting at its own place, then the
+      // panel opens — above it; the prompt does not move.
+      await prompt.getByRole('button', { name: 'Close', exact: true }).click();
+      await expect(prompt).toBeHidden();
+      await page.clock.fastForward('01:05');
+      await expect(prompt).toBeVisible();
+      promptBox = (await prompt.boundingBox())!;
+      await page.keyboard.press('a');
+      await expect(panel).toBeVisible();
+      const lifted = (await panel.boundingBox())!;
+      expect(await prompt.boundingBox()).toEqual(promptBox);
+      expect(apart(lifted, promptBox)).toBe(true);
+      expect(lifted.y + lifted.height).toBeLessThanOrEqual(promptBox.y);
+      expect(lifted.y).toBeGreaterThanOrEqual(0);
+      expect(await reachable(page, PANEL)).toBe(true);
+      expect(await reachable(page, '[data-testid="long-pause"]')).toBe(true);
+      await shot(page, `363-7-${vp.name}-panel-over-prompt`);
+    } finally {
+      await ctx.close();
+    }
+  });
+}
 
 test('the drawer reopens where it was scrolled to (#363)', async ({ page }) => {
   const volume = writeSyntheticVolume('AdjustScroll', 3, GREY);

@@ -157,6 +157,8 @@
   let rereadPromptOpen = $state(false);
   /** The quick-actions OCR layer picker is up (bound from QuickActions). */
   let layerPickerOpen = $state(false);
+  /** The page-number popover (jump to page) is up. */
+  let pageNumPopoverOpen = $state(false);
   let rereadCheckedFor = $state<string | null>(null);
   let rereadDisplayTitle = $state('');
   let localSeriesVolumes = $derived(($currentSeries || []).filter((v) => !v.isPlaceholder));
@@ -327,6 +329,39 @@
         changePage(newPage, true);
       }
     }
+  }
+
+  /**
+   * Escape while the page image panel is open and focus is not in it: if
+   * another non-modal reader control that closes on Escape is up, close THAT
+   * one (it was opened over the panel) and report true; the panel then stops
+   * the key, so it never also reaches the layout's "Escape = back" — which
+   * would leave the reader (PageAdjustPanel.svelte). Same steps those
+   * controls take on Escape themselves. Modal dialogs (re-read prompt, layer
+   * name) are the panel's own check.
+   */
+  function escapeToOtherControl(): boolean {
+    if (layerPickerOpen) {
+      layerPickerOpen = false;
+      return true;
+    }
+    if (showContextMenu) {
+      showContextMenu = false;
+      return true;
+    }
+    if (pageNumPopoverOpen) {
+      pageNumPopoverOpen = false;
+      return true;
+    }
+    if (editSession?.tool === 'draw') {
+      editSession.tool = 'select';
+      return true;
+    }
+    if (editSession && editSession.selection.length > 0) {
+      editSession.clearSelection();
+      return true;
+    }
+    return false;
   }
 
   function handleShortcuts(event: KeyboardEvent & { currentTarget: EventTarget & Window }) {
@@ -1822,6 +1857,7 @@
   <TextBoxPicker />
   {#if overlaysVisible}
     <Popover
+      bind:isOpen={pageNumPopoverOpen}
       placement="bottom"
       trigger="click"
       triggeredBy="#page-num"
@@ -1871,9 +1907,9 @@
     </button>
   {/if}
   {#if $pageAdjustPanelOpen}
-    <!-- Before the long-pause prompt: same z-index, so the prompt paints over
-         the panel where they meet. -->
-    <PageAdjustPanel onToggleAdjust={togglePageAdjust} />
+    <!-- Shares the bottom centre with the long-pause prompt: whichever comes
+         second stacks above the other (reader/bottom-overlay.ts). -->
+    <PageAdjustPanel onToggleAdjust={togglePageAdjust} onEscapeElsewhere={escapeToOtherControl} />
   {/if}
   {#if volume && pages?.length}
     <PositionOfferBanner
