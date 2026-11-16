@@ -10,7 +10,7 @@
  * Elsewhere the section draws them for the profile's defaults: a new
  * volume's reading direction, the profile's layout and page view.
  */
-import { derived, writable, type Readable } from 'svelte/store';
+import { derived, readable, writable, type Readable } from 'svelte/store';
 import { settings, type Settings } from '#lib/settings/settings.js';
 import type { MenuGlyphContext } from './quick-menu';
 
@@ -49,8 +49,28 @@ function isLandscape(): boolean {
   return typeof window !== 'undefined' && window.innerWidth > window.innerHeight;
 }
 
+/**
+ * Whether the window is landscape, kept current: a resize or an orientation
+ * change updates it (a `matchMedia` listener, one flip per orientation change
+ * rather than per resize event). Without `matchMedia` it is read once.
+ */
+export const landscape: Readable<boolean> = readable(isLandscape(), (set) => {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+  const mq = window.matchMedia('(orientation: landscape)');
+  const update = () => set(isLandscape());
+  update();
+  mq.addEventListener?.('change', update);
+  window.addEventListener('orientationchange', update);
+  window.addEventListener('resize', update);
+  return () => {
+    mq.removeEventListener?.('change', update);
+    window.removeEventListener('orientationchange', update);
+    window.removeEventListener('resize', update);
+  };
+});
+
 /** The context the section draws glyphs with: the open reader's, else the defaults'. */
 export const menuGlyphContext: Readable<MenuGlyphContext> = derived(
-  [fromReader, settings],
-  ([reader, s]) => reader ?? defaultMenuGlyphContext(s, isLandscape())
+  [fromReader, settings, landscape],
+  ([reader, s, land]) => reader ?? defaultMenuGlyphContext(s, land)
 );

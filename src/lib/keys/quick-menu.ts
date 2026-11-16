@@ -199,7 +199,7 @@ export interface MenuGlyph {
 /**
  * The ONE place an entry's glyph is decided. The quick menu
  * (`quickMenuItems`) and the settings section's rows both draw what this
- * returns, through the one component that draws it (`MenuGlyph.svelte`), so
+ * returns, through the one component that draws it (`QuickMenuGlyph.svelte`), so
  * what the section shows is what the menu shows.
  */
 export function menuGlyph(action: KeyActionDef, ctx: MenuGlyphContext): MenuGlyph {

@@ -245,6 +245,11 @@ and nothing resolves an id against a module-level table.
   can reach and no profile can remove (`source-lint.test.ts` refuses one).
   What an entry shows (hidden, disabled with its reason, pressed, badge) is
   one `$derived` in the reader, read only while the menu is open.
+- **Stay-open rule** (`closesAfterRun`, `keys/quick-menu.ts`). After a tap the
+  menu closes when the action is `closesMenu` (leaves the volume or opens a
+  dialog) — always, whatever the setting; stays open when it is a step
+  (brightness/zoom up and down, `keepOpen`) — always; and otherwise follows
+  `Settings.quickMenuStaysOpen` (default on).
 - **Exact modifiers.** A chord (`Ctrl+Alt+Shift+Meta+<code>`) matches only the
   identical modifier set, so a Shift held for dictionary scanning is inert
   unless the user binds a Shift chord.
