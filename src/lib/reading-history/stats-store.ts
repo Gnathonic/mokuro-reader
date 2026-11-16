@@ -35,6 +35,13 @@ import {
  *
  * Components read these figures through `figuresFor` and the speed helpers;
  * none of them runs the engine.
+ *
+ * What "mark as read" counted (#224) sits ON TOP of what the app measured:
+ * the measured figures (history, the pre-history baseline, editor edits) are
+ * clamped at zero first, and credits are added after. Every editor edit is a
+ * difference from a measured figure (`editor-stats.ts`), so making, cutting
+ * or taking back a credit can never meet an edit: with every credit gone, the
+ * figures are those of the same history without credits, to the bit.
  */
 
 export interface ReadingStatsState {
@@ -57,8 +64,14 @@ export interface VolumeFigures {
   /** The pre-history snapshot's share of the above (`unexplainedBaseline`). */
   baseline: { timeMs: number; chars: number };
   /**
-   * What "mark as read" counted (#224) — inside `timeMs` and `chars`, never
-   * measured reading: speed figures subtract it (`measuredFigures`).
+   * What the app measured: history and the baseline, editor edits included,
+   * held at zero — the same with or without any credit. What every speed is
+   * made of, and what the volume editor shows and edits.
+   */
+  measured: { timeMs: number; chars: number };
+  /**
+   * What "mark as read" counted (#224), on top of `measured`: `timeMs` and
+   * `chars` are the two added.
    */
   credit: { timeMs: number; chars: number };
 }
@@ -256,14 +269,11 @@ export function unexplainedBaseline(
 }
 
 const NO_BASELINE = { timeMs: 0, chars: 0 };
-const NO_CUT = { chars: 0, ms: 0 };
 
 /** A volume's baseline and what it does to the volume's credits (`baselineOf`). */
 interface Baseline {
   baseline: { timeMs: number; chars: number };
   lump: { pass: number; chars: number } | null;
-  /** What the credits of the lump's pass give up: the sum over `credits`. */
-  cut: { chars: number; ms: number };
   /** Every live credit with what it counts once cut (the engine's when nothing is). */
   credits: CreditTotals[];
 }
@@ -277,8 +287,9 @@ interface Baseline {
  * the freeze, each a pass of its own (`convertLegacyRecord` made them
  * restarts) — in the pass the record was on when it was frozen (`lump`).
  * A credit in that pass gives up what would take the pass past the
- * volume's characters with the lump in it (`cut`, off the lowest pages the
- * pass's credits hold, as the engine does). A pass a
+ * volume's characters with the lump in it — the pass's measured characters
+ * and the lump held at zero together, as `passFiguresFor` counts them (`cut`,
+ * off the lowest pages the pass's credits hold, as the engine does). A pass a
  * "Reset All" ended keeps none of the lump.
  *
  * Credits never explain the snapshot, frozen or not (the engine's timeline
@@ -287,8 +298,8 @@ interface Baseline {
  *
  * The cut is computed here ONCE, per credit (`credits`): each keeps the
  * pages `coverFirstPages` leaves it and its time in proportion to the
- * characters it keeps. `cut` is their sum, so the figures (`figuresFor`,
- * `passFiguresFor`) and what a credit shows or Remove takes back
+ * characters it keeps. The figures (`figuresFor`, `passFiguresFor`) are
+ * their sum, so they and what a credit shows or Remove takes back
  * (`creditsFor`) are the same computation.
  */
 function baselineOf(
@@ -297,9 +308,9 @@ function baselineOf(
 ): Baseline {
   const engine = totals?.credits ?? [];
   const snapshot = snapshotOf(record, !baselinesFrozen);
-  if (!snapshot) return { baseline: NO_BASELINE, lump: null, cut: NO_CUT, credits: engine };
+  if (!snapshot) return { baseline: NO_BASELINE, lump: null, credits: engine };
   const baseline = unexplained(snapshot, totals);
-  const none = { baseline, lump: null, cut: NO_CUT, credits: engine };
+  const none = { baseline, lump: null, credits: engine };
   if (baseline.chars <= 0) return none;
   let archived = 0;
   for (const read of record?.archivedReads ?? []) {
@@ -316,14 +327,14 @@ function baselineOf(
     return {
       baseline: { timeMs: baseline.timeMs, chars: baseline.chars - chars },
       lump: { pass, chars: 0 },
-      cut: NO_CUT,
       credits: engine
     };
   }
   const lump = { pass, chars };
-  const uncut = { baseline, lump, cut: NO_CUT, credits: engine };
+  const uncut = { baseline, lump, credits: engine };
   if (!inPass || inPass.creditChars <= 0) return uncut;
-  const over = inPass.chars + chars - (inPass.volumeChars ?? Infinity);
+  const measured = Math.max(0, inPass.measuredChars + chars);
+  const over = measured + inPass.creditChars - (inPass.volumeChars ?? Infinity);
   const cutChars = Math.min(inPass.creditChars, Math.max(0, over));
   if (cutChars <= 0) return uncut;
   // Reading from the start: the cut covers the lowest pages the pass's credits hold.
@@ -336,23 +347,34 @@ function baselineOf(
     cutChars
   );
   const credits = [...engine];
-  const cut = { chars: 0, ms: 0 };
   here.forEach((i, k) => {
     const credit = engine[i];
     const ms = credit.chars > 0 ? (credit.ms * kept[k].chars) / credit.chars : credit.ms;
-    cut.chars += credit.chars - kept[k].chars;
-    cut.ms += credit.ms - ms;
     credits[i] = { ...credit, ms, ...kept[k] };
   });
-  return { baseline, lump, cut, credits };
+  return { baseline, lump, credits };
+}
+
+/** What credits count, summed: their time and characters (never below zero). */
+function sumCredits(credits: CreditTotals[]): { timeMs: number; chars: number } {
+  let timeMs = 0;
+  let chars = 0;
+  for (const credit of credits) {
+    timeMs += credit.ms;
+    chars += credit.chars;
+  }
+  return { timeMs, chars };
 }
 
 /**
- * A volume's time and characters: its history, plus whatever of the
- * pre-history snapshot the events from before its freeze do not explain.
- * Clamped only here, after the snapshot is added, so an editor edit below
- * the old figure takes effect. A credit never takes a pass past the volume
- * (the engine's budget, and `baselineOf` for the baseline's pass).
+ * A volume's time and characters. MEASURED: its history (views and editor
+ * edits), plus whatever of the pre-history snapshot the events from before
+ * its freeze do not explain — clamped only here, after the snapshot is
+ * added, so an editor edit below the old figure takes effect. Then what
+ * "mark as read" counted, ON TOP: a credit never meets the clamp, so taking
+ * one back leaves exactly the figures the history has without it. A credit
+ * never takes a pass past the volume (the engine's budget, and `baselineOf`
+ * for the baseline's pass).
  */
 export function figuresFor(
   stats: ReadingStatsState,
@@ -360,56 +382,36 @@ export function figuresFor(
   record?: BaselineSource
 ): VolumeFigures {
   const totals = stats.byVolume.get(volume);
-  const { baseline, cut } = baselineOf(totals, record);
-  const timeMs = Math.max(0, (totals?.timeMs ?? 0) - cut.ms + baseline.timeMs);
-  const chars = (totals?.readChars ?? 0) - cut.chars + baseline.chars;
+  const { baseline, credits } = baselineOf(totals, record);
+  const measured = {
+    timeMs: Math.max(0, (totals?.measuredMs ?? 0) + baseline.timeMs),
+    chars: Math.max(0, (totals?.measuredChars ?? 0) + baseline.chars)
+  };
+  const credit = sumCredits(credits);
+  const timeMs = measured.timeMs + credit.timeMs;
   return {
     timeMs,
     minutes: Math.floor(timeMs / 60_000),
-    chars: Math.max(0, chars),
+    chars: measured.chars + credit.chars,
     skippedChars: totals?.skippedChars ?? 0,
     lastReadAt: totals?.lastReadAt ?? null,
     baseline,
-    credit: {
-      timeMs: (totals?.creditMs ?? 0) - cut.ms,
-      chars: (totals?.creditChars ?? 0) - cut.chars
-    }
+    measured,
+    credit
   };
 }
 
 /**
- * The minutes the volume editor's "Reset All" records its time edit from:
- * the volume's time as the stats will count it once the reset is applied.
- * A reset's pass keeps no credit, so the time its credits count now
- * (`creditsFor`, after the baseline's cut) leaves with the reset itself —
- * an edit from the figure shown would take it off a second time.
- */
-export function minutesAfterReset(
-  stats: ReadingStatsState,
-  volume: string,
-  record?: BaselineSource
-): number {
-  const totals = stats.byVolume.get(volume);
-  const pass = totals?.pass ?? 0;
-  const { baseline, cut, credits } = baselineOf(totals, record);
-  let creditMs = 0;
-  for (const credit of credits) if (credit.pass === pass) creditMs += credit.ms;
-  const timeMs = (totals?.timeMs ?? 0) - cut.ms + baseline.timeMs - creditMs;
-  // Whole milliseconds: a credit's time scaled by its characters is
-  // fractional, and 659,999.99… ms must be the 11 minutes it is.
-  return Math.floor(Math.max(0, Math.round(timeMs)) / 60_000);
-}
-
-/**
  * Whether the volume editor's "Reset All" has a pass to end — whether it
- * records a `reset` (#224). Not "the pass shows characters": that figure is
- * the pass's CLAMPED net, and an editor edit (a v1.11.0 Reset All recorded
- * the record's characters as a negative adjust) can hold it at 0 while the
- * pass's pages are read and its credits live. Unended, such a pass would
- * count a re-read as nothing, and its credits' time would come off again
- * with the editor's time edit. So: any page read or claimed in the pass,
- * any live credit in it, any characters at all in its raw count (an edit
- * either way), or the pre-history baseline's share in it.
+ * records a `reset` (#224). Asked of what the pass MEASURED only: a credit
+ * is taken back by the editor's own retracts, so whether a pass ends never
+ * depends on one (a reset of a pass that held only credits would move later
+ * reading into another pass than the same history without them). Not "the
+ * pass shows characters" either: that figure is held at zero, and a v1.11.0
+ * Reset All's negative characters edit holds it there while the pass's
+ * pages are read — unended, such a pass would count a re-read as nothing.
+ * So: a page a view read in the pass, any characters in its measured count
+ * (an edit either way), or the pre-history baseline's share in it.
  */
 export function resetEndsPass(
   stats: ReadingStatsState,
@@ -418,12 +420,10 @@ export function resetEndsPass(
 ): boolean {
   const totals = stats.byVolume.get(volume);
   if (totals) {
-    const pass = totals.pass;
-    if (totals.passRead.size > 0) return true;
-    if (totals.credits.some((credit) => credit.pass === pass)) return true;
-    if ((totals.passes[pass]?.chars ?? 0) !== 0) return true;
+    if (totals.passReadByViews.size > 0) return true;
+    if ((totals.passes[totals.pass]?.measuredChars ?? 0) !== 0) return true;
   }
-  return passFiguresFor(stats, volume, record).chars > 0;
+  return passFiguresFor(stats, volume, record).measuredChars > 0;
 }
 
 /** The current pass of a volume: what it counts, and of that what credits count. */
@@ -431,11 +431,16 @@ export interface PassFigures {
   /** The latest pass (restarts so far). */
   pass: number;
   /**
-   * Its characters: views, credits and editor edits of the pass, plus the
-   * baseline's share when the record was on this pass when it was frozen.
-   * A credit never takes it past the volume's characters.
+   * Its characters: `measuredChars`, plus what its credits count on top. A
+   * credit never takes it past the volume's characters.
    */
   chars: number;
+  /**
+   * What the pass measured: its views and editor edits, plus the baseline's
+   * share when the record was on this pass when it was frozen — held at zero.
+   * The same with or without any credit.
+   */
+  measuredChars: number;
   credit: { timeMs: number; chars: number };
 }
 
@@ -454,17 +459,11 @@ export function passFiguresFor(
   const totals = stats.byVolume.get(volume);
   const pass = which ?? totals?.pass ?? 0;
   const current = totals?.passes[pass];
-  const { lump, cut } = baselineOf(totals, record);
-  const here = lump?.pass === pass;
-  const cutHere = here ? cut : NO_CUT;
-  return {
-    pass,
-    chars: Math.max(0, (current?.chars ?? 0) - cutHere.chars + (here ? lump.chars : 0)),
-    credit: {
-      timeMs: (current?.creditMs ?? 0) - cutHere.ms,
-      chars: (current?.creditChars ?? 0) - cutHere.chars
-    }
-  };
+  const { lump, credits } = baselineOf(totals, record);
+  const share = lump?.pass === pass ? lump.chars : 0;
+  const measuredChars = Math.max(0, (current?.measuredChars ?? 0) + share);
+  const credit = sumCredits(credits.filter((c) => c.pass === pass));
+  return { pass, chars: measuredChars + credit.chars, measuredChars, credit };
 }
 
 /**
@@ -488,14 +487,11 @@ export function creditsFor(
  * app measured (plus the pre-history baseline and editor edits, as before).
  * What every speed figure is made of.
  */
-export function measuredFigures(figures: Pick<VolumeFigures, 'timeMs' | 'chars' | 'credit'>): {
+export function measuredFigures(figures: Pick<VolumeFigures, 'measured'>): {
   timeMs: number;
   chars: number;
 } {
-  return {
-    timeMs: Math.max(0, figures.timeMs - figures.credit.timeMs),
-    chars: Math.max(0, figures.chars - figures.credit.chars)
-  };
+  return { ...figures.measured };
 }
 
 /**

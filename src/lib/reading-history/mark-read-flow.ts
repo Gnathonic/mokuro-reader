@@ -323,9 +323,11 @@ export async function countReadElsewhere(volume: VolumeMetadata, upTo: number): 
   const ms = (answer.typedMinutes ?? estimateMinutes(chars, speed) ?? 0) * 60_000;
   const credit = creditItem(v, answer.upTo, ms);
   if (!credit) return false;
-  const stored = await withFrozenBaselines([v.uuid], () =>
-    recordEvent({ kind: 'credit', volume: v.uuid, ...credit })
-  );
+  // Nothing is marked, so the record does not move and its snapshot needs no
+  // freeze: freezing here would make the measured figures differ from those
+  // of the same history without this credit (an unfrozen snapshot follows
+  // the record, a frozen one does not).
+  const stored = await recordEvent({ kind: 'credit', volume: v.uuid, ...credit });
   // No snackbar: the editor's own dialog would cover it. The editor shows the
   // counted line with its Remove, which is this action's undo.
   await settledStats();

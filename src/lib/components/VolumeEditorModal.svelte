@@ -58,7 +58,11 @@
   // Reading stats
   let progress = $state(0);
   let timeReadInMinutes = $state(0);
-  /** Time read as the stats showed it when the editor opened: a save records the difference. */
+  /**
+   * The MEASURED time read when the editor opened (`editorStats`): a save
+   * records the difference. Never what marking read counted — that is a line
+   * of its own, so taking a credit back can never meet a time edit (#224).
+   */
   let loadedMinutes = 0;
 
   // Completion date (#304): shown for a finished or dated volume, edited as a local day.
@@ -78,13 +82,13 @@
   let missingPagePaths = $state<string[]>([]);
 
   /**
-   * Characters read in the CURRENT pass, as the stats count them (views,
-   * credits, edits, and the pre-history baseline's share; `passFiguresFor`) —
-   * this time through the volume, beside its size. The lifetime figure counts
-   * every re-read and is no fraction of one volume. A page edit moves the
-   * POSITION only (#224): the old linear estimate here recorded the
-   * difference as reading, and after a mark it deducted pages that were
-   * never read.
+   * Characters read in the CURRENT pass as the app measured them (views,
+   * edits, and the pre-history baseline's share; `editorStats`) — this time
+   * through the volume, beside its size; what marking read counted is the
+   * line below, on top. The lifetime figure counts every re-read and is no
+   * fraction of one volume. A page edit moves the POSITION only (#224): the
+   * old linear estimate here recorded the difference as reading, and after a
+   * mark it deducted pages that were never read.
    */
   let charsRead = $state(0);
   /** "Reset All" asks the save to zero the characters as well as the time, and un-read. */
@@ -97,7 +101,7 @@
   let sheetVolume = $state<SheetVolume | null>(null);
   /** The record says finished (stored flag or page): "up to" defaults to the last page. */
   let finished = $state(false);
-  /** What the current pass's credits count (the "Counted when marked read" line). */
+  /** What the current pass's credits count (the "Also counted when marked read" line). */
   let counted = $state<{ ms: number; chars: number; pages: number } | null>(null);
   /** The last Remove, offered back until the editor closes. */
   let removedUndo = $state<{ text: string; undo: () => Promise<void> } | null>(null);
@@ -263,9 +267,10 @@
   }
 
   /**
-   * Re-read the counted figures (after open, Count or Remove). The time field
-   * follows them unless the user has typed a time of their own, which is kept;
-   * either way the save records the difference from the NEW figure.
+   * Re-read the figures (after open, Count or Remove). A credit moves no
+   * measured figure, so the time field stays as it was; were it to move
+   * anyway (it follows the figure unless the user has typed a time of their
+   * own, which is kept), the save records the difference from the NEW one.
    */
   function loadFigures(initial: boolean) {
     const shown = editorStats(get(readingStats), volumeUuid, get(volumesWithTrash)[volumeUuid]);
@@ -452,15 +457,12 @@
         await updateVolumeInDb(volumeUuid, metadataUpdates);
       }
 
-      // Reset All: the pass's characters go to zero and its pages may be read
-      // again (a `reset` event: every device's stats apply it) — recorded only
-      // when the pass has something to end (`resetEndsPass`: read pages, live
-      // credits, any edit, the baseline's share — not the figure shown, which
-      // an older editor's negative edit can hold at 0), so a save of an unread
-      // volume writes no event a build without the kind would skip. The reset also takes
-      // away what the pass's credits count, time included, so the time edit
-      // starts from the time AFTER it (`minutesAfterReset`): from the figure
-      // shown it would take the credits' time off twice.
+      // The history part of the save (`editorSave`): the time edit, from the
+      // measured time shown; with Reset All, a `reset` when the pass measured
+      // something to end (pages a view read, any edit, the baseline's share —
+      // never a credit), so a save of an unread volume writes no event a
+      // build without the kind would skip, and a retract of each credit the
+      // pass counted, as Remove does.
       const save = editorSave(get(readingStats), volumeUuid, get(volumesWithTrash)[volumeUuid], {
         shownMinutes: loadedMinutes,
         toMinutes: timeReadInMinutes,
@@ -818,7 +820,7 @@
             {#if counted && !resetChars}
               <div class="flex flex-wrap items-center justify-between gap-2">
                 <span class="text-gray-600 dark:text-gray-400">
-                  Counted when marked read: {formatMinutes(counted.ms / 60_000)} · {counted.chars.toLocaleString()}
+                  Also counted when marked read: {formatMinutes(counted.ms / 60_000)} · {counted.chars.toLocaleString()}
                   characters ({counted.pages.toLocaleString()} page{counted.pages === 1 ? '' : 's'})
                 </span>
                 <Button

@@ -1733,8 +1733,8 @@ freeze) + history after` (`figuresFor`, via the engine's per-volume
   pace until it moves > 2%, and the pace / recent speed take volumes newest
   first (`estimatePace`, `recentSpeed`) — never sort the whole library there.
 - `timeReadInMinutes` is frozen: parsed, never written. The volume editor
-  edits the derived time and records the difference as an `adjust` event (no
-  record stamp). The reader timer is that figure plus the open view counted by
+  edits the derived MEASURED time (never what "mark as read" counted, #224)
+  and records the difference as an `adjust` event (no record stamp). The reader timer is that figure plus the open view counted by
   the same rule (`countedDwell`: up to its cap); clicking it ends the view
   until the next page.
 - Recent speed = the newest 8 h of counted reading, by time (no per-volume
@@ -1881,6 +1881,29 @@ never saw read (spec `2026-11-07-mark-as-read-credit-design.md`;
   no counting view read in its pass and no earlier credit claimed. Credits
   never feed samples, the pace or any speed — an estimate uses measured
   reading only, and a speed that rounds below 1 char/min is no speed.
+- **Credits sit on top of the measured figures, never inside them.** The
+  engine keeps views, `adjust`s and resets apart (`measuredMs`,
+  `measuredChars`; per pass `measuredChars`); `figuresFor` adds the baseline,
+  clamps THAT at zero (`figures.measured`), and only then adds the credits —
+  per pass likewise (`passFiguresFor().measuredChars`), and a pass's budget is
+  the volume less its measured characters held at zero. The volume editor
+  (`editor-stats.ts`: `editorStats` / `editorSave`, the modal only renders
+  them) shows and edits the MEASURED time and characters; what marking read
+  counted is its own line ("Also counted when marked read … Remove"). So an
+  editor edit is always a difference from a measured figure, and no later
+  change to a credit — Reset All, Mark as unread, Remove, Undo, a retract or
+  credit synced in — can meet it: with every credit gone the figures are those
+  of the same history without credits, to the bit. (An edit made from a
+  figure holding a credit's time took that time off a second time when the
+  credit went, and a re-read came up short.) v1.11.0's edits were made from
+  measured figures (no credits then) and keep their meaning; drafts of this
+  feature that edited the total never shipped. Never let a credit decide an
+  edit or a gate: whatever the editor records must be the same with and
+  without credits. Pinned by `credit-edits.property.test.ts` (one user's run
+  of reading, marks, editor saves below a credit's time, Reset All, un-read,
+  Remove, Undo, v1.11.0 time/characters edits, restarts, re-reads and syncs
+  between devices, in a world that counts its marks and one that does not)
+  and `editor-stats.test.ts`.
 - **A credit never takes a pass past the volume.** Page claiming alone does
   not bound it: the pre-history baseline, an `adjust`, a converted turn (a
   stretch of pages under its first) and a page counted at an older OCR all
@@ -1913,21 +1936,24 @@ never saw read (spec `2026-11-07-mark-as-read-credit-design.md`;
   mark-read flow) — the live count a mark moved to the whole volume would
   otherwise hold the mark's pages as old reading and cut the credit to
   nothing. The cut is computed once, per credit (`baselineOf`): the figures,
-  the editor's "Counted when marked read" and Remove all read it.
+  the editor's "Also counted when marked read" and Remove all read it.
 - **Reset All is a `reset` event**, not a characters adjust: it ends its pass
   (a pass for the stats only — no archive, no position offer, unlike
   `restart`) and takes that pass to zero, the baseline's share included; its
   credits claim nothing. Pages may then be read or credited again. (An adjust
   of minus the pass left every page "read in this pass": reading the volume
   again counted nothing, and the editor sat at 0 / N for good.) Time is the
-  editor's own adjust, made from the time AFTER the reset
-  (`minutesAfterReset`: the reset already takes its credits' time). Recorded
-  only when the pass has something to end (`resetEndsPass`: a read or claimed
-  page, a live credit, any characters in its raw count, the baseline's share)
-  — a format-2 event in a month makes format-1-only builds skip that whole
-  device-month. Never gate on the clamped pass figure: a v1.11.0 Reset All's
-  negative adjust holds it at 0 while the pass's pages are read. "Count pages read
-  elsewhere…" is off while a Reset All waits for Save.
+  editor's own adjust, from the measured time it showed. Recorded only when
+  the pass MEASURED something to end (`resetEndsPass`: a page a view read,
+  any characters in its measured count, the baseline's share — never a
+  credit: a reset of a pass holding only credits would move later reading
+  into another pass than the same history without them) — a format-2 event
+  in a month makes format-1-only builds skip that whole device-month. Never
+  gate on the clamped pass figure: a v1.11.0 Reset All's negative adjust
+  holds it at 0 while the pass's pages are read. The pass's credits go by a
+  `retract` each, as Remove does (`editorSave`). "Count pages read
+  elsewhere…" is off while a Reset All waits for Save, and records no freeze
+  of the snapshot (it marks nothing, and a credit must not change the record).
 - A `credit`, `retract` or `reset` makes its month segment format 2; every other
   segment stays format 1 byte for byte. Because every other device refuses
   a whole device-month over one bad row, forever, `appendEvent` refuses a

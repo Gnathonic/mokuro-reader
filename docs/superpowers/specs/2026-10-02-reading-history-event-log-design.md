@@ -220,8 +220,11 @@ history/<device>/<YYYY-MM>.events     one month of that device's events
   that knows only format 1 refuses a format-2 segment and keeps the old stamp, so it reads that
   device-month once it updates.
 - **Credits in the stats.** A credit claims, in time order, each of its pages that no counting view read in
-  its pass and no earlier credit claimed. A pass's credits count at most its budget: the newest credit's
-  `total_chars` less what the pass's views and adjusts count; the excess comes off their lowest pages (what
+  its pass and no earlier credit claimed. Credits sit ON TOP of the measured figures: views, adjusts and
+  resets are totalled (and, with the pre-history baseline, clamped at zero) apart from them, and every
+  editor edit is a difference from a measured figure — so no later change to a credit ever meets an edit.
+  A pass's credits count at most its budget: the newest credit's `total_chars` less what the pass's views
+  and adjusts count, held at zero; the excess comes off their lowest pages (what
   a pass counts without pages is reading from the start), and the frozen pre-history baseline's share of
   its pass is set against them the same way (stats store). A credit's time is
   `time_ms × counted chars / declared chars`. Real reading always wins (a later view takes its page back),

@@ -4,7 +4,8 @@ import { writable } from 'svelte/store';
 
 // The editor records a time edit as the DIFFERENCE from the figure it showed
 // (volume-editor.ts `timeRead: { from, to }`), so the figure it loads must be
-// the counted one. The stats store is stubbed with a readiness gate the test
+// the counted one — what the app MEASURED (`editor-stats.ts`, run for real
+// on this stub). The stats store is stubbed with a readiness gate the test
 // controls; `figuresFor` answers the baseline alone until the gate opens.
 const stats = vi.hoisted(() => {
   let release!: () => void;
@@ -13,11 +14,9 @@ const stats = vi.hoisted(() => {
     release: () => release(),
     readingStatsReady: vi.fn(() => gate),
     chars: 0,
-    /** The current pass's characters (`passFiguresFor`); `null` = the same as `chars`. */
+    /** The current pass's measured characters (`passFiguresFor`); `null` = the same as `chars`. */
     passChars: null as number | null,
-    /** The time once a reset is applied (`minutesAfterReset`). */
-    afterReset: 60,
-    /** Whether the pass has something to end (`resetEndsPass`); `null` = the pass shows characters. */
+    /** Whether the pass measured something to end (`resetEndsPass`); `null` = it shows characters. */
     resetEnds: null as boolean | null,
     figuresFor: vi.fn((state: { ready: boolean }) => ({
       minutes: state.ready ? 60 : 5,
@@ -25,6 +24,7 @@ const stats = vi.hoisted(() => {
       chars: stats.chars,
       skippedChars: 0,
       lastReadAt: null,
+      measured: { timeMs: (state.ready ? 60 : 5) * 60_000, chars: stats.chars },
       credit: { timeMs: 0, chars: 0 }
     }))
   };
@@ -37,11 +37,11 @@ vi.mock('#lib/reading-history/stats-store.js', async () => {
     readingStats: readingStats.store,
     readingStatsReady: stats.readingStatsReady,
     figuresFor: stats.figuresFor,
-    minutesAfterReset: vi.fn(() => stats.afterReset),
     resetEndsPass: vi.fn(() => stats.resetEnds ?? (stats.passChars ?? stats.chars) > 0),
     passFiguresFor: vi.fn(() => ({
       pass: 0,
       chars: stats.passChars ?? stats.chars,
+      measuredChars: stats.passChars ?? stats.chars,
       credit: { timeMs: 0, chars: 0 }
     })),
     creditsFor: vi.fn(
@@ -227,7 +227,6 @@ describe('VolumeEditorModal reading progress (#224)', () => {
   afterEach(() => {
     stats.chars = 0;
     stats.passChars = null;
-    stats.afterReset = 60;
     stats.resetEnds = null;
     closeVolumeEditor();
     cleanup();
@@ -286,26 +285,65 @@ describe('VolumeEditorModal reading progress (#224)', () => {
     expect('charsRead' in editor.updateVolumeStats.mock.calls[0][1]).toBe(false);
   });
 
-  it("Reset All's time edit starts from the time after the reset: a credit's time leaves once", async () => {
-    // 60 min shown, 22 of them counted when marked read: the reset itself
-    // takes those 22 away (its pass keeps no credit).
-    stats.afterReset = 38;
+  it("Reset All's time edit is from the measured time shown; the pass's credits are retracted", async () => {
+    // 60 min measured, and 38 more counted when marked read: the field shows
+    // the 60 and edits them; the credit goes by its own retract.
+    readingStats.store.set({
+      ready: true,
+      byVolume: new Map([
+        [
+          'vol-1',
+          {
+            pass: 0,
+            credits: [{ device: 'd', seq: 3, t: 0, pass: 0, ms: 38 * MIN, chars: 9412, pages: [1] }]
+          }
+        ]
+      ])
+    });
     const { getByText } = render(VolumeEditorModal);
     promptVolumeEditor('vol-1');
-    await waitFor(() => expect(progressInput()).not.toBeNull());
+    await waitFor(() => expect(hours()?.value).toBe('1'));
+    expect(text('editor-credit')).toContain('Also counted when marked read: 38 min');
     await fireEvent.click(getByText('Reset All'));
     await fireEvent.click(getByText('Save'));
     await waitFor(() => expect(editor.updateVolumeStats).toHaveBeenCalled());
     expect(editor.updateVolumeStats.mock.calls[0][1]).toMatchObject({
       reset: true,
-      timeRead: { from: 38, to: 0 }
+      retract: [['d', 3]],
+      timeRead: { from: 60, to: 0 }
     });
+  });
+
+  it('a time edit is from the measured time shown, whatever marking read counted', async () => {
+    readingStats.store.set({
+      ready: true,
+      byVolume: new Map([
+        [
+          'vol-1',
+          {
+            pass: 0,
+            credits: [{ device: 'd', seq: 3, t: 0, pass: 0, ms: 38 * MIN, chars: 9412, pages: [1] }]
+          }
+        ]
+      ])
+    });
+    const { getByText } = render(VolumeEditorModal);
+    promptVolumeEditor('vol-1');
+    await waitFor(() => expect(hours()?.value).toBe('1'));
+    // Below the credit's 38 minutes: an edit of what the app measured.
+    await fireEvent.input(hours()!, { target: { value: '0' } });
+    await fireEvent.input(document.querySelector('#time-minutes')!, { target: { value: '5' } });
+    await fireEvent.click(getByText('Save'));
+    await waitFor(() => expect(editor.updateVolumeStats).toHaveBeenCalled());
+    const update = editor.updateVolumeStats.mock.calls[0][1];
+    expect(update.timeRead).toEqual({ from: 60, to: 5 });
+    expect(update.reset).toBeUndefined();
+    expect(update.retract).toBeUndefined();
   });
 
   it('Reset All records no reset when the pass has nothing to end', async () => {
     stats.chars = 0;
     stats.resetEnds = false;
-    stats.afterReset = 12;
     const { getByText } = render(VolumeEditorModal);
     promptVolumeEditor('vol-1');
     await waitFor(() => expect(progressInput()).not.toBeNull());
@@ -320,10 +358,9 @@ describe('VolumeEditorModal reading progress (#224)', () => {
 
   it('Reset All ends a pass an older editor left at 0 characters: the gate is the pass, not the figure', async () => {
     // A v1.11.0 Reset All's negative edit holds the pass's figure at 0 while
-    // its pages are read and a credit is live: there is still a pass to end.
+    // its pages are read: there is still a pass to end.
     stats.chars = 0;
     stats.resetEnds = true;
-    stats.afterReset = 0;
     const { getByText } = render(VolumeEditorModal);
     promptVolumeEditor('vol-1');
     await waitFor(() => expect(progressInput()).not.toBeNull());
@@ -332,7 +369,7 @@ describe('VolumeEditorModal reading progress (#224)', () => {
     await waitFor(() => expect(editor.updateVolumeStats).toHaveBeenCalled());
     expect(editor.updateVolumeStats.mock.calls[0][1]).toMatchObject({
       reset: true,
-      timeRead: { from: 0, to: 0 }
+      timeRead: { from: 60, to: 0 }
     });
   });
 
@@ -359,10 +396,10 @@ describe('VolumeEditorModal reading progress (#224)', () => {
     await waitFor(() =>
       expect(document.querySelector('[data-testid="editor-count-elsewhere"]')).not.toBeNull()
     );
-    expect(text('editor-credit')).toContain('Counted when marked read');
+    expect(text('editor-credit')).toContain('Also counted when marked read');
     await fireEvent.click(getByText('Reset All'));
     expect(document.querySelector('[data-testid="editor-count-elsewhere"]')).toBeNull();
-    expect(text('editor-credit')).not.toContain('Counted when marked read');
+    expect(text('editor-credit')).not.toContain('counted when marked read');
     // Paging forward again does not bring it back before the Save.
     await fireEvent.input(progressInput(), { target: { value: '100' } });
     expect(document.querySelector('[data-testid="editor-count-elsewhere"]')).toBeNull();
@@ -412,9 +449,9 @@ describe('VolumeEditorModal reading progress (#224)', () => {
     });
     const { getByText } = render(VolumeEditorModal);
     promptVolumeEditor('vol-1');
-    await waitFor(() => expect(text('editor-credit')).toContain('Counted when marked read'));
+    await waitFor(() => expect(text('editor-credit')).toContain('Also counted when marked read'));
     expect(text('editor-credit')).toContain(
-      'Counted when marked read: 38 min · 9,412 characters (3 pages)'
+      'Also counted when marked read: 38 min · 9,412 characters (3 pages)'
     );
     await fireEvent.click(getByText('Remove'));
     await waitFor(() => expect(flow.removeCredits).toHaveBeenCalledWith('vol-1'));

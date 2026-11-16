@@ -227,26 +227,27 @@ export function updateVolumeStats(
     progress?: number;
     chars?: number;
     /**
-     * Time read, in minutes: `from` is what the stats showed when the editor
-     * opened (history + baseline) — with `reset`, what they will show once
-     * the reset is applied (`minutesAfterReset`) — `to` what the user
-     * entered. The difference is recorded as an `adjust` event; the retired
-     * minute counter is never written.
+     * Time read, in minutes: `from` is the MEASURED time the editor showed
+     * (history + baseline, never what marking read counted — `editorStats`),
+     * `to` what the user entered. The difference is recorded as an `adjust`
+     * event, which the stats apply to the measured time only (#224); the
+     * retired minute counter is never written.
      */
     timeRead?: { from: number; to: number };
     /**
      * "Reset All": the current pass's characters go to zero, and its pages
      * may be read again — recorded as a `reset` event, which the stats apply
-     * on every device (#224). Only when the pass has something to end
-     * (`resetEndsPass`: a read or claimed page, a live credit, any edit, the
-     * baseline's share — not the clamped figure shown, which an older
-     * editor's negative edit can hold at 0): a reset is a format-2 event, and
-     * a build that reads format 1 only skips the whole device-month it lands in. A page edit is NOT a characters edit: the
-     * record's `chars` is the position's count, and a mark-as-read set it to
-     * the whole volume's — the difference was never reading.
+     * on every device (#224). Only when the pass measured something to end
+     * (`resetEndsPass`: a page a view read, any edit, the baseline's share —
+     * never a credit, and not the clamped figure shown, which an older
+     * editor's negative edit can hold at 0): a reset is a format-2 event,
+     * and a build that reads format 1 only skips the whole device-month it
+     * lands in. A page edit is NOT a characters edit: the record's `chars` is
+     * the position's count, and a mark-as-read set it to the whole volume's —
+     * the difference was never reading.
      */
     reset?: boolean;
-    /** Credits to retract, `[device, seq]` (Reset All takes what was counted when marked read). */
+    /** Credits to retract, `[device, seq]`: Reset All takes what was counted when marked read. */
     retract?: Array<[device: string, seq: number]>;
     completed?: boolean;
     /**

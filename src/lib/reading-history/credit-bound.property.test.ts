@@ -14,13 +14,12 @@ import {
   creditsFor,
   figuresFor,
   measuredFigures,
-  minutesAfterReset,
   pagesNotReadHere,
   passFiguresFor,
-  resetEndsPass,
   type BaselineSource,
   type ReadingStatsState
 } from './stats-store';
+import { editorSave, editorStats } from './editor-stats';
 import type { ReadingEvent } from './types';
 import type { LegacyStats } from '#lib/settings/volume-data.js';
 
@@ -199,11 +198,20 @@ function build(r: Rng): Case {
         })
       );
     } else if (roll < 0.42) {
-      // An older editor's page edit (+) or Reset All (−), recorded as characters.
+      // An older editor's edit: a page edit (+) or Reset All (−) recorded as
+      // characters, a time edit — below what was read too — or both.
+      const shape = r.pick(['chars', 'time', 'both'] as const);
       events.push(
-        ev({ kind: 'adjust', time_delta_ms: 0, chars_delta: r.int(-size, size) }, 'dev-c')
+        ev(
+          {
+            kind: 'adjust',
+            time_delta_ms: shape === 'chars' ? 0 : r.int(-60, 60) * MIN,
+            chars_delta: shape === 'time' ? 0 : r.int(-size, size)
+          },
+          'dev-c'
+        )
       );
-      pageExact = false;
+      if (shape !== 'time') pageExact = false;
     } else if (roll < 0.47) {
       // This editor's Reset All.
       events.push(ev({ kind: 'reset' }, 'dev-c'));
@@ -280,10 +288,11 @@ function check({ pageChars, events, record, pageExact, frozenNow }: Case) {
   expect(totals.samples).toEqual(plain.samples);
   expect(totals.pauses).toEqual(plain.pauses);
   expect(prepareVolume(events).paceTail).toEqual(prepareVolume(withoutCredits(events)).paceTail);
+  // Measured figures ARE the figures of the same history without credits.
   const measured = measuredFigures(figures);
   const reference = figuresFor(bare, VOLUME, record);
-  expect(measured.chars).toBeCloseTo(reference.chars, 6);
-  expect(measured.timeMs).toBeCloseTo(reference.timeMs, 6);
+  expect(measured.chars).toBe(reference.chars);
+  expect(measured.timeMs).toBe(reference.timeMs);
   // The baseline (measured "Before history" reading) never moves for a credit.
   expect(figures.baseline.chars).toBeCloseTo(reference.baseline.chars, 6);
   expect(figures.baseline.timeMs).toBeCloseTo(reference.baseline.timeMs, 6);
@@ -396,19 +405,21 @@ describe('credits never take a pass past its volume: a sweep over states (#224)'
     }
   });
 
-  it("and the editor's Reset All on top of any of them leaves no time, no characters, no credit — and reading again counts in full", () => {
+  it("and the editor's Reset All on top of any of them leaves no measured time, no characters, no credit in the pass — and reading again counts in full", () => {
     for (let seed = 1; seed <= 1000; seed++) {
       const r = rng(seed * 104_729);
       const { pageChars, events, record: built, frozenNow } = build(r);
       // The editor works on frozen records (a mark or the start freezes them).
       const record = frozenNow ?? built;
       const before = stateOf(events);
-      // As the editor saves: the reset only when the pass has something to
-      // end, the time edit from the time after it (else from the figure shown).
-      const reset = resetEndsPass(before, VOLUME, record);
-      const from = reset
-        ? minutesAfterReset(before, VOLUME, record)
-        : figuresFor(before, VOLUME, record).minutes;
+      // As the editor saves (`editorSave`): the time field at 0 less the
+      // measured time it showed, the reset when the pass measured something
+      // to end, and a retract of each of the pass's credits.
+      const save = editorSave(before, VOLUME, record, {
+        shownMinutes: editorStats(before, VOLUME, record).minutes,
+        toMinutes: 0,
+        resetAll: true
+      });
       const at = 10_000_000_000;
       const saved: ReadingEvent[] = [
         ...events,
@@ -418,11 +429,11 @@ describe('credits never take a pass past its volume: a sweep over states (#224)'
           t: at,
           kind: 'adjust',
           volume: VOLUME,
-          time_delta_ms: -from * MIN,
+          time_delta_ms: (save.timeRead.to - save.timeRead.from) * MIN,
           chars_delta: 0
         }
       ];
-      if (reset) {
+      if (save.reset) {
         saved.push({
           device: 'dev-c',
           seq: 2_000_001 + seed * 2,
@@ -431,6 +442,19 @@ describe('credits never take a pass past its volume: a sweep over states (#224)'
           volume: VOLUME
         });
       }
+      save.retract.forEach((target, i) =>
+        saved.push({
+          device: 'dev-c',
+          seq: 3_000_000 + seed * 100 + i,
+          t: at + 2,
+          kind: 'retract',
+          volume: VOLUME,
+          target
+        })
+      );
+      // Credits of earlier passes are earlier reads': Reset All leaves them.
+      const current = before.byVolume.get(VOLUME)!.pass;
+      const earlier = creditsFor(before, VOLUME, record).filter((c) => c.pass < current);
       // Then the whole volume read again in the app, 30 s a page.
       const DWELL = 30_000;
       const reread: ReadingEvent[] = pageChars.map((chars, i) => ({
@@ -451,19 +475,38 @@ describe('credits never take a pass past its volume: a sweep over states (#224)'
       try {
         const after = stateOf(saved);
         const figures = figuresFor(after, VOLUME, record);
-        // The time field said 0: what is left is under a minute (minutes are whole).
-        expect(figures.timeMs).toBeGreaterThanOrEqual(0);
-        expect(figures.timeMs).toBeLessThan(MIN);
+        // The time field said 0: what is left measured is under a minute
+        // (minutes are whole); what counts on top is the earlier passes' credits.
+        expect(figures.measured.timeMs).toBeGreaterThanOrEqual(0);
+        expect(figures.measured.timeMs).toBeLessThan(MIN);
+        expect(figures.credit.timeMs).toBeCloseTo(sum(earlier.map((c) => c.ms)), 6);
         const pass = passFiguresFor(after, VOLUME, record);
         expect(pass.chars).toBe(0);
         expect(pass.credit).toEqual({ timeMs: 0, chars: 0 });
         expect(creditsFor(after, VOLUME, record).filter((c) => c.pass === pass.pass)).toEqual([]);
-        // Reading again adds its full time — the clamp in `figuresFor` would
-        // hide a raw time below zero (a credit's time taken off twice) at the
-        // reset, never here — and the whole volume to the pass.
+        // Reading again adds what it adds with no credit ever made (the same
+        // save, made from the same measured figures) — and the whole volume
+        // to the pass.
         const reread$ = stateOf([...saved, ...reread]);
         const again = figuresFor(reread$, VOLUME, record);
-        expect(again.timeMs - figures.timeMs).toBeCloseTo(pageChars.length * DWELL, 6);
+        const bareAfter = figuresFor(stateOf(withoutCredits(saved)), VOLUME, record);
+        const bareAgain = figuresFor(
+          stateOf(withoutCredits([...saved, ...reread])),
+          VOLUME,
+          record
+        );
+        expect(again.measured).toEqual(bareAgain.measured);
+        expect(again.credit).toEqual(figures.credit);
+        expect(again.timeMs - figures.timeMs).toBeCloseTo(bareAgain.timeMs - bareAfter.timeMs, 6);
+        expect(again.chars - figures.chars).toBe(bareAgain.chars - bareAfter.chars);
+        // In full, unless older editors' time edits (another device's,
+        // concurrent) left the measured time below zero — with or without
+        // credits alike: the clamp holds a re-read there.
+        const totals = before.byVolume.get(VOLUME)!;
+        const raw = totals.measuredMs + figuresFor(before, VOLUME, record).baseline.timeMs;
+        if (raw >= 0) {
+          expect(again.timeMs - figures.timeMs).toBeCloseTo(pageChars.length * DWELL, 6);
+        }
         expect(passFiguresFor(reread$, VOLUME, record).chars).toBe(sum(pageChars));
       } catch (error) {
         throw new Error(`seed ${seed * 104_729}: ${(error as Error).message}`, { cause: error });

@@ -1018,12 +1018,35 @@ describe('credits (#224: counting pages not read here)', () => {
       expect(totals.passes).toEqual([
         {
           start: -Infinity,
+          measuredChars: 600,
           chars: 1000,
           creditChars: 400,
           creditMs: totals.creditMs,
           volumeChars: 1000,
           reset: false
         }
+      ]);
+    });
+
+    it('a negative adjust holds what the pass measured at zero: it never swallows a credit', () => {
+      // A v1.11.0 Reset All recorded the whole volume as a negative edit; its
+      // pages 1–4 stay read. The credit sits on top: what the pass measured
+      // is held at zero, so pages 5–10 count — never past the volume.
+      const read = [1, 2, 3, 4].map((page) => view(page * MIN, page, [100], 30_000));
+      const totals = countVolume(
+        prepareVolume([...read, adjust(5 * MIN, 0, -1000), mark()]),
+        pace,
+        AUTO
+      );
+      expect(totals.measuredChars).toBe(-600);
+      expect(totals.creditChars).toBe(600);
+      expect(totals.credits[0].pages).toEqual([5, 6, 7, 8, 9, 10]);
+      expect(totals.passes[0]).toMatchObject({ measuredChars: -600, chars: 600, creditChars: 600 });
+      // The measured totals are those of the same history without the credit.
+      const without = countVolume(prepareVolume([...read, adjust(5 * MIN, 0, -1000)]), pace, AUTO);
+      expect([totals.measuredMs, totals.measuredChars]).toEqual([
+        without.timeMs,
+        without.readChars
       ]);
     });
 

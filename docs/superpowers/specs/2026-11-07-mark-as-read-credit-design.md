@@ -263,8 +263,9 @@ This lives in `stats-engine.ts`.
   - The "Collecting Reading Data" countdown uses measured time.
 - **Device split** (`deviceStatsFrom`). A `marked-read` row, parallel to `edits`, keeps the rows
   summing to the total. No UI renders this today.
-- **Volume editor.** A read-only line: "Counted when marked read: 38 min · 9,412 characters (42
-  pages)", with a **Remove** button (section 6).
+- **Volume editor.** A read-only line: "Also counted when marked read: 38 min · 9,412 characters
+  (42 pages)", with a **Remove** button (section 6). The editor's Time Read and Characters Read are
+  what the app measured; this line is on top of them (amended, 5.6).
 
 #### 5.5 Goals and sync
 
@@ -296,8 +297,9 @@ This lives in `stats-engine.ts`.
     This replaces the editor's progress-based char estimate (bug 1): a progress edit now moves the
     position only and records no chars `adjust`, and the "Characters Read" line shows the history
     figure (`figuresFor`), not `progress / pageCount × characterCount`.
-  - The Time read field is unchanged. It shows the total, credit included, and records the
-    difference as an `adjust`.
+  - The Time read field shows what the app MEASURED, never what a credit counted, and records the
+    difference from it as an `adjust`, which the stats apply to the measured time only (amended,
+    5.6: the first build showed the total, credit included).
 - **Checkmark.** `VolumeItem` asks `isVolumeFinished(volume, record)` (bug 2). The credit is never
   progress, so fixing stats never touches the check.
 
@@ -348,19 +350,60 @@ So:
   baseline's share included; its credits claim nothing. The pages may be read or credited again, so
   reading the volume through after a reset shows N / N. (Recording minus the pass as an adjust left
   every page read in the pass: a re-read counted nothing, and the editor stayed at 0 / N.) The
-  editor's time edit starts from the time after the reset (`minutesAfterReset`: the reset already
-  takes its credits' time, so an edit from the figure shown took it twice). It is recorded only
-  when the pass has something to end (`resetEndsPass`: a read or claimed page, a live credit, any
-  characters in the pass's raw count, or the baseline's share — NOT the clamped figure shown: a
-  shipped v1.11.0 Reset All's negative adjust can hold that at 0 while pages are read and credits
-  live, and leaving such a pass unended counted a re-read as nothing and took a credit's time
-  twice). A format-2 event makes a format-1-only build skip the whole device-month, and "Count pages read elsewhere…" is off while a Reset All waits for Save.
+  editor's time edit is from the measured time it showed (5.6). The reset is recorded only when the
+  pass MEASURED something to end (`resetEndsPass`: a page a view read, any characters in the pass's
+  measured count, or the baseline's share — never a credit, and NOT the clamped figure shown: a
+  shipped v1.11.0 Reset All's negative adjust can hold that at 0 while pages are read, and leaving
+  such a pass unended counted a re-read as nothing). The pass's credits go by a `retract` each, as
+  Remove does. A format-2 event makes a format-1-only build skip the whole device-month, and "Count
+  pages read elsewhere…" is off while a Reset All waits for Save.
   **Open owner question:** a new event kind (`reset`) versus another way to end a pass.
 - **Speed.** Unchanged by any of it: credits stay out of samples and the pace, and measured figures
   (figures less credit) equal the figures of the same history without credits; so does the baseline.
 - Pinned by `credit-bound.test.ts` (each state above through the real flow) and
   `credit-bound.property.test.ts` (a seeded sweep over random histories, snapshots frozen at any
   point of them, resets included).
+
+#### 5.6 Credits sit on top of the measured figures (amended after the third review)
+
+Two reviews in a row found one family of bug, each case patched alone: Reset All took a credit's time
+twice after an earlier time edit (a `minutesAfterReset` that clamped at 0), and so did Mark as unread
+and Remove. The root was the design: the editor showed the TOTAL (credit included) and stored a time
+edit as a delta from it, so the edit held part of the credit, and any later change to the credit —
+reset, un-read, Remove, Undo, another device's retract — took that part a second time. A 60-min
+credit, the time field set to 0, Reset All, then the whole volume read again in 24 min showed 0 min
+(at 40: 4 min, "1,500 chars/min" measured against a real 250).
+
+So credits and measured reading never mix, at any level:
+
+- **Engine.** Views, `adjust`s and resets are the measured totals (`measuredMs`, `measuredChars`;
+  per pass `measuredChars`), the same numbers with or without credits. A pass's budget is the volume
+  less its measured characters held at zero: an older editor's negative edit neither swallows a
+  credit nor lets one past the volume.
+- **Store.** `figuresFor` adds the pre-history baseline to the measured totals and clamps THAT at
+  zero (`figures.measured`); only then are the credits added. `passFiguresFor` likewise
+  (`measuredChars`, the baseline's share in it). With every credit gone, the figures are those of
+  the same history without credits, to the bit.
+- **Editor** (`reading-history/editor-stats.ts`; the modal only renders it). Time Read and
+  Characters Read show what the app measured; "Also counted when marked read" is its own line. A
+  time edit is the difference from the measured time shown. Reset All's `reset` is gated on what the
+  pass measured only, and it retracts the pass's credits, as Remove does.
+- **Count pages read elsewhere…** marks nothing, so it no longer freezes the record's snapshot: a
+  credit must not change what the measured figures are computed from.
+- **Existing data.** v1.11.0's `adjust`s were made from figures without credits (that build had
+  none), so applying them to the measured figures keeps their meaning exactly; with no credit the
+  figures are what v1.11.0 showed. Edits recorded against the total by drafts of this feature never
+  shipped.
+- **Invariant, swept.** `credit-edits.property.test.ts` replays one user's run in two worlds — one
+  counts its marks, the other answers Don't count — over reading (skims, older OCR), marks, credits
+  from a device that had not seen the rest, double taps, Undo, Mark as unread, Remove, editor saves
+  (time set to 0, below a credit's time, anything, unchanged; a sync landing before Save), Reset All,
+  v1.11.0 edits from another device (time-only, characters-only, both), restarts, re-reads and syncs
+  between two devices, each acting on what it holds; snapshots frozen at any point. After every
+  step, on each device and merged: the events other than credits and retracts are the same in both
+  worlds; measured figures (and what the editor shows) equal the other world's figures exactly,
+  lifetime and per pass; with no credit counted, the figures are equal; a re-read after the credits
+  were taken back adds what it adds without them; credits never pass the volume nor reach speed.
 
 ### 7. Setting and default
 
@@ -390,6 +433,7 @@ So:
 | `reading-history/stats-engine.ts`                                       | credits in `prepareVolume`/`countVolume`; new totals fields            |
 | `reading-history/stats-store.ts`                                        | `figures.credit`; `pagesNotReadHere(stats, volume, pageCount, record)` |
 | `reading-history/credit.ts` (new)                                       | per-page chars, `estimateCredit`, `recordCredit`, `retractCredits`     |
+| `reading-history/editor-stats.ts` (new)                                 | what the editor shows (measured) and what its save records (5.6)       |
 | `reading-history/device-stats.ts`                                       | `marked-read` row                                                      |
 | `settings/volume-data.ts`                                               | `markVolumesRead` (snapshots, credits, undo handle); unread retracts   |
 | `settings/tracking-data.ts`                                             | `markRead` entry                                                       |

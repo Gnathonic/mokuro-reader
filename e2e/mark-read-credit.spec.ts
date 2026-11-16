@@ -144,6 +144,7 @@ async function figures(page: Page, volume: string) {
     return {
       chars: f.chars,
       timeMs: f.timeMs,
+      measured: f.measured,
       credit: f.credit,
       recentCpm: Math.round(state!.recent.charsPerMinute),
       progress: records[volume]?.progress ?? 0,
@@ -378,7 +379,11 @@ async function readBeforeHistory(page: Page, through: number) {
   );
 }
 
-/** The volume editor's "Characters Read" for a volume, opened from its card. */
+/**
+ * The volume editor's "Characters Read" for a volume, opened from its card:
+ * what the app measured in the current pass — what marking read counted is
+ * the line below it ("Also counted when marked read"), on top.
+ */
 async function editorChars(page: Page, volume: string) {
   await cardMenu(page, volume, 'Edit');
   const chars = page.getByTestId('editor-chars');
@@ -442,10 +447,11 @@ test('a credit never counts past the volume: half read before history, the page 
   await expect.poll(async () => (await figures(page, VOL2)).credit.chars).toBe(30 * CHARS);
   expect((await figures(page, VOL2)).chars).toBe(PAGES * CHARS);
 
+  // Measured 3,000 (from before history), and 3,000 more counted when marked read.
   const chars = await editorChars(page, VOL2);
-  await expect(chars).toHaveText('6,000 / 6,000');
+  await expect(chars).toHaveText('3,000 / 6,000');
   await expect(page.getByTestId('editor-credit')).toContainText(
-    'Counted when marked read: 30 min · 3,000 characters (30 pages)'
+    'Also counted when marked read: 30 min · 3,000 characters (30 pages)'
   );
   await page.screenshot({
     path: testInfo.outputPath('editor-half-before-history.png'),
@@ -503,10 +509,9 @@ async function readThenSkimmedElsewhere(page: Page, read: number) {
   );
 }
 
-/** What the stats measured (the figures less what was counted when marked read). */
+/** What the stats measured (the figures without what was counted when marked read). */
 async function measured(page: Page, volume: string) {
-  const f = await figures(page, volume);
-  return { chars: f.chars - f.credit.chars, timeMs: f.timeMs - f.credit.timeMs };
+  return (await figures(page, volume)).measured;
 }
 
 test('pages skimmed before history froze: counted as marked read, never as measured reading', async ({
@@ -532,8 +537,9 @@ test('pages skimmed before history froze: counted as marked read, never as measu
   // Speed: the same reading as before the mark — the 4,000 are the credit's.
   expect(await measured(page, VOL2)).toEqual(before);
 
+  // Measured: the 20 pages read; the 40 skimmed ones counted when marked read.
   const chars = await editorChars(page, VOL2);
-  await expect(chars).toHaveText('6,000 / 6,000');
+  await expect(chars).toHaveText('2,000 / 6,000');
   await expect(page.getByTestId('editor-credit')).toContainText('4,000 characters (40 pages)');
   await expect(page.getByTestId('editor-credit-remove')).toBeVisible();
   await page.screenshot({
@@ -640,14 +646,17 @@ test('Reset All of a volume counted when marked read: the counted time leaves on
     .poll(async () => await figures(page, VOL1))
     .toMatchObject({ timeMs: 60 * MIN, credit: { timeMs: 20 * MIN, chars: 2000 } });
 
+  // The editor shows what the app measured — 40 pages, 40 min — and the
+  // credit on its own line.
   const chars = await editorChars(page, VOL1);
-  await expect(chars).toHaveText('6,000 / 6,000');
+  await expect(chars).toHaveText('4,000 / 6,000');
+  await expect(page.locator('#time-minutes')).toHaveValue('40');
   const credit = page.getByTestId('editor-credit');
-  await expect(credit).toContainText('Counted when marked read: 20 min · 2,000 characters');
+  await expect(credit).toContainText('Also counted when marked read: 20 min · 2,000 characters');
   await page.getByRole('button', { name: 'Reset All' }).click();
   // The reset takes the credit with it: no longer shown as counted.
   await expect(chars).toHaveText('0 / 6,000');
-  await expect(credit).not.toContainText('Counted when marked read');
+  await expect(credit).not.toContainText('counted when marked read');
   await page.screenshot({
     path: testInfo.outputPath('editor-reset-pending-credited.png'),
     animations: 'disabled'
@@ -665,6 +674,101 @@ test('Reset All of a volume counted when marked read: the counted time leaves on
     credit: { timeMs: 0, chars: 0 }
   });
   expect(await measured(page, VOL1)).toEqual({ chars: PAGES * CHARS, timeMs: PAGES * MIN });
+});
+
+/** Vol 1 marked read with Count: pages 41–60, 2,000 characters, 20 min (40 min measured). */
+async function markVol1Counted(page: Page) {
+  await expect.poll(async () => (await figures(page, VOL1)).chars).toBe(40 * CHARS);
+  await openSeries(page);
+  await cardMenu(page, VOL1, 'Mark as read');
+  await page.getByTestId('mark-read-count').click();
+  await expect
+    .poll(async () => await figures(page, VOL1))
+    .toMatchObject({ timeMs: 60 * MIN, credit: { timeMs: 20 * MIN, chars: 2000 } });
+}
+
+/** The editor's Time Read set to `minutes` and saved. */
+async function saveTimeRead(page: Page, minutes: number) {
+  await editorChars(page, VOL1);
+  // The field holds what the app measured: 40 min, not the 60 the card shows.
+  await expect(page.locator('#time-hours')).toHaveValue('0');
+  await expect(page.locator('#time-minutes')).toHaveValue('40');
+  await page.locator('#time-minutes').fill(String(minutes));
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.getByTestId('editor-chars')).toBeHidden();
+}
+
+test('a time edit saved below the credit, then Reset All: a re-read counts in full', async ({
+  browser
+}, testInfo) => {
+  const page = await device(browser);
+  await installSeries(page);
+  await markVol1Counted(page);
+
+  // Below the 20 min counted when marked read: an edit of the measured 40.
+  await saveTimeRead(page, 0);
+  await expect
+    .poll(async () => await figures(page, VOL1))
+    .toMatchObject({
+      timeMs: 20 * MIN,
+      measured: { timeMs: 0, chars: 40 * CHARS },
+      credit: { timeMs: 20 * MIN, chars: 2000 }
+    });
+  await editorChars(page, VOL1);
+  await expect(page.locator('#time-minutes')).toHaveValue('0');
+  await expect(page.getByTestId('editor-credit')).toContainText(
+    'Also counted when marked read: 20 min · 2,000 characters (20 pages)'
+  );
+  await page.screenshot({
+    path: testInfo.outputPath('editor-measured-time-with-credit.png'),
+    animations: 'disabled'
+  });
+  await page.getByRole('button', { name: 'Reset All' }).click();
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect
+    .poll(async () => await figures(page, VOL1))
+    .toMatchObject({ chars: 0, timeMs: 0, credit: { timeMs: 0, chars: 0 } });
+
+  // An hour, the whole volume: all of it, as without the credit (the credit's
+  // time once came off twice here, and the re-read showed 40 min).
+  await readAgain(page);
+  await expect.poll(async () => (await figures(page, VOL1)).chars).toBe(PAGES * CHARS);
+  expect(await figures(page, VOL1)).toMatchObject({
+    timeMs: PAGES * MIN,
+    credit: { timeMs: 0, chars: 0 }
+  });
+  expect(await measured(page, VOL1)).toEqual({ chars: PAGES * CHARS, timeMs: PAGES * MIN });
+});
+
+test('a time edit saved, then Mark as unread: a re-read counts as it would without the credit', async ({
+  browser
+}) => {
+  const page = await device(browser);
+  await installSeries(page);
+  await markVol1Counted(page);
+
+  await saveTimeRead(page, 10);
+  await expect
+    .poll(async () => await figures(page, VOL1))
+    .toMatchObject({
+      timeMs: 30 * MIN,
+      measured: { timeMs: 10 * MIN, chars: 40 * CHARS }
+    });
+  await cardMenu(page, VOL1, 'Mark as unread');
+  await expect(snackbar(page)).toContainText('removed 20 min counted');
+  await expect
+    .poll(async () => await figures(page, VOL1))
+    .toMatchObject({ timeMs: 10 * MIN, chars: 40 * CHARS, credit: { timeMs: 0, chars: 0 } });
+
+  // The same pass read through: pages 41–60 are new, an hour of time on top
+  // of the 10 min typed (the credit's 20 min once came off again: 50 min).
+  await readAgain(page);
+  await expect.poll(async () => (await figures(page, VOL1)).chars).toBe(PAGES * CHARS);
+  expect(await figures(page, VOL1)).toMatchObject({
+    timeMs: 70 * MIN,
+    measured: { timeMs: 70 * MIN, chars: PAGES * CHARS },
+    credit: { timeMs: 0, chars: 0 }
+  });
 });
 
 test('Reset All of a pass an older editor left at 0 / N, with a credit in it: the pass ends, a re-read counts in full', async ({
@@ -699,14 +803,18 @@ test('Reset All of a pass an older editor left at 0 / N, with a credit in it: th
   await expect.poll(async () => (await figures(page, VOL1)).chars).toBe(0);
   await openSeries(page);
 
-  // Pages 41–60 counted when marked read: the pass still shows 0 / N.
+  // Pages 41–60 counted when marked read: the old edit holds what the pass
+  // measured at 0 / N, and the credit counts on top of it, never inside it.
   await cardMenu(page, VOL1, 'Mark as read');
   await page.getByTestId('mark-read-count').click();
   await expect
     .poll(async () => await figures(page, VOL1))
-    .toMatchObject({ timeMs: 60 * MIN, credit: { timeMs: 20 * MIN, chars: 2000 } });
+    .toMatchObject({ chars: 2000, timeMs: 60 * MIN, credit: { timeMs: 20 * MIN, chars: 2000 } });
   const chars = await editorChars(page, VOL1);
   await expect(chars).toHaveText('0 / 6,000');
+  await expect(page.getByTestId('editor-credit')).toContainText(
+    'Also counted when marked read: 20 min · 2,000 characters'
+  );
   await page.getByRole('button', { name: 'Reset All' }).click();
   await page.screenshot({
     path: testInfo.outputPath('editor-reset-pending-negative-pass.png'),

@@ -24,7 +24,8 @@ export interface VolumeSpeedData {
  * A volume's time and characters as the stats count them — from reading
  * history plus its pre-history baseline (`figuresFor` in the stats store).
  * `credit` is what "mark as read" counted for pages not read in the app
- * (#224): inside the totals, but never part of a speed.
+ * (#224): inside the totals, but never part of a speed; `measured` is the
+ * rest, the reading this app measured.
  */
 export type FiguresOf = (
   volumeId: string,
@@ -34,10 +35,12 @@ export type FiguresOf = (
   chars: number;
   skippedChars: number;
   credit?: { timeMs: number; chars: number };
+  measured?: { timeMs: number; chars: number };
 };
 
 /** Figures without what "mark as read" counted: the reading this app measured. */
 function measured(figures: ReturnType<FiguresOf>): { timeMs: number; chars: number } {
+  if (figures.measured) return figures.measured;
   return {
     timeMs: Math.max(0, figures.timeMs - (figures.credit?.timeMs ?? 0)),
     chars: Math.max(0, figures.chars - (figures.credit?.chars ?? 0))

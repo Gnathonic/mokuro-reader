@@ -212,12 +212,11 @@ export function deviceStatsFrom(
     // (`figuresFor`): the engine's per-device parts are before it.
     marked.timeMs += figures.credit.timeMs;
     marked.readChars += figures.credit.chars;
-    const cutMs = (totals?.creditMs ?? 0) - figures.credit.timeMs;
-    const cutChars = (totals?.creditChars ?? 0) - figures.credit.chars;
-    // `figuresFor` clamps at zero after adding the baseline; only edits
-    // (negative adjusts) can go below it, so what the clamp gives back is theirs.
-    edits.timeMs += Math.max(0, -((totals?.timeMs ?? 0) - cutMs + baseline.timeMs));
-    edits.readChars += Math.max(0, -((totals?.readChars ?? 0) - cutChars + baseline.chars));
+    // `figuresFor` clamps the MEASURED figures at zero after adding the
+    // baseline, and adds the credits after; only edits (negative adjusts) can
+    // take the measured part below zero, so what the clamp gives back is theirs.
+    edits.timeMs += Math.max(0, -((totals?.measuredMs ?? 0) + baseline.timeMs));
+    edits.readChars += Math.max(0, -((totals?.measuredChars ?? 0) + baseline.chars));
     if (!totals) continue;
     for (const [id, part] of totals.byDevice) {
       edits.timeMs += part.adjustMs;

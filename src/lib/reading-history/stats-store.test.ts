@@ -29,7 +29,6 @@ import {
   initReadingStats,
   creditsFor,
   measuredFigures,
-  minutesAfterReset,
   pagesNotReadHere,
   passFiguresFor,
   readingStats,
@@ -41,6 +40,7 @@ import {
   unexplainedBaseline,
   withFrozenBaselines
 } from './stats-store';
+import { editorSave, editorStats } from './editor-stats';
 import type { ReadingEvent } from './types';
 
 const MIN = 60_000;
@@ -280,6 +280,7 @@ describe('credits (#224)', () => {
     expect(passFiguresFor(stats, 'old', { legacyStats })).toEqual({
       pass: 0,
       chars: 6000,
+      measuredChars: 4000,
       credit: { timeMs: 20 * MIN, chars: 2000 }
     });
   });
@@ -425,17 +426,18 @@ describe('credits (#224)', () => {
   });
 
   /**
-   * The editor's Reset All save, as `updateVolumeStats` records it: the time
-   * field (0) less the time it starts from (`minutesAfterReset`) as an
-   * adjust, then the reset itself.
+   * The editor's Reset All save, as `updateVolumeStats` records it
+   * (`editorSave`): the time field (0) less the measured time it showed as
+   * an adjust, the reset when the pass measured something to end, and a
+   * retract of each credit of the pass.
    */
   async function resetAll(volume: string, t: number, source?: { legacyStats: LegacyStats }) {
     const stats = get(readingStats);
-    // As the editor saves: the reset only when the pass has something to end.
-    const reset = resetEndsPass(stats, volume, source);
-    const from = reset
-      ? minutesAfterReset(stats, volume, source)
-      : figuresFor(stats, volume, source).minutes;
+    const save = editorSave(stats, volume, source, {
+      shownMinutes: editorStats(stats, volume, source).minutes,
+      toMinutes: 0,
+      resetAll: true
+    });
     const events: ReadingEvent[] = [
       {
         device: 'dev-a',
@@ -443,11 +445,14 @@ describe('credits (#224)', () => {
         t,
         kind: 'adjust',
         volume,
-        time_delta_ms: (0 - from) * MIN,
+        time_delta_ms: (save.timeRead.to - save.timeRead.from) * MIN,
         chars_delta: 0
       }
     ];
-    if (reset) events.push({ device: 'dev-a', seq: ++seq, t: t + 1, kind: 'reset', volume });
+    if (save.reset) events.push({ device: 'dev-a', seq: ++seq, t: t + 1, kind: 'reset', volume });
+    for (const target of save.retract) {
+      events.push({ device: 'dev-a', seq: ++seq, t: t + 2, kind: 'retract', volume, target });
+    }
     await record(events);
   }
 
@@ -487,13 +492,14 @@ describe('credits (#224)', () => {
     ).toEqual([1000, 1000, 1000]);
   });
 
-  it('… and with a credit in it, its time comes off once', async () => {
+  it('… and with a credit in it: the credit sits on top, its time comes off once', async () => {
     await record([
       v111Reset('rb', 0, 6000),
       credit('rb', MIN, [1, 2, 3, 4, 5, 6], SIX, 60 * MIN, 6000)
     ]);
     let stats = get(readingStats);
-    expect(passFiguresFor(stats, 'rb').chars).toBe(0);
+    // The old edit holds what the pass measured at zero; the credit counts on top.
+    expect(passFiguresFor(stats, 'rb')).toMatchObject({ chars: 6000, measuredChars: 0 });
     expect(resetEndsPass(stats, 'rb')).toBe(true);
     await resetAll('rb', 70 * MIN);
     await record(
