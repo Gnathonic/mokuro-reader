@@ -267,6 +267,17 @@ export const SETTING_DEFS = [
       updateSetting('swapWheelBehavior', value === 'zoom');
     }
   },
+  {
+    id: 'page-keys-scroll',
+    kind: 'toggle',
+    label: 'Page keys scroll tall pages first',
+    description: 'Next and Previous page scroll a page taller than the screen before turning it.',
+    group: 'navigation',
+    scope: 'reader',
+    icon: 'SortOutline',
+    menu: 'off',
+    ...profile('pageKeysScrollFirst')
+  },
   // ---- Reader: view --------------------------------------------------------
   {
     id: 'continuous',
@@ -427,6 +438,18 @@ export const SETTING_DEFS = [
     // The menu's own button: it can be hidden by a key, never from the menu.
     menu: 'never',
     ...profile('quickActions')
+  },
+  {
+    id: 'quick-menu-stays',
+    kind: 'toggle',
+    label: 'Keep quick menu open after an action',
+    description: 'Off: the menu closes after each action. Dialogs and leaving close it either way.',
+    group: 'view',
+    scope: 'reader',
+    icon: 'DotsVerticalOutline',
+    // A switch about the menu itself: from a key, or in the settings.
+    menu: 'never',
+    ...profile('quickMenuStaysOpen')
   },
   {
     id: 'no-animations',

@@ -143,6 +143,12 @@ export interface KeyActionDef {
    */
   readonly menu: 'off' | 'never';
   /**
+   * Run from the quick menu, it closes the menu whatever
+   * `Settings.quickMenuStaysOpen` says: it leaves the volume or the reader,
+   * or opens a dialog, a drawer or a picker the menu would sit on top of.
+   */
+  readonly closesMenu?: true;
+  /**
    * Set on an action GENERATED from a setting definition
    * (`settings/setting-defs.ts`): which definition, what it does to it and,
    * for a "Set to", the stored value. `setting-actions.ts` is the one handler.
@@ -283,6 +289,7 @@ export const KEY_ACTIONS = [
     defaults: [],
     icon: 'BackwardStepOutline',
     menu: 'off',
+    closesMenu: true,
     repeat: false
   },
   {
@@ -295,6 +302,7 @@ export const KEY_ACTIONS = [
     defaults: [],
     icon: 'ForwardStepOutline',
     menu: 'off',
+    closesMenu: true,
     repeat: false
   },
   {
@@ -307,6 +315,7 @@ export const KEY_ACTIONS = [
     defaults: [],
     icon: 'FileSearchOutline',
     menu: 'off',
+    closesMenu: true,
     repeat: false
   },
   // ---- Scrolling ---------------------------------------------------------
@@ -435,6 +444,7 @@ export const KEY_ACTIONS = [
     defaults: [],
     icon: 'EyeOutline',
     menu: 'off',
+    closesMenu: true,
     repeat: false
   },
   {
@@ -536,6 +546,7 @@ export const KEY_ACTIONS = [
     defaults: [],
     icon: 'LayersOutline',
     menu: 'off',
+    closesMenu: true,
     repeat: false
   },
   {
@@ -572,6 +583,7 @@ export const KEY_ACTIONS = [
     defaults: [],
     icon: 'ImageOutline',
     menu: 'off',
+    closesMenu: true,
     repeat: false
   },
   {
@@ -584,6 +596,7 @@ export const KEY_ACTIONS = [
     defaults: [],
     icon: 'ImageOutline',
     menu: 'off',
+    closesMenu: true,
     repeat: false
   },
   {
@@ -596,6 +609,8 @@ export const KEY_ACTIONS = [
     defaults: ['KeyE'],
     icon: 'PenOutline',
     menu: 'off',
+    // Edit mode brings its own toolbar; the menu would sit over the page being edited.
+    closesMenu: true,
     repeat: false
   },
   // The layer commands act on the DISPLAYED layer, under the picker's own rules.
@@ -609,6 +624,7 @@ export const KEY_ACTIONS = [
     defaults: [],
     icon: 'CirclePlusOutline',
     menu: 'off',
+    closesMenu: true,
     repeat: false
   },
   {
@@ -621,6 +637,7 @@ export const KEY_ACTIONS = [
     defaults: [],
     icon: 'EditOutline',
     menu: 'off',
+    closesMenu: true,
     repeat: false
   },
   {
@@ -633,6 +650,7 @@ export const KEY_ACTIONS = [
     defaults: [],
     icon: 'ArrowUpOutline',
     menu: 'off',
+    closesMenu: true,
     repeat: false
   },
   {
@@ -645,6 +663,7 @@ export const KEY_ACTIONS = [
     defaults: [],
     icon: 'UploadOutline',
     menu: 'off',
+    closesMenu: true,
     repeat: false
   },
   {
@@ -657,6 +676,7 @@ export const KEY_ACTIONS = [
     defaults: [],
     icon: 'CloseCircleOutline',
     menu: 'off',
+    closesMenu: true,
     repeat: false
   },
   {
@@ -669,6 +689,7 @@ export const KEY_ACTIONS = [
     defaults: [],
     icon: 'FileCopyOutline',
     menu: 'off',
+    closesMenu: true,
     repeat: false
   },
   {
@@ -693,6 +714,7 @@ export const KEY_ACTIONS = [
     defaults: [],
     icon: 'TrashBinOutline',
     menu: 'off',
+    closesMenu: true,
     repeat: false
   },
   // ---- Edit mode ---------------------------------------------------------
@@ -1073,6 +1095,7 @@ export const KEY_ACTIONS = [
     locked: ['Escape'],
     icon: 'CloseOutline',
     menu: 'off',
+    closesMenu: true,
     repeat: false
   },
   {
@@ -1084,6 +1107,7 @@ export const KEY_ACTIONS = [
     defaults: [],
     icon: 'CogOutline',
     menu: 'off',
+    closesMenu: true,
     repeat: false
   },
   {

@@ -475,3 +475,29 @@ describe('page keys scroll tall pages first (#283)', () => {
     expect(live.Desktop.pageKeysScrollFirst).toBe(true);
   });
 });
+
+describe('quick menu stays open after an action (#55, owner review)', () => {
+  it('defaults ON for a profile stored before the key existed', () => {
+    expect(migrateProfiles({ Test: {} as any }).Test.quickMenuStaysOpen).toBe(true);
+  });
+
+  it('keeps a stored OFF, and repairs a malformed value to ON', () => {
+    const out = migrateProfiles({
+      A: { quickMenuStaysOpen: false } as any,
+      B: { quickMenuStaysOpen: 'no' } as any
+    });
+    expect(out.A.quickMenuStaysOpen).toBe(false);
+    expect(out.B.quickMenuStaysOpen).toBe(true);
+  });
+
+  it('is ON in both built-in presets, and a profile setting (it syncs in profiles.json)', () => {
+    const live = get(profiles);
+    expect(live.Mobile.quickMenuStaysOpen).toBe(true);
+    expect(live.Desktop.quickMenuStaysOpen).toBe(true);
+    // A profile round-trips it through the synced JSON shape unchanged.
+    const stored = JSON.parse(
+      JSON.stringify({ T: { ...live.Desktop, quickMenuStaysOpen: false } })
+    );
+    expect(migrateProfiles(stored).T.quickMenuStaysOpen).toBe(false);
+  });
+});

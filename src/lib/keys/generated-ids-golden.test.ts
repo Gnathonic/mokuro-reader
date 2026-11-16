@@ -24,6 +24,7 @@ const GOLDEN = [
   'set.wheel.to.pan',
   'set.wheel.to.zoom',
   'set.wheel.to.turn',
+  'set.page-keys-scroll.toggle',
   'reader.continuous',
   'set.page-view.next',
   'set.page-view.prev',
@@ -59,6 +60,7 @@ const GOLDEN = [
   'set.char-count.toggle',
   'reader.timer',
   'set.quick-actions.toggle',
+  'set.quick-menu-stays.toggle',
   'set.no-animations.toggle',
   'set.mobile.toggle',
   'set.paged-gap.up',
@@ -198,8 +200,8 @@ describe('generated action ids are permanent', () => {
     expect([...generated].sort()).toEqual([...GOLDEN].sort());
   });
 
-  it('holds 170 ids, none twice', () => {
-    expect(GOLDEN).toHaveLength(170);
+  it('holds 172 ids, none twice', () => {
+    expect(GOLDEN).toHaveLength(172);
     expect(new Set(GOLDEN).size).toBe(GOLDEN.length);
   });
 

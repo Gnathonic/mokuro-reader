@@ -12,8 +12,12 @@ import {
   type QuickMenuState
 } from '#lib/keys/quick-menu.js';
 import { allActions } from '#lib/keys/registry.js';
+import { updateSetting } from '#lib/settings/index.js';
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  updateSetting('quickMenuStaysOpen', true);
+});
 
 const layers = [
   { layer_id: 'english', name: 'English', kind: 'translation' as const, updated_at: 'x' }
@@ -164,13 +168,13 @@ describe('QuickActions — opened by a key (#55)', () => {
     expect(utils.queryByLabelText('Quick actions menu')).toBeNull();
   });
 
-  it("Zoom to fit runs the reader's handler — the key's — and closes the menu", async () => {
+  it("Zoom to fit runs the reader's handler — the key's — and the menu stays up", async () => {
     const utils = mount();
     utils.parent.open = true;
     flushSync();
     await fireEvent.click(utils.getByLabelText('Zoom to fit'));
     expect(utils.onRun).toHaveBeenCalledExactlyOnceWith('reader.zoom-fit');
-    expect(utils.parent.open).toBe(false);
+    expect(utils.parent.open).toBe(true);
   });
 });
 
@@ -206,12 +210,20 @@ describe('QuickActions — drawn from the registry (#55 step C)', () => {
 
   it('every entry runs its action id through the one handler', async () => {
     const utils = mount({ open: true });
+    // At defaults the menu stays up, except after what opens a picker or a dialog.
+    const closing = new Set([
+      'reader.ocr-layers',
+      'reader.edit-mode',
+      'reader.anki-image',
+      'reader.anki-image-2'
+    ]);
     for (const id of utils.shown()) {
       utils.parent.open = true;
+      utils.parent.layersOpen = false;
       flushSync();
       await fireEvent.click(utils.container.querySelector(`[data-quick-action="${id}"]`)!);
       expect(utils.onRun).toHaveBeenLastCalledWith(id);
-      expect(utils.parent.open, id!).toBe(false);
+      expect(utils.parent.open, id!).toBe(!closing.has(id!));
     }
     expect(utils.onRun).toHaveBeenCalledTimes(8);
   });
@@ -251,7 +263,62 @@ describe('QuickActions — drawn from the registry (#55 step C)', () => {
     expect(utils.onRun).toHaveBeenLastCalledWith('set.brightness.up');
     expect(utils.parent.open).toBe(true);
     await fireEvent.click(utils.getByLabelText('Brightness: Reset'));
+    expect(utils.parent.open).toBe(true);
+    // With the menu set to close after an action, a step still keeps it up.
+    updateSetting('quickMenuStaysOpen', false);
+    flushSync();
+    await fireEvent.click(utils.getByLabelText('Brightness: Step down'));
+    expect(utils.parent.open).toBe(true);
+    await fireEvent.click(utils.getByLabelText('Brightness: Reset'));
     expect(utils.parent.open).toBe(false);
+  });
+
+  it('"Keep quick menu open" off: an action closes the menu, as it used to', async () => {
+    updateSetting('quickMenuStaysOpen', false);
+    const utils = mount({ open: true });
+    for (const id of utils.shown()) {
+      utils.parent.open = true;
+      utils.parent.layersOpen = false;
+      flushSync();
+      await fireEvent.click(utils.container.querySelector(`[data-quick-action="${id}"]`)!);
+      expect(utils.parent.open, id!).toBe(false);
+    }
+  });
+
+  it('what leaves the volume or opens a dialog closes the menu even when it stays open', async () => {
+    const closing = allActions().filter((a) => a.closesMenu);
+    // Leaving, and every dialog, drawer or picker the menu would sit over.
+    expect(closing.map((a) => a.id).sort()).toEqual(
+      [
+        'app.back',
+        'app.settings',
+        'layer.copy-to-edit',
+        'layer.delete',
+        'layer.new',
+        'layer.promote',
+        'layer.publish',
+        'layer.rename',
+        'layer.unpublish',
+        'reader.anki-image',
+        'reader.anki-image-2',
+        'reader.controls',
+        'reader.edit-mode',
+        'reader.goto-page',
+        'reader.ocr-layers',
+        'reader.volume-next',
+        'reader.volume-prev'
+      ].sort()
+    );
+    const items = entries(Object.fromEntries(closing.map((a) => [a.id, true])));
+    const utils = mount({ open: true, items });
+    for (const action of closing) {
+      utils.parent.open = true;
+      utils.parent.layersOpen = false;
+      flushSync();
+      await fireEvent.click(utils.container.querySelector(`[data-quick-action="${action.id}"]`)!);
+      expect(utils.onRun).toHaveBeenLastCalledWith(action.id);
+      expect(utils.parent.open, action.id).toBe(false);
+    }
   });
 
   it('disables an entry with its reason as the tooltip, and does not run it', async () => {

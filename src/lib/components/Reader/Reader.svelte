@@ -13,7 +13,8 @@
   import { dispatchKey, type KeyHandler, type KeyResolver } from '#lib/keys/dispatch.js';
   import { keyHint, keymap } from '#lib/keys/live.js';
   import type { ActionId, EditActionId, ReaderActionId, ReaderMode } from '#lib/keys/actions.js';
-  import { quickMenuIds, quickMenuItems } from '#lib/keys/quick-menu.js';
+  import { quickMenuIds, quickMenuItems, type MenuGlyphContext } from '#lib/keys/quick-menu.js';
+  import { provideMenuGlyphContext } from '#lib/keys/menu-glyph-context.js';
   import { registerAnnouncer, type AnnounceAction } from '#lib/keys/announce.js';
   import { appKeyHandlers } from '#lib/keys/app-actions.js';
   import { applySettingOp, runSettingAction, settingToggleOn } from '#lib/keys/setting-actions.js';
@@ -526,6 +527,18 @@
    * then only while the menu is open, so a closed menu costs nothing per
    * page turn (measured: three turns and a toggle, no run).
    */
+  /**
+   * How the menu draws Next / Previous page and the Anki pair in this book.
+   * Also handed to the settings section, so its rows draw the same glyphs
+   * while the reader is open (`menu-glyph-context.ts`).
+   */
+  let menuGlyphCtx = $derived.by<MenuGlyphContext>(() => ({
+    forward: keyMode() === 'vertical' ? 'down' : volumeSettings.rightToLeft ? 'left' : 'right',
+    hasSecondPage: !useSinglePage && !!imageCache.getFile(index + 1)
+  }));
+  $effect(() => provideMenuGlyphContext(menuGlyphCtx));
+  onDestroy(() => provideMenuGlyphContext(null));
+
   let quickMenuEntries = $derived.by(() => {
     const s = $settings;
     // A toggle's value is read through its definition, which reads its store
@@ -538,11 +551,11 @@
     const ctx = { volumeId: volume?.volume_uuid };
     return quickMenuItems(quickMenuIds(s.quickMenu, actions.values(), mode), actions, {
       mode,
-      // Where Next page goes on screen: the menu draws its two arrows that way.
-      forward: mode === 'vertical' ? 'down' : volumeSettings.rightToLeft ? 'left' : 'right',
+      // Where Next page goes on screen (the menu draws its two arrows that
+      // way) and whether the Anki pair is numbered.
+      ...menuGlyphCtx,
       editing: !!session,
       ankiEnabled: !!s.ankiConnectSettings?.enabled,
-      hasSecondPage: !useSinglePage && !!imageCache.getFile(index + 1),
       hasLayers: layers.length > 0,
       editBlocked: editingBlocked
         ? 'The original layer is read-only'
@@ -624,6 +637,12 @@
   async function openGotoPage() {
     overlaysVisible = true;
     await tick(); // the popover and its trigger mount with the controls
+    // From the quick menu this runs INSIDE the tap's click event; the popover
+    // closes on any click outside it, from a document listener the click is
+    // still bubbling to. Open it once that click is over, or it is shut by
+    // the tap that opened it (intermittently: it depends on when the
+    // popover's listener goes on).
+    await new Promise((resolve) => setTimeout(resolve, 0));
     pagePopoverOpen = true;
     gotoPageByKey = true;
     // The popover shows itself when its intro starts, a frame or two after it

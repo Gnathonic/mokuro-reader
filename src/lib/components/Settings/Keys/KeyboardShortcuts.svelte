@@ -228,7 +228,15 @@
 {/snippet}
 
 <AccordionItem {open}>
-  {#snippet header()}Shortcuts and quick menu{/snippet}
+  {#snippet header()}
+    <span class="flex items-center gap-2" data-keys-section-header>
+      <span>Shortcuts and quick menu</span>
+      <span
+        class="rounded bg-gray-200 px-1.5 py-px text-[10px] font-normal tracking-wide text-gray-600 uppercase dark:bg-gray-700 dark:text-gray-300"
+        >Advanced</span
+      >
+    </span>
+  {/snippet}
   <div class="flex flex-col gap-2 text-sm" data-keyboard-shortcuts data-key-search={applied}>
     <p class="text-xs text-gray-500 dark:text-gray-400">
       Saved in profile <b class="text-gray-900 dark:text-white">{$currentProfile}</b>

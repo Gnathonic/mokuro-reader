@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest';
 import type { KeyActionDef } from './actions';
 import {
   QUICK_MENU_DEFAULT,
+  closesAfterRun,
   isMenuChanged,
   isOnMenu,
   menuBadge,
   menuEligible,
+  menuGlyph,
   quickMenuIds,
   quickMenuItems,
   sanitizeQuickMenu,
@@ -358,5 +360,55 @@ describe('the menu items', () => {
     const list = items({}, { forward: 'left' });
     expect(list.find((i) => i.id === 'reader.page-next')?.label).toBe('Next page');
     expect(list.find((i) => i.id === 'reader.page-prev')?.label).toBe('Previous page');
+  });
+});
+
+describe('menuGlyph and closing after a run (owner review)', () => {
+  const state: QuickMenuState = {
+    mode: 'paged',
+    forward: 'left',
+    editing: true,
+    ankiEnabled: true,
+    hasSecondPage: true,
+    hasLayers: true,
+    toggleOn: () => undefined
+  };
+
+  it('every menu item carries exactly the glyph menuGlyph gives its action', () => {
+    for (const ctx of [
+      { forward: 'left', hasSecondPage: true },
+      { forward: 'right', hasSecondPage: false },
+      { forward: 'down', hasSecondPage: true }
+    ] as const) {
+      const eligible = all.filter(menuEligible);
+      for (const item of quickMenuItems(
+        eligible.map((a) => a.id),
+        byId,
+        { ...state, ...ctx }
+      )) {
+        const glyph = menuGlyph(def(item.id), ctx);
+        expect({ icon: item.icon, badge: item.badge }, item.id).toEqual({
+          icon: glyph.icon,
+          badge: glyph.badge
+        });
+      }
+    }
+  });
+
+  it('a step never closes, a closesMenu action always does, the rest follow the setting', () => {
+    const [step] = quickMenuItems(['set.brightness.up'], byId, state);
+    const [toggle] = quickMenuItems(['set.bold.toggle'], byId, state);
+    const [dialog] = quickMenuItems(['reader.goto-page'], byId, state);
+    expect([step.keepOpen, step.closesMenu]).toEqual([true, false]);
+    expect([dialog.keepOpen, dialog.closesMenu]).toEqual([false, true]);
+    for (const staysOpen of [true, false]) {
+      expect(closesAfterRun(step, staysOpen)).toBe(false);
+      expect(closesAfterRun(dialog, staysOpen)).toBe(true);
+      expect(closesAfterRun(toggle, staysOpen)).toBe(!staysOpen);
+    }
+  });
+
+  it('closesMenu is only ever set on actions that can be on the menu', () => {
+    for (const a of all) if (a.closesMenu) expect(menuEligible(a), a.id).toBe(true);
   });
 });

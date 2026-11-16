@@ -3,7 +3,9 @@
   import { ExclamationCircleSolid } from 'flowbite-svelte-icons';
   import { SCOPES, type ActionId, type KeyActionDef, type KeyScope } from '#lib/keys/actions.js';
   import { assessCapture } from '#lib/keys/capture.js';
-  import { actionIcon } from '#lib/keys/icons.js';
+  import { menuEligible, menuGlyph } from '#lib/keys/quick-menu.js';
+  import { menuGlyphContext } from '#lib/keys/menu-glyph-context.js';
+  import QuickMenuGlyph from '#lib/components/Reader/QuickMenuGlyph.svelte';
   import { warningsFor } from '#lib/keys/reserved.js';
   import {
     MAX_CHORDS_PER_ACTION,
@@ -57,7 +59,11 @@
     onMenuChange
   }: Props = $props();
 
-  let Icon = $derived(actionIcon(action.icon));
+  // The quick menu's own glyph — icon and badge — for the book the reader
+  // has open (else the profile's defaults): what this row shows is what the
+  // menu shows (owner review).
+  let glyph = $derived(menuGlyph(action, $menuGlyphContext));
+  let eligible = $derived(menuEligible(action));
 
   const MODE_LABEL = { paged: 'Paged', vertical: 'Vertical', horizontal: 'Horizontal' } as const;
   const PAGE_SCOPES: readonly KeyScope[] = [
@@ -182,7 +188,19 @@
   data-key-action={action.id}
 >
   <div class="flex items-center gap-2">
-    <Icon class="h-4 w-4 shrink-0 text-gray-500 dark:text-gray-400" aria-hidden="true" />
+    {#if eligible}
+      <!-- The menu's button in miniature: same face, same glyph, same badge. -->
+      <span
+        class="relative flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-gray-700 text-gray-300"
+        data-menu-glyph-face
+      >
+        <QuickMenuGlyph icon={glyph.icon} badge={glyph.badge} size="row" />
+      </span>
+    {:else}
+      <span class="relative flex shrink-0 text-gray-500 dark:text-gray-400">
+        <QuickMenuGlyph icon={glyph.icon} badge={glyph.badge} size="row" />
+      </span>
+    {/if}
     <span class="font-medium text-gray-900 dark:text-white">{title ?? action.label}</span>
     {#if conflictsWith && conflictsWith.size > 0}
       <span

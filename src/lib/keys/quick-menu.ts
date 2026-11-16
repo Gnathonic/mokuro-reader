@@ -178,16 +178,51 @@ const PAGE_TURN_ICONS: Readonly<Record<string, Readonly<Record<TurnDirection, Ic
   }
 };
 
-/** What the reader knows that decides how an entry shows. */
-export interface QuickMenuState {
-  mode: ReaderMode;
+/**
+ * What decides an entry's GLYPH — its icon and badge. The menu has it from
+ * the open book; the settings section shows the same glyph for the book the
+ * reader has open, else for the profile's defaults (`menu-glyph-context.ts`).
+ */
+export interface MenuGlyphContext {
   /** Where "Next page" goes on screen in this layout and this book. */
   forward: TurnDirection;
+  /** A second page is on screen: "Add image 2 to Anki" has something to add. */
+  hasSecondPage: boolean;
+}
+
+/** An entry's icon and badge: what the menu button draws. */
+export interface MenuGlyph {
+  icon: IconName;
+  badge?: string;
+}
+
+/**
+ * The ONE place an entry's glyph is decided. The quick menu
+ * (`quickMenuItems`) and the settings section's rows both draw what this
+ * returns, through the one component that draws it (`MenuGlyph.svelte`), so
+ * what the section shows is what the menu shows.
+ */
+export function menuGlyph(action: KeyActionDef, ctx: MenuGlyphContext): MenuGlyph {
+  const glyph: MenuGlyph = { icon: PAGE_TURN_ICONS[action.id]?.[ctx.forward] ?? action.icon };
+  // The Anki pair is numbered only while there are two pages to choose from.
+  const badge =
+    action.id === 'reader.anki-image'
+      ? ctx.hasSecondPage
+        ? '1'
+        : undefined
+      : action.id === 'reader.anki-image-2'
+        ? '2'
+        : menuBadge(action);
+  if (badge) glyph.badge = badge;
+  return glyph;
+}
+
+/** What the reader knows that decides how an entry shows. */
+export interface QuickMenuState extends MenuGlyphContext {
+  mode: ReaderMode;
   /** OCR edit mode is on. */
   editing: boolean;
   ankiEnabled: boolean;
-  /** A second page is on screen: "Add image 2 to Anki" has something to add. */
-  hasSecondPage: boolean;
   /** The volume has OCR layers beside its primary. */
   hasLayers: boolean;
   /** Why edit mode cannot be entered for a reason other than the layout. */
@@ -206,8 +241,21 @@ export interface QuickMenuItem {
   active?: boolean;
   /** Set when the button is disabled: why. */
   disabled?: string;
-  /** A step (brightness up, zoom in): the menu stays open for the next tap. */
+  /** A step (brightness up, zoom in): the menu stays open for the next tap, whatever the setting. */
   keepOpen: boolean;
+  /** It leaves the volume or opens a dialog: the menu closes, whatever the setting. */
+  closesMenu: boolean;
+}
+
+/**
+ * Does running `item` from the menu close it? A step never does, an action
+ * that leaves or opens a dialog always does, and everything else follows
+ * `Settings.quickMenuStaysOpen`.
+ */
+export function closesAfterRun(item: QuickMenuItem, staysOpen: boolean): boolean {
+  if (item.closesMenu) return true;
+  if (item.keepOpen) return false;
+  return !staysOpen;
 }
 
 export const EDIT_PAGED_ONLY = 'Edit is available in paged mode only';
@@ -237,23 +285,15 @@ export function quickMenuItems(
     }
     if (id === 'reader.ocr-layers' && !state.hasLayers && !state.editing) continue;
 
+    const glyph = menuGlyph(action, state);
     const item: QuickMenuItem = {
       id,
       label: action.label,
-      icon: PAGE_TURN_ICONS[id]?.[state.forward] ?? action.icon,
-      keepOpen: action.setting?.op === 'up' || action.setting?.op === 'down' || STEPS.has(id)
+      icon: glyph.icon,
+      keepOpen: action.setting?.op === 'up' || action.setting?.op === 'down' || STEPS.has(id),
+      closesMenu: !!action.closesMenu
     };
-
-    // The Anki pair is numbered only while there are two pages to choose from.
-    const badge =
-      id === 'reader.anki-image'
-        ? state.hasSecondPage
-          ? '1'
-          : undefined
-        : id === 'reader.anki-image-2'
-          ? '2'
-          : menuBadge(action);
-    if (badge) item.badge = badge;
+    if (glyph.badge) item.badge = glyph.badge;
 
     if (id === 'reader.edit-mode') {
       item.active = state.editing;

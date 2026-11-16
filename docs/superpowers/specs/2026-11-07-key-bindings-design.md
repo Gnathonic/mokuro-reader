@@ -93,7 +93,7 @@ Non-goals (v1):
 
 ## 4. Behaviour
 
-- Settings gets a new accordion item, **Keyboard shortcuts**, after Reader.
+- Settings gets a new accordion item, **Keyboard shortcuts**, after Reader. (Moved to the end of the drawer, marked Advanced, after owner review: section 18.)
   It lists every action, grouped, with its keys as chips.
 - `+ Add` turns into "Press a key… (Esc cancels)". The next non-modifier key
   is recorded with the modifiers held. Click a chip's `×` to remove it.
@@ -1326,3 +1326,38 @@ series-page action on E as well.
    they are ↓ and ↑ (17.7).
 
 Everything else is new and unbound.
+
+## 18. Owner review of the extension (2026-11-15)
+
+The owner's comment on the draft PR, and what changed:
+
+1. **"The icons you see are not the icons you get. Badges don't render in the
+   editor."** A menu entry's glyph — icon and badge — is decided in ONE
+   function, `menuGlyph` (`keys/quick-menu.ts`), and drawn by ONE component,
+   `QuickMenuGlyph.svelte`. The quick menu's buttons and the settings
+   section's action rows both use them; a menu-eligible row draws the glyph on
+   a miniature of the menu button's face. Next page / Previous page point the
+   way the book turns, so the section draws them for the book the reader has
+   open (the reader provides its context, `keys/menu-glyph-context.ts`), and
+   outside the reader for the profile's defaults (a new volume's direction,
+   the profile's layout and page view). `menu-glyph-parity.test.ts` renders
+   every eligible action in both places, in three books, and compares icon
+   name, SVG paths and badge.
+2. **"The quick menu needs to stay open after an action, or an option."** A
+   profile setting, `quickMenuStaysOpen` (default ON, synced in
+   `profiles.json` like every profile setting; "Keep quick menu open after an
+   action" under "Show quick actions", and a bindable toggle). Off restores
+   close-after-each-action. A step (zoom in, brightness up) stays open either
+   way, and an action whose registry entry has `closesMenu` closes it either
+   way: it leaves the volume or the reader (previous/next volume, Back), opens
+   a dialog, drawer, field or picker (go to page, the layer picker and the
+   layer commands, the Anki pair, open settings), hides the controls, or
+   enters edit mode (the editor brings its own toolbar).
+3. **"The key config menu is forwarded too much. It's not a primary
+   feature."** The section is no longer second in the drawer: it sits at the
+   end, above About, marked "Advanced". Its hints elsewhere stay (they name
+   the live key); nothing else points at it.
+
+Also on this merge: "Go to page…" run from the quick menu opened its popover
+inside the tap's own click, which the popover's outside-click listener could
+then close — intermittently. It now opens once that click is over.

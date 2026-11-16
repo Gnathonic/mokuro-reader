@@ -89,7 +89,6 @@
     <Accordion flush>
       <QuickAccess bind:open />
       <ReaderSettings />
-      <KeyboardShortcuts />
       {#if !isReader()}
         <VolumeDefaults />
       {/if}
@@ -99,6 +98,9 @@
       <MetadataSettings />
       <AppearanceSettings />
       <Stats />
+      <!-- Advanced, not a primary feature (owner review of #55): at defaults
+           nothing here needs touching, so it sits at the end, out of the way. -->
+      <KeyboardShortcuts />
       <About />
     </Accordion>
     <div class="flex flex-col gap-2">

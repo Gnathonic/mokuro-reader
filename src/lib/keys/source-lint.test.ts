@@ -17,7 +17,7 @@ const SOURCES = import.meta.glob<string>(
     '/src/lib/views/{SeriesView,ProgressTrackerView,VolumeTextView,SeriesTextView}.svelte',
     '/src/routes/+layout.svelte',
     '/src/lib/util/{delete-shortcut,series-editor-shortcut}.ts',
-    '/src/lib/keys/{app-actions,providers,outside-reader}.ts'
+    '/src/lib/keys/{app-actions,providers,outside-reader,quick-menu}.ts'
   ],
   { query: '?raw', import: 'default', eager: true }
 );
@@ -58,6 +58,10 @@ const ALLOWED: Record<string, string[]> = {
   'src/lib/components/Reader/RereadPromptModal.svelte': ["if (e.key === 'Escape') {"],
   // The layer picker's own Escape (it opens without taking focus).
   'src/lib/components/Reader/Layers/LayerPicker.svelte': ["if (event.key === 'Escape') {"],
+  // Not a key at all: #283's one-shot landing request, keyed by page.
+  'src/lib/components/Reader/PagedViewport.svelte': [
+    'if (landing && landing.key === pageKey && performance.now() - landing.at < LANDING_TTL_MS) {'
+  ],
   // The series editor's own Escape capture (a dialog, outside the keymap).
   'src/lib/components/Series/SeriesEditorModal.svelte': ["if (e.key !== 'Escape') return;"]
 };
@@ -166,7 +170,9 @@ describe('the quick menu and its section are registry-driven', () => {
 
   it('QuickActions draws its entries from the items it is given and owns no action', () => {
     expect(menu).toContain('{#each items as item (item.id)}');
-    expect(menu).toContain('actionIcon(item.icon)');
+    // Its glyphs through the one component the settings section draws them with.
+    expect(menu).toContain('<QuickMenuGlyph icon={item.icon} badge={item.badge} />');
+    expect(menu).not.toContain('actionIcon(');
     expect(menu).toContain('aria-label={item.label}');
     expect(menu).toContain('onRun?.(item.id)');
     // Its one hand-written label, and its one imported icon, are its own button's.
@@ -194,6 +200,17 @@ describe('the quick menu and its section are registry-driven', () => {
     for (const prop of ['onAnkiImage=', 'onZoomFit=', 'onEdit=', 'editEnabled=']) {
       expect(reader, prop).not.toContain(prop);
     }
+  });
+
+  it('a section row draws the menu’s own glyph, through the menu’s own component', () => {
+    const row = SECTION_SOURCES['/src/lib/components/Settings/Keys/KeyActionRow.svelte'];
+    expect(row).toContain('menuGlyph(action, $menuGlyphContext)');
+    expect(row).toContain('<QuickMenuGlyph icon={glyph.icon} badge={glyph.badge}');
+    expect(row).not.toContain('actionIcon(');
+    // The reader decides each entry's glyph in the same one function.
+    expect(SOURCES['/src/lib/keys/quick-menu.ts']).toContain(
+      'const glyph = menuGlyph(action, state);'
+    );
   });
 
   it('the section derives what spans rows once; a row derives only its own chords', () => {

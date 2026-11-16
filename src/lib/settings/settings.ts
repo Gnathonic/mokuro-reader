@@ -170,6 +170,13 @@ export type Settings = {
   edgeButtonWidth: number;
   showTimer: boolean;
   quickActions: boolean;
+  /**
+   * The quick menu stays open after an action, for the next tap (#55, owner
+   * review). Off = it closes after each one, as it used to. An action that
+   * opens a dialog or leaves the reader closes it either way
+   * (`KeyActionDef.closesMenu`).
+   */
+  quickMenuStaysOpen: boolean;
   fontSize: FontSize;
   zoomDefault: ZoomModes;
   pageTransition: PageTransition;
@@ -339,6 +346,7 @@ const defaultSettings: Settings = {
   edgeButtonWidth: 40,
   showTimer: false,
   quickActions: true,
+  quickMenuStaysOpen: true,
   fontSize: 'auto',
   zoomDefault: 'zoomFitToScreen',
   pageTransition: 'none',
@@ -573,6 +581,12 @@ export function migrateProfiles(profiles: Profiles): Profiles {
     // reads ON (the spread above only fills a key that is absent).
     if (typeof migratedProfile.pageKeysScrollFirst !== 'boolean') {
       migratedProfile.pageKeysScrollFirst = true;
+    }
+
+    // Quick menu stays open after an action (added 2026-11, #55): default ON,
+    // a malformed value reads ON too.
+    if (typeof migratedProfile.quickMenuStaysOpen !== 'boolean') {
+      migratedProfile.quickMenuStaysOpen = true;
     }
 
     // Theme migration. The `...defaultSettings, ...profile` spread above already

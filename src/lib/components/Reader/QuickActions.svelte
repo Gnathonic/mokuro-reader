@@ -1,8 +1,8 @@
 <script lang="ts">
   import { settings } from '#lib/settings/index.js';
   import { PlusOutline } from 'flowbite-svelte-icons';
-  import { actionIcon } from '#lib/keys/icons.js';
-  import type { QuickMenuItem } from '#lib/keys/quick-menu.js';
+  import { closesAfterRun, type QuickMenuItem } from '#lib/keys/quick-menu.js';
+  import QuickMenuGlyph from './QuickMenuGlyph.svelte';
   import LayerPicker from './Layers/LayerPicker.svelte';
   import type { LayerSummary } from '#lib/reader/edit/layer-list.js';
   import type { LayerAction } from './Layers/layer-actions';
@@ -81,8 +81,9 @@
 
   function run(item: QuickMenuItem) {
     if (item.disabled) return;
-    // A step (brightness up, zoom in) keeps the menu up for the next tap.
-    if (!item.keepOpen) open = false;
+    // By the profile's setting, the menu stays up for the next tap — except
+    // after what leaves or opens a dialog; a step (zoom in) always stays.
+    if (closesAfterRun(item, $settings.quickMenuStaysOpen)) open = false;
     onRun?.(item.id);
   }
 
@@ -122,7 +123,6 @@
     {#if open}
       <div class="quick-menu-items mb-2 flex flex-col flex-wrap-reverse justify-end gap-2">
         {#each items as item (item.id)}
-          {@const Icon = actionIcon(item.icon)}
           <button
             onclick={() => run(item)}
             disabled={!!item.disabled}
@@ -135,13 +135,7 @@
               ? 'bg-primary-700 hover:bg-primary-600 disabled:hover:bg-primary-700'
               : 'bg-gray-700 hover:bg-gray-600 disabled:hover:bg-gray-700'}"
           >
-            <Icon size="xl" />
-            {#if item.badge}
-              <span
-                class="absolute -top-1 -right-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-primary-600 px-1 text-xs leading-none text-white"
-                data-quick-action-badge>{item.badge}</span
-              >
-            {/if}
+            <QuickMenuGlyph icon={item.icon} badge={item.badge} />
           </button>
         {/each}
       </div>

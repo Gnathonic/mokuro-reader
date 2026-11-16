@@ -22,9 +22,9 @@ const ofKind = <K extends SettingDef['kind']>(kind: K) =>
   defs.filter((d): d is Extract<SettingDef, { kind: K }> => d.kind === kind);
 
 describe('the setting definitions', () => {
-  it('are 48: 20 toggles, 21 lists, 7 sliders', () => {
-    expect(defs).toHaveLength(48);
-    expect(ofKind('toggle')).toHaveLength(20);
+  it('are 50: 22 toggles, 21 lists, 7 sliders', () => {
+    expect(defs).toHaveLength(50);
+    expect(ofKind('toggle')).toHaveLength(22);
     expect(ofKind('list')).toHaveLength(21);
     expect(ofKind('slider')).toHaveLength(7);
   });

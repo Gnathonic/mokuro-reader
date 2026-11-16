@@ -60,6 +60,11 @@
         { key: 'showTimer', text: 'Show timer', value: $settings.showTimer },
         { key: 'quickActions', text: 'Show quick actions', value: $settings.quickActions },
         {
+          key: 'quickMenuStaysOpen',
+          text: 'Keep quick menu open after an action',
+          value: $settings.quickMenuStaysOpen
+        },
+        {
           key: 'pageKeysScrollFirst',
           text: 'Page Up/Down scroll tall pages before turning',
           value: $settings.pageKeysScrollFirst

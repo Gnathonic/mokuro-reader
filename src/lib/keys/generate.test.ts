@@ -101,7 +101,7 @@ describe('every generated action', () => {
       list: ['next', 'prev', 'to'],
       slider: ['up', 'down', 'reset']
     };
-    expect(generated.length).toBe(170);
+    expect(generated.length).toBe(172);
     for (const a of generated) {
       expect(a.setting, a.id).toBeDefined();
       const def = findSettingDef(a.setting!.def);
