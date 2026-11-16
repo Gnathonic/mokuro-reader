@@ -139,17 +139,6 @@ export function recordView(
     .catch(warnOnce);
 }
 
-/** An answer given after the view ended (the review list): never throws. */
-export function recordResolve(
-  volume: string,
-  target: [device: string, seq: number],
-  count: PauseCount,
-  t: number = Date.now(),
-  db?: HistoryDexie
-): Promise<ReadingEvent | null> {
-  return recordEvent({ kind: 'resolve', volume, target, count }, t, db);
-}
-
 function historyFor(db?: HistoryDexie): Promise<HistoryDexie> {
   return db ? Promise.resolve(db) : import('./history-db').then((m) => m.historyDb());
 }
