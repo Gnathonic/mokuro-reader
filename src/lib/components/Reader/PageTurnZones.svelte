@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { settings } from '$lib/settings';
+  import { settings } from '#lib/settings/index.js';
 
   /**
    * The invisible tap-to-turn page zones (#54).

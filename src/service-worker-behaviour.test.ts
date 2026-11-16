@@ -9,7 +9,7 @@ import { describe, it, expect, vi, beforeAll } from 'vitest';
 // Mocked, so this test cannot see the REAL precache list: the post-build gate
 // scripts/check-service-worker.mjs runs the built worker and checks every path
 // it precaches is deployed (src/check-service-worker.test.ts).
-vi.mock('$app/environment', () => ({ version: 'test-version' }));
+vi.mock('$app/env', () => ({ version: 'test-version' }));
 vi.mock('$app/manifest', () => ({
   immutable: [{ path: '_app/immutable/entry/app.js' }],
   assets: [

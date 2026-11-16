@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { VolumeMetadata } from '$lib/types';
+import type { VolumeMetadata } from '#lib/types/index.js';
 
 /**
  * The session copy (`cloud-thumbnails.ts`): a cover downloaded once this
@@ -19,7 +19,7 @@ const cloud = vi.hoisted(() => {
   return { downloadFile };
 });
 
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: {
     getActiveProvider: () => ({ type: 'webdav' }),
     downloadFile: cloud.downloadFile

@@ -1,8 +1,8 @@
 <script lang="ts">
-  import { pageImageUrlFrom } from '$lib/reader/page-image-url';
-  import { clamp, promptConfirmation } from '$lib/util';
-  import type { Page } from '$lib/types';
-  import { settings, volumes } from '$lib/settings';
+  import { pageImageUrlFrom } from '#lib/reader/page-image-url.js';
+  import { clamp, promptConfirmation } from '#lib/util/index.js';
+  import type { Page } from '#lib/types/index.js';
+  import { settings, volumes } from '#lib/settings/index.js';
   import {
     showCropper,
     openCreateModal,
@@ -15,19 +15,19 @@
     getModelConfig,
     coverImageDataUrl,
     type VolumeMetadata
-  } from '$lib/anki-connect';
-  import { ankiUrlRefusal } from '$lib/anki-connect/url-trust';
-  import { db } from '$lib/catalog/db';
+  } from '#lib/anki-connect/index.js';
+  import { ankiUrlRefusal } from '#lib/anki-connect/url-trust.js';
+  import { db } from '#lib/catalog/db.js';
   import {
     layoutLines,
     getDefaultMeasurer,
     processLine,
     type LineLayout
-  } from '$lib/reader/line-coords-layout';
-  import { lineTransform } from '$lib/reader/line-grid';
-  import { fontsReady, fontLoadEpoch } from '$lib/reader/fonts-ready';
-  import { dedupeBlocks } from '$lib/reader/block-dedupe';
-  import { displayableImageBlob } from '$lib/util/raster-image';
+  } from '#lib/reader/line-coords-layout.js';
+  import { lineTransform } from '#lib/reader/line-grid.js';
+  import { fontsReady, fontLoadEpoch } from '#lib/reader/fonts-ready.js';
+  import { dedupeBlocks } from '#lib/reader/block-dedupe.js';
+  import { displayableImageBlob } from '#lib/util/raster-image.js';
 
   interface ContextMenuData {
     x: number;
@@ -519,7 +519,7 @@
       // as "no recent card" and say so over the notice.
       const refusal = ankiUrlRefusal($settings.ankiConnectSettings.url);
       if (refusal) {
-        const { showSnackbar } = await import('$lib/util');
+        const { showSnackbar } = await import('#lib/util/index.js');
         showSnackbar(refusal);
         return;
       }
@@ -556,7 +556,7 @@
       }
 
       if (lastError || !lastCard?.noteId || !lastCard?.modelName) {
-        const { showSnackbar } = await import('$lib/util');
+        const { showSnackbar } = await import('#lib/util/index.js');
         showSnackbar(`Error: ${lastError || 'Failed to fetch card info'}`);
         return;
       }
@@ -564,7 +564,7 @@
       const cardAge = getCardAgeInMin(lastCard.noteId);
       if (cardAge >= 5) {
         // Card too old
-        const { showSnackbar } = await import('$lib/util');
+        const { showSnackbar } = await import('#lib/util/index.js');
         showSnackbar(`Last card is ${cardAge} minutes old (max 5 min)`);
         return;
       }

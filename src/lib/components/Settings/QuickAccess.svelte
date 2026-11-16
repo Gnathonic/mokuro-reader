@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { toggleFullScreen } from '$lib/util/fullscreen';
-  import { isReader } from '$lib/util';
-  import { navigateBack } from '$lib/util/hash-router';
+  import { toggleFullScreen } from '#lib/util/fullscreen.js';
+  import { isReader } from '#lib/util/index.js';
+  import { navigateBack } from '#lib/util/hash-router.js';
 
   import { Button } from 'flowbite-svelte';
 

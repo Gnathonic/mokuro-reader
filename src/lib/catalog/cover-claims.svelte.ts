@@ -1,6 +1,6 @@
 import { onDestroy, untrack } from 'svelte';
 import { fromStore } from 'svelte/store';
-import type { VolumeMetadata } from '$lib/types';
+import type { VolumeMetadata } from '#lib/types/index.js';
 import { acquireCover, type CoverHandle, type ResolvedCover } from './cover-resolver';
 import { activeAccountScopeStore } from './account-scope-store';
 import { isCoverFetchTarget, requestCover } from './cover-service';

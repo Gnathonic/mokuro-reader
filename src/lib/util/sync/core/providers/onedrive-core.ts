@@ -1,4 +1,4 @@
-import { ProviderError, type UploadFileResult } from '$lib/util/sync/provider-interface';
+import { ProviderError, type UploadFileResult } from '#lib/util/sync/provider-interface.js';
 import type { CloudProviderCore } from '../cloud-provider-core-types';
 import { requireCredentialString } from '../cloud-provider-core-types';
 import { ONEDRIVE_CONFIG, graphBase } from '../../providers/onedrive/constants';

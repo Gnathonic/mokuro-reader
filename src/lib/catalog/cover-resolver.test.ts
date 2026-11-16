@@ -6,7 +6,7 @@ import 'fake-indexeddb/auto';
 import { countIdbOps } from './__tests__/idb-op-counter';
 
 const { getActiveProvider } = vi.hoisted(() => ({ getActiveProvider: vi.fn() }));
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: { getActiveProvider }
 }));
 

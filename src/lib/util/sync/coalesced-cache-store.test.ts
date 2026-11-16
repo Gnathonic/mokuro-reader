@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CACHE_MUTATION_COALESCE_MS, CoalescedCacheStore } from './coalesced-cache-store';
+import { addMutations, replaceFolderInStore } from './listing-mutations';
+import type { CloudFileMetadata } from './provider-interface';
 
 /**
  * The state/emission split, pinned at the primitive. Every test here is
@@ -159,5 +161,92 @@ describe('CoalescedCacheStore', () => {
     expect(seen).toHaveLength(1);
     expect(seen[0].size).toBe(0);
     expect(seen.some((map) => map.has('dead-account-series'))).toBe(false);
+  });
+});
+
+describe('a scoped listing replaces one folder (queue file v2: the scoped pull)', () => {
+  const file = (path: string, fileId = path): CloudFileMetadata => ({
+    provider: 'webdav',
+    fileId,
+    path,
+    modifiedTime: '2026-10-12T10:00:00.000Z',
+    size: 1
+  });
+  let store: CoalescedCacheStore<CloudFileMetadata[]>;
+
+  beforeEach(() => {
+    store = new CoalescedCacheStore<CloudFileMetadata[]>(
+      new Map([
+        ['Saga', [file('Saga/Saga 01.cbz'), file('Saga/Saga 02.cbz')]],
+        ['Other', [file('Other/Other 01.cbz')]]
+      ])
+    );
+  });
+
+  const paths = () =>
+    [...store.read().values()]
+      .flat()
+      .map((f) => f.path)
+      .sort();
+
+  it("replaces that folder's entries and nothing else", async () => {
+    const ok = await replaceFolderInStore(store, true, 'Saga', async () => [
+      file('Saga/Saga 01.cbz'),
+      file('Saga/Saga 01.mokuro')
+    ]);
+    expect(ok).toBe(true);
+    expect(paths()).toEqual(['Other/Other 01.cbz', 'Saga/Saga 01.cbz', 'Saga/Saga 01.mokuro']);
+  });
+
+  it('an empty folder listing removes the folder', async () => {
+    await replaceFolderInStore(store, true, 'Saga', async () => []);
+    expect([...store.read().keys()]).toEqual(['Other']);
+  });
+
+  it('keeps a write this device made while the folder was listed', async () => {
+    let release: (files: CloudFileMetadata[]) => void = () => {};
+    const pending = replaceFolderInStore(
+      store,
+      true,
+      'Saga',
+      () => new Promise<CloudFileMetadata[]>((resolve) => (release = resolve))
+    );
+    // An upload lands after the provider read the folder, before the replace.
+    store.update(...addMutations('Saga/Saga 02.mokuro', file('Saga/Saga 02.mokuro')));
+    release([file('Saga/Saga 01.cbz')]);
+    expect(await pending).toBe(true);
+    expect(paths()).toEqual(['Other/Other 01.cbz', 'Saga/Saga 01.cbz', 'Saga/Saga 02.mokuro']);
+  });
+
+  it('a whole install or a clear meanwhile wins: nothing is replaced', async () => {
+    let release: (files: CloudFileMetadata[]) => void = () => {};
+    const pending = replaceFolderInStore(
+      store,
+      true,
+      'Saga',
+      () => new Promise<CloudFileMetadata[]>((resolve) => (release = resolve))
+    );
+    store.set(new Map());
+    release([file('Saga/Saga 01.cbz')]);
+    expect(await pending).toBe(false);
+    expect(store.read().size).toBe(0);
+  });
+
+  it('nothing before the first listing', async () => {
+    const list = vi.fn(async () => []);
+    expect(await replaceFolderInStore(store, false, 'Saga', list)).toBe(false);
+    expect(list).not.toHaveBeenCalled();
+  });
+
+  it('a whole listing open meanwhile replays the replacement onto its map', async () => {
+    const listing = store.beginListing();
+    await replaceFolderInStore(store, true, 'Saga', async () => [file('Saga/Saga 03.mokuro')]);
+    listing.install(
+      new Map([
+        ['Saga', [file('Saga/Saga 01.cbz')]],
+        ['Other', [file('Other/Other 01.cbz')]]
+      ])
+    );
+    expect(paths()).toEqual(['Other/Other 01.cbz', 'Saga/Saga 03.mokuro']);
   });
 });

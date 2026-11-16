@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // The mode the module under test sees: production unless a test says dev.
 const env = vi.hoisted(() => ({ dev: false }));
-vi.mock('$app/environment', () => ({
+vi.mock('$app/env', () => ({
   get dev() {
     return env.dev;
   }

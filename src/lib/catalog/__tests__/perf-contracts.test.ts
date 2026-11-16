@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import 'fake-indexeddb/auto';
-import type { VolumeMetadata } from '$lib/types';
-import type { CloudThumbnailResult } from '$lib/catalog/cloud-thumbnails';
+import type { VolumeMetadata } from '#lib/types/index.js';
+import type { CloudThumbnailResult } from '#lib/catalog/cloud-thumbnails.js';
 
 /**
  * OPERATION-COUNT CONTRACTS.
@@ -48,9 +48,9 @@ import type { CloudThumbnailResult } from '$lib/catalog/cloud-thumbnails';
 // A real Dexie under its own database name — `countIdbOps` can only count
 // operations that actually reach IndexedDB, so the `db` module is the one
 // thing in this file that must NOT be a stub.
-vi.mock('$lib/catalog/db', async () => {
+vi.mock('#lib/catalog/db.js', async () => {
   const { CatalogDexieV3 } =
-    await vi.importActual<typeof import('$lib/catalog/db-v3')>('$lib/catalog/db-v3');
+    await vi.importActual<typeof import('#lib/catalog/db-v3.js')>('#lib/catalog/db-v3.js');
   return { db: new CatalogDexieV3('mokuro_v3_perf_contracts_test') };
 });
 
@@ -103,7 +103,7 @@ const {
 // reads. An EMPTY `getCloudVolumesBySeries` selects the image-only branch of
 // that resolution — no `.mokuro` sidecar to pull, no cover sidecar to fetch —
 // so CONTRACT 4 exercises the batch queue itself with no network in the way.
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: {
     cloudFiles,
     getActiveProvider: () => ({
@@ -119,7 +119,7 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
 // download plumbing stays out of this file's graph. CONTRACT 5 drives it
 // directly (`mockResolvedValue`) to hand `cover-install.ts` a cover without a
 // network.
-vi.mock('$lib/catalog/cloud-thumbnails', () => ({
+vi.mock('#lib/catalog/cloud-thumbnails.js', () => ({
   fetchCloudThumbnail: vi.fn(async () => null),
   getCachedCloudThumbnail: vi.fn(() => undefined)
 }));
@@ -128,52 +128,56 @@ vi.mock('$lib/catalog/cloud-thumbnails', () => ({
 // touches no IndexedDB, which is what lets CONTRACT 4 wait for the real
 // materialize batch window from INSIDE its counted block without polluting
 // the transaction counts it is asserting on.
-vi.mock('$lib/metadata/series-file-sync', () => ({
+vi.mock('#lib/metadata/series-file-sync.js', () => ({
   scheduleSeriesFileWrite: (...a: unknown[]) => scheduleSeriesFileWriteMock(...a)
 }));
 // Only the cloud scan is spied on; every other export (the cloud-field
 // lookup, `isIndexedPlaceholder`, the sidecar indexers) stays real, because
 // CONTRACT 4's resolution path runs through them.
-vi.mock('$lib/catalog/placeholders', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('$lib/catalog/placeholders')>();
+vi.mock('#lib/catalog/placeholders.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('#lib/catalog/placeholders.js')>();
   return { ...actual, generatePlaceholders: vi.fn(actual.generatePlaceholders) };
 });
-vi.mock('$lib/util/hash-router', () => ({ routeParams }));
-vi.mock('$lib/metadata/store', () => ({ seriesMetadataMap }));
-vi.mock('$lib/metadata/series-index', () => ({ seriesIndexMap }));
-vi.mock('$lib/util/download-volume-repair', () => ({
+vi.mock('#lib/util/hash-router.js', () => ({ routeParams }));
+vi.mock('#lib/metadata/store.js', () => ({ seriesMetadataMap }));
+vi.mock('#lib/metadata/series-index.js', () => ({ seriesIndexMap }));
+vi.mock('#lib/util/download-volume-repair.js', () => ({
   getLegacyImageOnlyVolumeUuid: () => undefined
 }));
 // The Worker-backed decode cache is orthogonal to every count here.
-vi.mock('$lib/catalog/thumbnail-cache', () => ({
+vi.mock('#lib/catalog/thumbnail-cache.js', () => ({
   thumbnailCache: { invalidate: vi.fn() }
 }));
 // The relationship gate reads this store; hand-rolled (same pattern as
 // `cover-persist.test.ts`) so a test can say exactly which volumes the device
 // has actually read, without touching localStorage.
-vi.mock('$lib/settings/volume-data', () => ({ volumes: readingHistory }));
+vi.mock('#lib/settings/volume-data.js', () => ({ volumes: readingHistory }));
 
-import { db } from '$lib/catalog/db';
-import { volumes, volumesWithPlaceholders, VOLUMES_EMISSION_COALESCE_MS } from '$lib/catalog';
-import { generatePlaceholders } from '$lib/catalog/placeholders';
+import { db } from '#lib/catalog/db.js';
+import {
+  volumes,
+  volumesWithPlaceholders,
+  VOLUMES_EMISSION_COALESCE_MS
+} from '#lib/catalog/index.js';
+import { generatePlaceholders } from '#lib/catalog/placeholders.js';
 import {
   cachedCoverPaths,
   _getCloudCoversForTests,
   putCloudCovers
-} from '$lib/catalog/cloud-covers';
-import { cachedCoverPathSet } from '$lib/catalog/cloud-covers-store';
-import { fetchCloudThumbnail } from '$lib/catalog/cloud-thumbnails';
-import { installCoversForSeries } from '$lib/catalog/cover-install';
+} from '#lib/catalog/cloud-covers.js';
+import { cachedCoverPathSet } from '#lib/catalog/cloud-covers-store.js';
+import { fetchCloudThumbnail } from '#lib/catalog/cloud-thumbnails.js';
+import { installCoversForSeries } from '#lib/catalog/cover-install.js';
 import {
   _resetCoverPersistForTests,
   flushPendingCoverPersists,
   installCover
-} from '$lib/catalog/cover-persist';
+} from '#lib/catalog/cover-persist.js';
 import {
   _resetCoverServiceForTests,
   MATERIALIZE_BATCH_MAX_ENTRIES,
   requestCover
-} from '$lib/catalog/cover-service';
+} from '#lib/catalog/cover-service.js';
 import { countIdbOps } from './idb-op-counter';
 
 /**

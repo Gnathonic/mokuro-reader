@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { VolumeMetadata } from '$lib/types';
+import type { VolumeMetadata } from '#lib/types/index.js';
 
 // vi.mock factories are hoisted above imports, so the stores they close over are
 // hand-rolled here rather than built with svelte/store's `writable` — see
@@ -28,16 +28,16 @@ const h = vi.hoisted(() => {
   };
 });
 
-vi.mock('$app/environment', () => ({ browser: true }));
+vi.mock('$app/env', () => ({ browser: true }));
 
-vi.mock('$lib/settings/volume-data', () => ({
+vi.mock('#lib/settings/volume-data.js', () => ({
   volumes: h.volumesStore,
   archiveAndResetVolumes: vi.fn()
 }));
 
 vi.mock('./progress-tracker', () => ({ onSeriesRestarted: vi.fn() }));
 
-import { archiveAndResetVolumes } from '$lib/settings/volume-data';
+import { archiveAndResetVolumes } from '#lib/settings/volume-data.js';
 // The reading-state store is the real one: it is a plain synchronous store over
 // localStorage, and its write semantics (functional patch, cleared flags
 // dropped) are exactly what these tests are about.
@@ -46,7 +46,7 @@ import {
   getSeriesReadingState,
   seriesReadingState,
   updateSeriesReadingState
-} from '$lib/settings/series-data';
+} from '#lib/settings/series-data.js';
 import { onSeriesRestarted } from './progress-tracker';
 import {
   dismissRereadForSession,

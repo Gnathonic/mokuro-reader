@@ -4,7 +4,7 @@
  * debounced save. Pure ops live in `edit-ops.ts`; the DOM lives in
  * `EditOverlay.svelte`; this class is the seam between them.
  */
-import type { Page } from '$lib/types';
+import type { Page } from '#lib/types/index.js';
 import { EditHistory, type HistoryMark } from './edit-history';
 import {
   addBlock,

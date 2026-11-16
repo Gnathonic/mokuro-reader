@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render } from '@testing-library/svelte';
 
 const store = vi.hoisted(() => ({ current: undefined as any }));
 
-vi.mock('$lib/settings', async () => {
+vi.mock('#lib/settings/index.js', async () => {
   const { writable } = await import('svelte/store');
   store.current = writable<Record<string, unknown>>({
     tapPageEdgesToTurn: true,

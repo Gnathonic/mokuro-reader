@@ -1,31 +1,31 @@
 <!-- src/lib/components/Series/SeriesTrackingPanel.svelte -->
 <script lang="ts">
   import { Button, Select } from 'flowbite-svelte';
-  import type { VolumeMetadata } from '$lib/types';
+  import type { VolumeMetadata } from '#lib/types/index.js';
   import {
     seriesMetadataMap,
     updateSeriesMetadata,
     type SeriesMetadataPatchInput
-  } from '$lib/metadata/store';
+  } from '#lib/metadata/store.js';
   import {
     readingStateFor,
     seriesReadingState,
     updateSeriesReadingState
-  } from '$lib/settings/series-data';
-  import { normalizeSeriesKey } from '$lib/metadata/series-key';
-  import { resolveDisplayTitle } from '$lib/metadata/display-title';
-  import { computeLocalPassState, onReadCountChanged } from '$lib/metadata/progress-tracker';
-  import { resolveTrackingUnit } from '$lib/metadata/tracking-unit';
+  } from '#lib/settings/series-data.js';
+  import { normalizeSeriesKey } from '#lib/metadata/series-key.js';
+  import { resolveDisplayTitle } from '#lib/metadata/display-title.js';
+  import { computeLocalPassState, onReadCountChanged } from '#lib/metadata/progress-tracker.js';
+  import { resolveTrackingUnit } from '#lib/metadata/tracking-unit.js';
   import {
     activeMetadataPermissions,
     canEditSeriesMetadata
-  } from '$lib/util/sync/metadata-permissions';
-  import { restartSeries } from '$lib/metadata/reread';
-  import { anilistConnected, anilistUser, getAniListClientId } from '$lib/metadata/anilist-auth';
-  import { volumes as volumesStore } from '$lib/settings/volume-data';
-  import { catalogSettings, preferredTitleLanguage } from '$lib/settings/settings';
-  import { promptConfirmation } from '$lib/util/modals';
-  import { showSnackbar } from '$lib/util/snackbar';
+  } from '#lib/util/sync/metadata-permissions.js';
+  import { restartSeries } from '#lib/metadata/reread.js';
+  import { anilistConnected, anilistUser, getAniListClientId } from '#lib/metadata/anilist-auth.js';
+  import { volumes as volumesStore } from '#lib/settings/volume-data.js';
+  import { catalogSettings, preferredTitleLanguage } from '#lib/settings/settings.js';
+  import { promptConfirmation } from '#lib/util/modals.js';
+  import { showSnackbar } from '#lib/util/snackbar.js';
 
   let { seriesTitle, volumes }: { seriesTitle: string; volumes: VolumeMetadata[] } = $props();
 

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import 'fake-indexeddb/auto';
 import { render, cleanup } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import { installIntersectionObserverStub } from '$lib/catalog/__tests__/intersection-observer-stub';
+import { installIntersectionObserverStub } from '#lib/catalog/__tests__/intersection-observer-stub.js';
 
 /**
  * WHERE A CATALOG CARD'S COVER COMES FROM.
@@ -25,7 +25,7 @@ import { installIntersectionObserverStub } from '$lib/catalog/__tests__/intersec
 // account changes; `providerManager.status` is the reactive half and `getActiveProvider`
 // the one the resolver itself calls. `useAccount` moves both together.
 const { getActiveProvider } = vi.hoisted(() => ({ getActiveProvider: vi.fn() }));
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: { getActiveProvider }
 }));
 
@@ -52,13 +52,16 @@ const { providerStatus, publishAccountScope } = vi.hoisted(() => {
     }
   };
 });
-vi.mock('$lib/util/sync', () => ({ providerManager: { status: providerStatus } }));
+vi.mock('#lib/util/sync/index.js', () => ({ providerManager: { status: providerStatus } }));
 
 // --- the graph this file deliberately does not load --------------------------------
-vi.mock('$lib/util/modals', () => ({ promptSeriesEditor: vi.fn(), promptConfirmation: vi.fn() }));
-vi.mock('$lib/catalog/series-delete', () => ({ promptSeriesRemoval: vi.fn() }));
-vi.mock('$lib/util', () => ({ showSnackbar: vi.fn() }));
-vi.mock('$lib/util/download-queue', () => ({
+vi.mock('#lib/util/modals.js', () => ({
+  promptSeriesEditor: vi.fn(),
+  promptConfirmation: vi.fn()
+}));
+vi.mock('#lib/catalog/series-delete.js', () => ({ promptSeriesRemoval: vi.fn() }));
+vi.mock('#lib/util/index.js', () => ({ showSnackbar: vi.fn() }));
+vi.mock('#lib/util/download-queue.js', () => ({
   downloadQueue: {
     subscribe: (fn: (v: unknown[]) => void) => {
       fn([]);
@@ -75,12 +78,12 @@ const { requestCoverMock, isCoverFetchTargetMock } = vi.hoisted(() => ({
   requestCoverMock: vi.fn(),
   isCoverFetchTargetMock: vi.fn(() => false)
 }));
-vi.mock('$lib/catalog/cover-service', () => ({
+vi.mock('#lib/catalog/cover-service.js', () => ({
   requestCover: (...args: Parameters<typeof requestCoverMock>) => requestCoverMock(...args),
   isCoverFetchTarget: (...args: unknown[]) =>
     (isCoverFetchTargetMock as unknown as (...a: unknown[]) => boolean)(...args)
 }));
-vi.mock('$lib/metadata/store', () => ({
+vi.mock('#lib/metadata/store.js', () => ({
   updateSeriesMetadata: vi.fn(),
   seriesMetadataMap: {
     subscribe(fn: (v: Map<string, unknown>) => void) {
@@ -119,13 +122,13 @@ const { fakeCache } = vi.hoisted(() => {
     }
   };
 });
-vi.mock('$lib/catalog/thumbnail-cache', () => ({ thumbnailCache: fakeCache }));
+vi.mock('#lib/catalog/thumbnail-cache.js', () => ({ thumbnailCache: fakeCache }));
 
 // Records what the card asked to be drawn, then renders the real canvas.
 const { compositeCanvasProps } = vi.hoisted(() => ({
   compositeCanvasProps: [] as Record<string, unknown>[]
 }));
-vi.mock('$lib/components/CompositeCanvas.svelte', async (importOriginal) => {
+vi.mock('#lib/components/CompositeCanvas.svelte', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   const Real = actual.default as (anchor: unknown, props: Record<string, unknown>) => unknown;
   return {
@@ -138,14 +141,14 @@ vi.mock('$lib/components/CompositeCanvas.svelte', async (importOriginal) => {
 });
 
 import CatalogItem from '../CatalogItem.svelte';
-import type { VolumeMetadata } from '$lib/types';
-import { db } from '$lib/catalog/db';
-import { putCloudCovers, type CloudCover } from '$lib/catalog/cloud-covers';
+import type { VolumeMetadata } from '#lib/types/index.js';
+import { db } from '#lib/catalog/db.js';
+import { putCloudCovers, type CloudCover } from '#lib/catalog/cloud-covers.js';
 import {
   refreshCoverKeys,
   _heldCoverCountForTests,
   _resetCoverResolverForTests
-} from '$lib/catalog/cover-resolver';
+} from '#lib/catalog/cover-resolver.js';
 
 const SCOPE = 'webdav:https://host/dav|nathan';
 const OTHER_SCOPE = 'webdav:https://host/dav|someone-else';

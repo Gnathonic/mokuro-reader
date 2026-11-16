@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { VolumeMetadata } from '$lib/types';
+import type { VolumeMetadata } from '#lib/types/index.js';
 import { volumeRowSignature } from './volume-row-signature';
 
 const row = (over: Partial<VolumeMetadata> = {}): VolumeMetadata =>

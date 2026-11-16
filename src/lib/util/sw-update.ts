@@ -1,5 +1,5 @@
 import { writable } from 'svelte/store';
-import { browser, dev } from '$app/environment';
+import { browser, dev } from '$app/env';
 
 /** Whether a service worker update is available and waiting */
 export const swUpdateAvailable = writable(false);

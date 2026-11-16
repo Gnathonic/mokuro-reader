@@ -1,34 +1,34 @@
 import { get } from 'svelte/store';
-import { db } from '$lib/catalog/db';
-import type { VolumeMetadata } from '$lib/types';
-import { volumes as readingHistoryStore } from '$lib/settings/volume-data';
-import type { ReadingHistoryEntry } from '$lib/settings/reading-activity';
-import { isIndexedPlaceholder } from '$lib/catalog/placeholders';
-import { needsDownload } from '$lib/catalog/volume-state';
-import { materializeSeriesVolumes } from '$lib/catalog/materialize';
+import { db } from '#lib/catalog/db.js';
+import type { VolumeMetadata } from '#lib/types/index.js';
+import { volumes as readingHistoryStore } from '#lib/settings/volume-data.js';
+import type { ReadingHistoryEntry } from '#lib/settings/reading-activity.js';
+import { isIndexedPlaceholder } from '#lib/catalog/placeholders.js';
+import { needsDownload } from '#lib/catalog/volume-state.js';
+import { materializeSeriesVolumes } from '#lib/catalog/materialize.js';
 import {
   groupSeriesSidecarFiles,
   isSidecarStale,
   isoToEpochSeconds,
   stampFromSidecarFiles
-} from '$lib/metadata/cloud-sidecar-stamps';
+} from '#lib/metadata/cloud-sidecar-stamps.js';
 import {
   isArchiveSize,
   orderVolumeEntryFields,
   type SeriesFileVolume
-} from '$lib/metadata/series-file';
-import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
-import { activeAccountScope, normalizeCachePath } from '$lib/catalog/cloud-cache-key';
-import type { CloudCover } from '$lib/catalog/cloud-covers';
+} from '#lib/metadata/series-file.js';
+import { normalizeSeriesKey, normalizeVolumeTitleKey } from '#lib/metadata/series-key.js';
+import { activeAccountScope, normalizeCachePath } from '#lib/catalog/cloud-cache-key.js';
+import type { CloudCover } from '#lib/catalog/cloud-covers.js';
 import {
   acquireBackfillSlot,
   buildNoMetadataEntry,
   pullMokuroEntry,
   releaseBackfillSlot
-} from '$lib/metadata/sidecar-pull';
-import { scheduleSeriesFileWrite } from '$lib/metadata/series-file-sync';
-import type { CloudFileMetadata } from '$lib/util/sync/provider-interface';
-import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
+} from '#lib/metadata/sidecar-pull.js';
+import { scheduleSeriesFileWrite } from '#lib/metadata/series-file-sync.js';
+import type { CloudFileMetadata } from '#lib/util/sync/provider-interface.js';
+import { unifiedCloudManager } from '#lib/util/sync/unified-cloud-manager.js';
 import { fetchCloudThumbnail, type CloudThumbnailResult } from './cloud-thumbnails';
 import { coverBelongsOnRow, installCover } from './cover-persist';
 

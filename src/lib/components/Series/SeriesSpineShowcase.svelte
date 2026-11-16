@@ -48,19 +48,19 @@
    *    absolute positions.
    */
   import { Button, ButtonGroup, Range } from 'flowbite-svelte';
-  import type { VolumeMetadata } from '$lib/types';
-  import { catalogSettings } from '$lib/settings/settings';
+  import type { VolumeMetadata } from '#lib/types/index.js';
+  import { catalogSettings } from '#lib/settings/settings.js';
   // The reading-record store (page + `completed` per uuid); `volumes` here is the prop.
-  import { volumes as readStates } from '$lib/settings/volume-data';
-  import { seriesMetadataMap } from '$lib/metadata/store';
-  import { seriesIndexMap } from '$lib/metadata/series-index';
-  import { normalizeSeriesKey } from '$lib/metadata/series-key';
+  import { volumes as readStates } from '#lib/settings/volume-data.js';
+  import { seriesMetadataMap } from '#lib/metadata/store.js';
+  import { seriesIndexMap } from '#lib/metadata/series-index.js';
+  import { normalizeSeriesKey } from '#lib/metadata/series-key.js';
   import {
     activeMetadataPermissions,
     canEditSeriesMetadata
-  } from '$lib/util/sync/metadata-permissions';
-  import { sortVolumes } from '$lib/catalog/sort-volumes';
-  import { createCoverClaims } from '$lib/catalog/cover-claims.svelte';
+  } from '#lib/util/sync/metadata-permissions.js';
+  import { sortVolumes } from '#lib/catalog/sort-volumes.js';
+  import { createCoverClaims } from '#lib/catalog/cover-claims.svelte.js';
   import {
     clampSpineOffset,
     clampVolumeOffset,
@@ -71,12 +71,12 @@
     volumeOffsetsByIndex,
     type SpineOffsetPatch,
     type SpineOffsets
-  } from '$lib/metadata/spine-offsets';
+  } from '#lib/metadata/spine-offsets.js';
   import {
     computeStackLayout,
     hitTestStack,
     spineBadgePlacements
-  } from '$lib/util/spine-stack-layout';
+  } from '#lib/util/spine-stack-layout.js';
   import {
     CARD_BASE_HEIGHT,
     CARD_BASE_WIDTH,
@@ -85,12 +85,12 @@
     getSpineCanvasDimensions,
     selectCardStackVolumes,
     type Dimensions
-  } from '$lib/util/spine-stack-geometry';
-  import { SPINE_OFFSET_LIMIT } from '$lib/metadata/sanitize';
+  } from '#lib/util/spine-stack-geometry.js';
+  import { SPINE_OFFSET_LIMIT } from '#lib/metadata/sanitize.js';
   import CompositeCanvas from '../CompositeCanvas.svelte';
   import DownloadBadge from '../DownloadBadge.svelte';
-  import { needsDownload } from '$lib/catalog/volume-state';
-  import { isVolumeFinished } from '$lib/util/volume-helpers';
+  import { needsDownload } from '#lib/catalog/volume-state.js';
+  import { isVolumeFinished } from '#lib/util/volume-helpers.js';
 
   let { seriesTitle, volumes }: { seriesTitle: string; volumes: VolumeMetadata[] } = $props();
 

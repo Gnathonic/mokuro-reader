@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { VolumeMetadata } from '$lib/types';
-import type { SeriesFileVolume } from '$lib/metadata/series-file';
-import type { SeriesIndexRecord } from '$lib/metadata/series-index';
-import type { CloudVolumeWithProvider } from '$lib/util/sync/unified-cloud-manager';
+import type { VolumeMetadata } from '#lib/types/index.js';
+import type { SeriesFileVolume } from '#lib/metadata/series-file.js';
+import type { SeriesIndexRecord } from '#lib/metadata/series-index.js';
+import type { CloudVolumeWithProvider } from '#lib/util/sync/unified-cloud-manager.js';
 
-vi.mock('$app/environment', () => ({ browser: true }));
-vi.mock('$lib/catalog/cloud-ocr-upgrade', () => ({ enqueueCloudOcrUpgrade: vi.fn() }));
+vi.mock('$app/env', () => ({ browser: true }));
+vi.mock('#lib/catalog/cloud-ocr-upgrade.js', () => ({ enqueueCloudOcrUpgrade: vi.fn() }));
 
 import {
   cloudFieldsForRemovedVolume,

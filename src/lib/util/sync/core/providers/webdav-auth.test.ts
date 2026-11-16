@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { basicAuthHeader } from '$lib/util/base64';
+import { basicAuthHeader } from '#lib/util/base64.js';
 import { webdavAuthOptions } from './webdav-auth';
 
 describe('webdavAuthOptions', () => {

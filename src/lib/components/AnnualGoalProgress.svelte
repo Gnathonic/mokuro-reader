@@ -1,7 +1,7 @@
 <script lang="ts">
   import { Card, Button, Input, Label, Select } from 'flowbite-svelte';
   import { ChartPieSolid, CheckCircleSolid, ExclamationCircleSolid } from 'flowbite-svelte-icons';
-  import { nav } from '$lib/util/hash-router';
+  import { nav } from '#lib/util/hash-router.js';
   import {
     activeGoalProgress,
     activeGoalSelection,
@@ -16,9 +16,9 @@
     buildGoalSnapshotKey,
     type GoalProgress,
     type GoalType
-  } from '$lib/goals';
-  import type { GoalRejection } from '$lib/goals/goals-data';
-  import { showSnackbar } from '$lib/util/snackbar';
+  } from '#lib/goals/index.js';
+  import type { GoalRejection } from '#lib/goals/goals-data.js';
+  import { showSnackbar } from '#lib/util/snackbar.js';
 
   const goalTypeOptions: { value: GoalType; name: string }[] = [
     { value: 'year', name: 'Year' },

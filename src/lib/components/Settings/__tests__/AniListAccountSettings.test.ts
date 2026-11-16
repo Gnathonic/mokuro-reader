@@ -43,7 +43,7 @@ const h = vi.hoisted(() => {
   };
 });
 
-vi.mock('$lib/metadata/anilist-auth', () => ({
+vi.mock('#lib/metadata/anilist-auth.js', () => ({
   ANILIST_APPS_SETTINGS_URL: 'https://anilist.co/settings/apps',
   anilistUser: h.anilistUser,
   anilistConnected: h.anilistConnected,
@@ -59,17 +59,17 @@ vi.mock('$lib/metadata/anilist-auth', () => ({
     h.anilistConnected.set(false);
   })
 }));
-vi.mock('$lib/metadata/progress-tracker', () => ({ syncAllSeriesNow: h.syncAllSeriesNow }));
-vi.mock('$lib/settings/settings', () => ({
+vi.mock('#lib/metadata/progress-tracker.js', () => ({ syncAllSeriesNow: h.syncAllSeriesNow }));
+vi.mock('#lib/settings/settings.js', () => ({
   catalogSettings: h.catalogSettings,
   updateCatalogSetting: vi.fn()
 }));
-vi.mock('$lib/util/snackbar', () => ({ showSnackbar: vi.fn() }));
+vi.mock('#lib/util/snackbar.js', () => ({ showSnackbar: vi.fn() }));
 
-import { startAniListLogin, disconnectAniList } from '$lib/metadata/anilist-auth';
-import { syncAllSeriesNow } from '$lib/metadata/progress-tracker';
-import { updateCatalogSetting } from '$lib/settings/settings';
-import { showSnackbar } from '$lib/util/snackbar';
+import { startAniListLogin, disconnectAniList } from '#lib/metadata/anilist-auth.js';
+import { syncAllSeriesNow } from '#lib/metadata/progress-tracker.js';
+import { updateCatalogSetting } from '#lib/settings/settings.js';
+import { showSnackbar } from '#lib/util/snackbar.js';
 import AniListAccountSettings from '../AniListAccountSettings.svelte';
 
 describe('AniListAccountSettings', () => {

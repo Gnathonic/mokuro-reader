@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { buildMokuroMetadata, buildPrimaryMokuroMetadata } from './mokuro-metadata';
-import { contentDigest, provenanceOfFile, sealOf } from '$lib/catalog/ocr-provenance';
-import { RUNNER_OUTPUT_DOCUMENT, RUNNER_OUTPUT_SEAL } from '$lib/catalog/__fixtures__/seal-vector';
-import type { VolumeMetadata } from '$lib/types';
+import { contentDigest, provenanceOfFile, sealOf } from '#lib/catalog/ocr-provenance.js';
+import {
+  RUNNER_OUTPUT_DOCUMENT,
+  RUNNER_OUTPUT_SEAL
+} from '#lib/catalog/__fixtures__/seal-vector.js';
+import type { VolumeMetadata } from '#lib/types/index.js';
 
 const volume: VolumeMetadata = {
   mokuro_version: '0.2.1',

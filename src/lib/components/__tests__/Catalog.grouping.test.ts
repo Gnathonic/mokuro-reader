@@ -40,24 +40,24 @@ function emptyStore<T>(value: T) {
   };
 }
 
-vi.mock('$lib/catalog', () => ({
+vi.mock('#lib/catalog/index.js', () => ({
   catalog: catalogStore,
   volumes: emptyStore<Record<string, unknown>>({})
 }));
-vi.mock('$lib/settings', () => ({
+vi.mock('#lib/settings/index.js', () => ({
   miscSettings,
   updateMiscSetting: vi.fn(),
   volumes: readingVolumes,
   progress: emptyStore<Record<string, number>>({})
 }));
-vi.mock('$lib/catalog/db', () => ({ isUpgrading: emptyStore(false) }));
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/catalog/db.js', () => ({ isUpgrading: emptyStore(false) }));
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: {
     getDefaultProvider: () => ({ name: 'Drive' }),
     getActiveProvider: () => ({ name: 'Drive' })
   }
 }));
-vi.mock('$lib/util/download-queue', () => ({
+vi.mock('#lib/util/download-queue.js', () => ({
   queueSeriesVolumes,
   downloadQueue: {
     subscribe: (fn: (v: unknown[]) => void) => {
@@ -67,17 +67,17 @@ vi.mock('$lib/util/download-queue', () => ({
     getSeriesQueueStatus: () => ({ hasQueued: false, hasDownloading: false })
   }
 }));
-vi.mock('$lib/util', () => ({ showSnackbar: vi.fn() }));
-vi.mock('$lib/reading-history/last-read', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('$lib/reading-history/last-read')>()),
+vi.mock('#lib/util/index.js', () => ({ showSnackbar: vi.fn() }));
+vi.mock('#lib/reading-history/last-read.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('#lib/reading-history/last-read.js')>()),
   lastReadTimes: readTimes
 }));
-vi.mock('$lib/util/modals', () => ({ promptSeriesEditor: vi.fn() }));
-vi.mock('$lib/catalog/series-delete', () => ({ promptSeriesRemoval: vi.fn() }));
-vi.mock('$lib/util/hash-router', () => ({ nav: { toSeries: vi.fn() } }));
+vi.mock('#lib/util/modals.js', () => ({ promptSeriesEditor: vi.fn() }));
+vi.mock('#lib/catalog/series-delete.js', () => ({ promptSeriesRemoval: vi.fn() }));
+vi.mock('#lib/util/hash-router.js', () => ({ nav: { toSeries: vi.fn() } }));
 
 import Catalog, { CATALOG_LOAD_STALL_MS } from '../Catalog.svelte';
-import type { VolumeMetadata } from '$lib/types';
+import type { VolumeMetadata } from '#lib/types/index.js';
 
 function volume(series: string, overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
   return {

@@ -13,7 +13,7 @@
  * Cloud sync of layers (`<Volume Title>.<id>.mokuro` beside the
  * archive) lives in a later PR; nothing here touches a provider.
  */
-import { db } from '$lib/catalog/db';
+import { db } from '#lib/catalog/db.js';
 import {
   deleteLayerRows,
   getLayerMeta,
@@ -24,12 +24,17 @@ import {
   listLayerMetas,
   putLayerWithPages,
   updateLayerMeta
-} from '$lib/catalog/layer-store';
-import { buildPageCharCounts } from '$lib/catalog/cloud-ocr-upgrade';
-import { isVolumeInstalled } from '$lib/catalog/volume-state';
-import { buildLayerMokuroMetadata } from '$lib/util/mokuro-metadata';
-import { LAYER_ID_RE, layerSidecarName } from '$lib/util/sync/syncable-file';
-import type { Page, VolumeOcrLayer, VolumeOcrLayerKind, VolumeOcrLayerWithPages } from '$lib/types';
+} from '#lib/catalog/layer-store.js';
+import { buildPageCharCounts } from '#lib/catalog/cloud-ocr-upgrade.js';
+import { isVolumeInstalled } from '#lib/catalog/volume-state.js';
+import { buildLayerMokuroMetadata } from '#lib/util/mokuro-metadata.js';
+import { LAYER_ID_RE, layerSidecarName } from '#lib/util/sync/syncable-file.js';
+import type {
+  Page,
+  VolumeOcrLayer,
+  VolumeOcrLayerKind,
+  VolumeOcrLayerWithPages
+} from '#lib/types/index.js';
 import {
   EDIT_LAYER_ID,
   isCuratedLayerId,
@@ -41,6 +46,7 @@ import {
 } from './layer-names';
 import { ORIGINAL_LAYER_ID, noteLayerEdited } from './edit-persist';
 import { editLayerEpoch } from './edit-layer-epoch';
+import { mainMakerOfLayer } from './ocr-label';
 import {
   TRANSLATION_PROMOTE_BLOCKED,
   isTranslationLayer,
@@ -213,6 +219,8 @@ export async function createLayer(
       volume_uuid: volumeUuid,
       layer_id: slugifyLayerId(opts.name, taken),
       name: opts.name.trim() || 'Layer',
+      // Named by the user: never relabelled from a file (`ocr-label.ts`).
+      named_by_user: true,
       kind: opts.kind ?? 'edit',
       ...(opts.engine ? { engine: opts.engine } : {}),
       created_at: now,
@@ -230,7 +238,12 @@ export async function renameLayer(
   name: string
 ): Promise<void> {
   assertEditable(layerId);
-  const n = await updateLayerMeta(db, volumeUuid, layerId, { name: name.trim() || 'Layer' });
+  // `named_by_user`: the label a file gives never replaces what was typed here,
+  // even when it reads like one the reader would give (`ocr-label.ts`).
+  const n = await updateLayerMeta(db, volumeUuid, layerId, {
+    name: name.trim() || 'Layer',
+    named_by_user: true
+  });
   if (!n) throw new Error(`Layer ${layerId} not found`);
 }
 
@@ -386,11 +399,16 @@ export async function promoteLayer(
 
       const pages = structuredClone(layer.pages);
       const { totalChars, cumulative } = buildPageCharCounts(pages);
+      const maker = mainMakerOfLayer(layer);
       await db.volume_ocr.put({ volume_uuid: volumeUuid, pages });
       await db.volumes.update(volumeUuid, {
         page_char_counts: cumulative,
         character_count: totalChars,
         ocr_edited_at: editedAt,
+        // The main is this layer's OCR now: named by what made it. A layer
+        // that knows no maker (`original`, corrections, a hand-made layer) is
+        // the current main or edits on it, and the main keeps its maker.
+        ...(maker ? { ocr_maker: maker } : {}),
         // The primary's BASE revision (`mokuro_sha256`): promoting the OCR
         // upgrade's `updated-ocr` layer adopts the cloud file it mirrors, so
         // that file is no longer "new" to this volume. Any other layer is a

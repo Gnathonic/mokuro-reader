@@ -10,7 +10,7 @@ import {
   hasCloudMetadata,
   isCatalogVisible
 } from './cloud-fields';
-import type { VolumeMetadata } from '$lib/types';
+import type { VolumeMetadata } from '#lib/types/index.js';
 
 // Helper to create minimal volume metadata
 function createVolume(overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {

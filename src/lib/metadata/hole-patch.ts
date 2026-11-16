@@ -1,8 +1,8 @@
 import { get } from 'svelte/store';
-import { db } from '$lib/catalog/db';
-import { volumes as progressStore, enrichAllOrphanedVolumes } from '$lib/settings';
-import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
-import { cacheManager } from '$lib/util/sync/cache-manager';
+import { db } from '#lib/catalog/db.js';
+import { volumes as progressStore, enrichAllOrphanedVolumes } from '#lib/settings/index.js';
+import { unifiedCloudManager } from '#lib/util/sync/unified-cloud-manager.js';
+import { cacheManager } from '#lib/util/sync/cache-manager.js';
 import { listSeriesIndexes, type SeriesIndexRecord } from './series-index';
 import { openSeries } from './series-open';
 import { materializeHistoryRows } from './history-rows';

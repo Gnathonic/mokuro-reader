@@ -1,4 +1,4 @@
-import type { ProviderStatus } from '$lib/util/sync/provider-interface';
+import type { ProviderStatus } from '#lib/util/sync/provider-interface.js';
 
 /**
  * Can this provider carry reading history at all? An explicit `historySync`

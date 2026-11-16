@@ -1,5 +1,5 @@
-import type { VolumeMetadata } from '$lib/types';
-import { updateVolumeMetadata } from '$lib/settings/volume-data';
+import type { VolumeMetadata } from '#lib/types/index.js';
+import { updateVolumeMetadata } from '#lib/settings/volume-data.js';
 
 export interface VolumeSpeedData {
   volumeId: string;

@@ -12,9 +12,9 @@
  * (older mokuro-bunko, or any non-bunko provider) — both read as "no restriction".
  */
 import { derived, get, type Readable } from 'svelte/store';
-import { providerManager } from '$lib/util/sync';
+import { providerManager } from '#lib/util/sync/index.js';
 import type { SeriesMetadataPermissions } from './provider-interface';
-import { normalizeVolumeTitleKey } from '$lib/metadata/series-key';
+import { normalizeVolumeTitleKey } from '#lib/metadata/series-key.js';
 
 export interface SeriesMetadataEditCheck {
   allowed: boolean;

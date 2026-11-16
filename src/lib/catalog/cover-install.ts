@@ -1,18 +1,18 @@
-import { db } from '$lib/catalog/db';
-import type { VolumeMetadata } from '$lib/types';
-import { flushPendingCoverPersists } from '$lib/catalog/cover-persist';
+import { db } from '#lib/catalog/db.js';
+import type { VolumeMetadata } from '#lib/types/index.js';
+import { flushPendingCoverPersists } from '#lib/catalog/cover-persist.js';
 // Deferred-use import into the module cycle cover-service → series-file-sync →
 // series-backfill → cover-install → cover-service (the backfill imports this
 // module for its post-write flesh-out). Safe for the same reason the existing
 // series-file-sync ↔ series-backfill cycle is: nothing on any side calls
 // across at module-init time, only from inside function bodies.
-import { requestCover, type CoverOutcome } from '$lib/catalog/cover-service';
-import { indexCoverSidecarsByBasePath, type CoverSidecarInfo } from '$lib/catalog/placeholders';
-import { needsDownload } from '$lib/catalog/volume-state';
-import { isArchiveSize } from '$lib/metadata/series-file';
-import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
-import type { CloudFileMetadata } from '$lib/util/sync/provider-interface';
-import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
+import { requestCover, type CoverOutcome } from '#lib/catalog/cover-service.js';
+import { indexCoverSidecarsByBasePath, type CoverSidecarInfo } from '#lib/catalog/placeholders.js';
+import { needsDownload } from '#lib/catalog/volume-state.js';
+import { isArchiveSize } from '#lib/metadata/series-file.js';
+import { normalizeSeriesKey, normalizeVolumeTitleKey } from '#lib/metadata/series-key.js';
+import type { CloudFileMetadata } from '#lib/util/sync/provider-interface.js';
+import { unifiedCloudManager } from '#lib/util/sync/unified-cloud-manager.js';
 
 /**
  * The running pass per normalized series key, plus whether a joiner arrived

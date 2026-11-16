@@ -1,6 +1,6 @@
-import { LAYER_ID_RE } from '$lib/util/sync/syncable-file';
-import { resolveBunkoLink } from '$lib/util/bunko-links';
-import { assertNoRedirectEscape } from '$lib/util/link-safety';
+import { LAYER_ID_RE } from '#lib/util/sync/syncable-file.js';
+import { resolveBunkoLink } from '#lib/util/bunko-links.js';
+import { assertNoRedirectEscape } from '#lib/util/link-safety.js';
 
 /**
  * The per-volume manifest a deep link can carry (`#/upload?cbz=…&manifest=…`).

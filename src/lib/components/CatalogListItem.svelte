@@ -1,22 +1,22 @@
 <script lang="ts">
-  import type { VolumeMetadata } from '$lib/types';
+  import type { VolumeMetadata } from '#lib/types/index.js';
   import { ListgroupItem, Spinner } from 'flowbite-svelte';
   // The READING RECORD store (page + `completed` per uuid), aliased because this
   // component's own `volumes` prop is the series' catalog rows.
-  import { volumes as readStates } from '$lib/settings';
-  import { volumes as catalogVolumes } from '$lib/catalog';
+  import { volumes as readStates } from '#lib/settings/index.js';
+  import { volumes as catalogVolumes } from '#lib/catalog/index.js';
   import { DownloadSolid } from 'flowbite-svelte-icons';
-  import { downloadQueue } from '$lib/util/download-queue';
-  import { nav } from '$lib/util/hash-router';
-  import { promptSeriesEditor } from '$lib/util/modals';
-  import { shouldOpenSeriesEditor } from '$lib/util/series-editor-shortcut';
-  import { anyModalOpen, shouldTriggerDelete } from '$lib/util/delete-shortcut';
-  import { promptSeriesRemoval } from '$lib/catalog/series-delete';
-  import { needsDownload } from '$lib/catalog/volume-state';
-  import { isSeriesFinished, isVolumeFinished } from '$lib/util/volume-helpers';
-  import { createCoverClaims } from '$lib/catalog/cover-claims.svelte';
+  import { downloadQueue } from '#lib/util/download-queue.js';
+  import { nav } from '#lib/util/hash-router.js';
+  import { promptSeriesEditor } from '#lib/util/modals.js';
+  import { shouldOpenSeriesEditor } from '#lib/util/series-editor-shortcut.js';
+  import { anyModalOpen, shouldTriggerDelete } from '#lib/util/delete-shortcut.js';
+  import { promptSeriesRemoval } from '#lib/catalog/series-delete.js';
+  import { needsDownload } from '#lib/catalog/volume-state.js';
+  import { isSeriesFinished, isVolumeFinished } from '#lib/util/volume-helpers.js';
+  import { createCoverClaims } from '#lib/catalog/cover-claims.svelte.js';
   import { onDestroy } from 'svelte';
-  import { displayableCoverBlob } from '$lib/util/raster-image';
+  import { displayableCoverBlob } from '#lib/util/raster-image.js';
   const CATALOG_SCROLL_Y_KEY = 'mokuro:catalog:scroll-y';
 
   interface Props {

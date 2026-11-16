@@ -1,7 +1,7 @@
 <script lang="ts">
   import { Modal, Button } from 'flowbite-svelte';
   import { ExclamationCircleSolid } from 'flowbite-svelte-icons';
-  import { missingFilesModalStore } from '$lib/util/modals';
+  import { missingFilesModalStore } from '#lib/util/modals.js';
 
   let open = $derived($missingFilesModalStore?.open ?? false);
 

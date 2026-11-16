@@ -1,7 +1,7 @@
-import type { VolumeMetadata } from '$lib/types';
-import type { DisplayTitleLanguage, SeriesMetadata } from '$lib/metadata/types';
-import { normalizeSeriesKey } from '$lib/metadata/series-key';
-import { resolveDisplayTitle, seriesSearchTerms } from '$lib/metadata/display-title';
+import type { VolumeMetadata } from '#lib/types/index.js';
+import type { DisplayTitleLanguage, SeriesMetadata } from '#lib/metadata/types.js';
+import { normalizeSeriesKey } from '#lib/metadata/series-key.js';
+import { resolveDisplayTitle, seriesSearchTerms } from '#lib/metadata/display-title.js';
 import { sortVolumes } from './sort-volumes';
 import { isVolumeInstalled, needsDownload } from './volume-state';
 

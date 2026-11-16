@@ -1,17 +1,17 @@
 <script lang="ts">
   import { AccordionItem, Button, Label, Range, Select, Toggle } from 'flowbite-svelte';
-  import { db } from '$lib/catalog/db';
-  import { clearAllLayers } from '$lib/catalog/layer-store';
-  import { promptConfirmation } from '$lib/util';
-  import { clearVolumes } from '$lib/settings';
+  import { db } from '#lib/catalog/db.js';
+  import { clearAllLayers } from '#lib/catalog/layer-store.js';
+  import { promptConfirmation } from '#lib/util/index.js';
+  import { clearVolumes } from '#lib/settings/index.js';
   import {
     catalogSettings,
     updateCatalogSetting,
     type CatalogStackingPreset
-  } from '$lib/settings/settings';
-  import { nav } from '$lib/util/hash-router';
-  import { isCatalog } from '$lib/util';
-  import type { DisplayTitleLanguage } from '$lib/metadata/types';
+  } from '#lib/settings/settings.js';
+  import { nav } from '#lib/util/hash-router.js';
+  import { isCatalog } from '#lib/util/index.js';
+  import type { DisplayTitleLanguage } from '#lib/metadata/types.js';
 
   const presetOptions = [
     { value: 'compact', name: 'Compact' },

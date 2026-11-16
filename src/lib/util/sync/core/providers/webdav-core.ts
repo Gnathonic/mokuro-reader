@@ -4,8 +4,8 @@ import {
   ensureFoldersExist,
   uploadFileWithClient,
   uploadWithRetry
-} from '$lib/util/sync/providers/webdav/webdav-upload';
-import type { UploadFileResult } from '$lib/util/sync/provider-interface';
+} from '#lib/util/sync/providers/webdav/webdav-upload.js';
+import type { UploadFileResult } from '#lib/util/sync/provider-interface.js';
 import type {
   CloudCoreAuthRefresher,
   CloudCoreCredentials,
@@ -14,13 +14,13 @@ import type {
 import { requireCredentialString } from '../cloud-provider-core-types';
 import { webdavAuthOptions } from './webdav-auth';
 import { authFromCredentials, bearerOf, webdavAuthHeaders } from './webdav-authorization';
-import { isTransientAuthRefreshError } from '$lib/util/worker-auth-refresh';
+import { isTransientAuthRefreshError } from '#lib/util/worker-auth-refresh.js';
 import {
   RETRY_AFTER_MAX_RETRIES,
   retryAfterDelayMs,
   withRetryAfter,
   wrapWebdavClient
-} from '$lib/util/sync/providers/webdav/webdav-retry-after';
+} from '#lib/util/sync/providers/webdav/webdav-retry-after.js';
 
 /** Did this failure carry an HTTP 401 (webdav lib errors and `WebdavUploadError` both set `status`)? */
 function isUnauthorized(error: unknown): boolean {

@@ -9,7 +9,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 const uploadFile = vi.fn();
 const generateVolumeSidecarsFromDb = vi.fn();
 
-vi.mock('$lib/util/compress-volume', () => ({
+vi.mock('#lib/util/compress-volume.js', () => ({
   compressVolume: vi.fn(),
   compressVolumeFromDb: vi.fn(async () => new Blob(['zip'], { type: 'application/x-cbz' })),
   generateVolumeSidecarsFromDb: (...args: unknown[]) => generateVolumeSidecarsFromDb(...args)

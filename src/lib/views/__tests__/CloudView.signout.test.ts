@@ -24,13 +24,13 @@ const mocks = vi.hoisted(() => ({
   showSnackbar: vi.fn()
 }));
 
-vi.mock('$app/environment', () => ({ browser: true, dev: false, building: false }));
-vi.mock('$lib/util', () => ({
+vi.mock('$app/env', () => ({ browser: true, dev: false, building: false }));
+vi.mock('#lib/util/index.js', () => ({
   promptConfirmation: vi.fn(),
   showSnackbar: mocks.showSnackbar,
   showWebDAVError: vi.fn()
 }));
-vi.mock('$lib/util/sync', async () => {
+vi.mock('#lib/util/sync/index.js', async () => {
   const { writable } = await import('svelte/store');
   return {
     providerManager: {
@@ -45,36 +45,36 @@ vi.mock('$lib/util/sync', async () => {
     }
   };
 });
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: {
     fetchAllCloudVolumes: vi.fn(async () => {}),
     syncProgress: vi.fn(async () => ({ succeeded: 0 })),
     getCloudVolume: vi.fn()
   }
 }));
-vi.mock('$lib/util/sync/cache-manager', async () => {
+vi.mock('#lib/util/sync/cache-manager.js', async () => {
   const { writable } = await import('svelte/store');
   return { cacheManager: { isFetchingState: writable(false) } };
 });
-vi.mock('$lib/catalog', async () => {
+vi.mock('#lib/catalog/index.js', async () => {
   const { writable } = await import('svelte/store');
   return { catalog: writable([]) };
 });
-vi.mock('$lib/catalog/volume-state', () => ({ isVolumeInstalled: () => true }));
-vi.mock('$lib/util/backup-queue', () => ({
+vi.mock('#lib/catalog/volume-state.js', () => ({ isVolumeInstalled: () => true }));
+vi.mock('#lib/util/backup-queue.js', () => ({
   backupQueue: { queueSeriesVolumesForBackup: vi.fn() }
 }));
-vi.mock('$lib/util/download-queue', () => ({ queueVolumesFromCloudFiles: vi.fn() }));
-vi.mock('$lib/metadata/series-file-sync', () => ({ reconcileMissingMetadataFiles: vi.fn() }));
-vi.mock('$lib/util/sync/providers/filesystem/feature-detect', () => ({
+vi.mock('#lib/util/download-queue.js', () => ({ queueVolumesFromCloudFiles: vi.fn() }));
+vi.mock('#lib/metadata/series-file-sync.js', () => ({ reconcileMissingMetadataFiles: vi.fn() }));
+vi.mock('#lib/util/sync/providers/filesystem/feature-detect.js', () => ({
   isFilesystemProviderSupported: () => false
 }));
-vi.mock('$lib/util/sync/providers/google-drive/auth-backend', () => ({
+vi.mock('#lib/util/sync/providers/google-drive/auth-backend.js', () => ({
   backendAuthEnabled: () => true
 }));
 
 import CloudView from '../CloudView.svelte';
-import { providerManager } from '$lib/util/sync';
+import { providerManager } from '#lib/util/sync/index.js';
 import type { Writable } from 'svelte/store';
 
 const connected = {

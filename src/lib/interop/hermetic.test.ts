@@ -8,7 +8,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import APP_HTML from '../../app.html?raw';
 import { hermeticShell } from './hermetic';
-import { GOOGLE_SCRIPT_URLS } from '$lib/util/sync/providers/google-drive/google-scripts';
+import { GOOGLE_SCRIPT_URLS } from '#lib/util/sync/providers/google-drive/google-scripts.js';
 
 /** What the rig answers (empty): the scripts `google-scripts.ts` injects. */
 const STUBBED_BY_THE_RIG: readonly string[] = GOOGLE_SCRIPT_URLS;

@@ -11,7 +11,7 @@ import 'fake-indexeddb/auto';
 import { get } from 'svelte/store';
 import { Uint8ArrayReader, Uint8ArrayWriter, ZipWriter } from '@zip.js/zip.js';
 
-vi.mock('$lib/catalog/db', async () => {
+vi.mock('#lib/catalog/db.js', async () => {
   const { default: Dexie } = await import('dexie');
   const db: any = new Dexie('import-concurrency-test');
   db.version(1).stores({
@@ -24,22 +24,22 @@ vi.mock('$lib/catalog/db', async () => {
   db.processThumbnails = async () => undefined;
   return { db };
 });
-vi.mock('$lib/catalog/thumbnails', () => ({
+vi.mock('#lib/catalog/thumbnails.js', () => ({
   generateThumbnail: async () => ({
     file: new File([new Uint8Array([1])], 'thumb.webp', { type: 'image/webp' }),
     width: 10,
     height: 14
   })
 }));
-vi.mock('$lib/util/snackbar', () => ({ showSnackbar: vi.fn() }));
-vi.mock('$lib/util/progress-tracker', () => ({
+vi.mock('#lib/util/snackbar.js', () => ({ showSnackbar: vi.fn() }));
+vi.mock('#lib/util/progress-tracker.js', () => ({
   progressTrackerStore: { addProcess: vi.fn(), updateProcess: vi.fn(), removeProcess: vi.fn() }
 }));
-vi.mock('$lib/metadata/series-file-sync', () => ({ scheduleSeriesFileWrite: vi.fn() }));
+vi.mock('#lib/metadata/series-file-sync.js', () => ({ scheduleSeriesFileWrite: vi.fn() }));
 
 /** The missing-files prompt holds a direct import mid-flight until released. */
 const held = vi.hoisted(() => ({ release: [] as (() => void)[], cancel: [] as (() => void)[] }));
-vi.mock('$lib/util/modals', () => ({
+vi.mock('#lib/util/modals.js', () => ({
   promptMissingFiles: (_info: unknown, onContinue: () => void, onCancel: () => void) => {
     held.release.push(onContinue);
     held.cancel.push(onCancel);
@@ -48,7 +48,7 @@ vi.mock('$lib/util/modals', () => ({
 
 /** The shared pool's user tally, as `file-processing-pool.ts` keeps it. */
 const pool = vi.hoisted(() => ({ users: 0, terminations: 0 }));
-vi.mock('$lib/util/file-processing-pool', () => ({
+vi.mock('#lib/util/file-processing-pool.js', () => ({
   getFileProcessingPool: async () => ({ addTask: () => {} }),
   incrementPoolUsers: () => {
     pool.users++;
@@ -59,7 +59,7 @@ vi.mock('$lib/util/file-processing-pool', () => ({
   }
 }));
 
-import { db } from '$lib/catalog/db';
+import { db } from '#lib/catalog/db.js';
 import {
   importArchiveWithOptionalMokuro,
   importFiles,
@@ -68,7 +68,7 @@ import {
 } from '../import-service';
 import { reviewSession } from '../review-session';
 import { protectedSeriesKey, resetImportedSeriesFiles } from '../series-file-import';
-import { createEmptySeriesMetadata } from '$lib/metadata/types';
+import { createEmptySeriesMetadata } from '#lib/metadata/types.js';
 import { installReviewer, type Reviewer } from './helpers/review-bridge';
 
 // zip.js writes the archive through a Blob stream; jsdom's Blob has none.

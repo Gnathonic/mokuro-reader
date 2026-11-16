@@ -17,7 +17,7 @@ import {
   type CuratedVolume,
   type ProviderStatus
 } from './provider-interface';
-import { normalizeVolumeTitleKey } from '$lib/metadata/series-key';
+import { normalizeVolumeTitleKey } from '#lib/metadata/series-key.js';
 
 type Capabilities = Pick<ProviderStatus, 'canAddFiles' | 'canModifyDelete'>;
 

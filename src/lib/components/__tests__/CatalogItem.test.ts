@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   installIntersectionObserverStub,
   IntersectionObserverStub
-} from '$lib/catalog/__tests__/intersection-observer-stub';
+} from '#lib/catalog/__tests__/intersection-observer-stub.js';
 import { render, fireEvent, cleanup } from '@testing-library/svelte';
 
 // vi.hoisted: the vi.mock factories below run before this module's own imports, so the
@@ -11,16 +11,16 @@ const { promptSeriesEditor, promptSeriesRemoval } = vi.hoisted(() => ({
   promptSeriesEditor: vi.fn(),
   promptSeriesRemoval: vi.fn(async (_volumes: unknown[], _options?: unknown) => true)
 }));
-vi.mock('$lib/util/modals', () => ({ promptSeriesEditor, promptConfirmation: vi.fn() }));
+vi.mock('#lib/util/modals.js', () => ({ promptSeriesEditor, promptConfirmation: vi.fn() }));
 // The removal flow itself is tested in $lib/catalog/series-delete.test.ts; the card's job
 // is to hand it this series' volumes and nothing else.
-vi.mock('$lib/catalog/series-delete', () => ({ promptSeriesRemoval }));
+vi.mock('#lib/catalog/series-delete.js', () => ({ promptSeriesRemoval }));
 
 // The card imports `showSnackbar` off the `$lib/util` barrel, which also re-exports the
 // google-drive/backup/activity-tracker modules — mock it down to just that one export so
 // none of that graph loads for a test about hover shortcuts and spine offsets.
 const { showSnackbar } = vi.hoisted(() => ({ showSnackbar: vi.fn() }));
-vi.mock('$lib/util', () => ({ showSnackbar }));
+vi.mock('#lib/util/index.js', () => ({ showSnackbar }));
 
 // No active provider by default — every existing test in this file relies on the spine
 // offset gestures staying unrestricted, which is `canEditSeriesMetadata`'s default in
@@ -45,12 +45,12 @@ const { providerStatus } = vi.hoisted(() => {
     })
   };
 });
-vi.mock('$lib/util/sync', () => ({ providerManager: { status: providerStatus } }));
+vi.mock('#lib/util/sync/index.js', () => ({ providerManager: { status: providerStatus } }));
 
 // Stub the download-queue and cloud-thumbnails modules so this test doesn't drag in
 // their real dependency graph (Dexie/db, google-drive api client, unified-cloud-manager,
 // the whole import/sync pipeline) — none of which matter for the keyboard shortcut.
-vi.mock('$lib/util/download-queue', () => ({
+vi.mock('#lib/util/download-queue.js', () => ({
   downloadQueue: {
     subscribe: (fn: (v: unknown[]) => void) => {
       fn([]);
@@ -80,7 +80,7 @@ const { requestCoverMock, isCoverFetchTargetMock } = vi.hoisted(() => ({
     }
   )
 }));
-vi.mock('$lib/catalog/cover-service', () => ({
+vi.mock('#lib/catalog/cover-service.js', () => ({
   requestCover: (...a: Parameters<typeof requestCoverMock>) => requestCoverMock(...a),
   isCoverFetchTarget: (...a: Parameters<typeof isCoverFetchTargetMock>) =>
     isCoverFetchTargetMock(...a)
@@ -91,7 +91,7 @@ vi.mock('$lib/catalog/cover-service', () => ({
 const { compositeCanvasProps } = vi.hoisted(() => ({
   compositeCanvasProps: [] as Record<string, unknown>[]
 }));
-vi.mock('$lib/components/CompositeCanvas.svelte', async (importOriginal) => {
+vi.mock('#lib/components/CompositeCanvas.svelte', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   const Real = actual.default as (anchor: unknown, props: Record<string, unknown>) => unknown;
   return {
@@ -127,22 +127,22 @@ const { updateSeriesMetadata, emitSeriesMetadata, seriesMetadataMap } = vi.hoist
     }
   };
 });
-vi.mock('$lib/metadata/store', () => ({ updateSeriesMetadata, seriesMetadataMap }));
+vi.mock('#lib/metadata/store.js', () => ({ updateSeriesMetadata, seriesMetadataMap }));
 
 // Everything else in spine-offsets stays real; `volumeOffsetsByIndex` is spied on because
 // its call count is the observable signal of the stack layout being recomputed.
-vi.mock('$lib/metadata/spine-offsets', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('$lib/metadata/spine-offsets')>();
+vi.mock('#lib/metadata/spine-offsets.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('#lib/metadata/spine-offsets.js')>();
   return { ...actual, volumeOffsetsByIndex: vi.fn(actual.volumeOffsetsByIndex) };
 });
 
 import { tick } from 'svelte';
 import CatalogItem from '../CatalogItem.svelte';
-import type { VolumeMetadata } from '$lib/types';
-import type { SeriesMetadata } from '$lib/metadata/types';
-import { flushSpineOffsetWrites, volumeOffsetsByIndex } from '$lib/metadata/spine-offsets';
-import { updateCatalogSetting } from '$lib/settings/settings';
-import { updateProgress } from '$lib/settings';
+import type { VolumeMetadata } from '#lib/types/index.js';
+import type { SeriesMetadata } from '#lib/metadata/types.js';
+import { flushSpineOffsetWrites, volumeOffsetsByIndex } from '#lib/metadata/spine-offsets.js';
+import { updateCatalogSetting } from '#lib/settings/settings.js';
+import { updateProgress } from '#lib/settings/index.js';
 
 function localVolume(overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
   return {

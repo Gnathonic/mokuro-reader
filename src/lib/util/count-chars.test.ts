@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { countChars, getCharCount } from './count-chars';
-import type { Page } from '$lib/types';
+import type { Page } from '#lib/types/index.js';
 
 describe('countChars', () => {
   it('counts Japanese characters correctly', () => {

@@ -72,6 +72,25 @@ export function cloudTestToken<P extends keyof TestTokens>(provider: P): TestTok
   return CLOUD_TEST_HOOKS ? tokens[provider] : null;
 }
 
+let folderHandle: FileSystemDirectoryHandle | null = null;
+
+/**
+ * Hand the Local Folder provider the folder its next login opens, in place of
+ * the File System Access picker (`showDirectoryPicker`), which a test cannot
+ * answer (`null` takes it back). The interop rig gets a real handle to a
+ * folder on its disk by dropping that folder on the page (the rig driver's
+ * `connectFolder`).
+ */
+export function setFolderTestHandle(handle: FileSystemDirectoryHandle | null): void {
+  requireHooks('setFolderTestHandle');
+  folderHandle = handle;
+}
+
+/** The handed folder, or null (always, when hooks are off). */
+export function folderTestHandle(): FileSystemDirectoryHandle | null {
+  return CLOUD_TEST_HOOKS ? folderHandle : null;
+}
+
 /**
  * The bases for a worker's credentials. A Web Worker loads its own copy of this
  * module, where no bases are set, so the main thread passes them along with the
@@ -127,7 +146,7 @@ function applyInteropConfig(raw: unknown): void {
   if (typeof onedrive === 'string') setCloudTestToken('onedrive', onedrive);
   const driveApi = config.bases?.driveApi;
   if (config.gapiShim && driveApi) {
-    void import('$lib/interop/gapi-rest-shim')
+    void import('#lib/interop/gapi-rest-shim.js')
       .then((m) => m.installGapiRestShim(driveApi))
       .catch((error) => console.error('[cloud-test-hooks] gapi shim failed to load:', error));
   }

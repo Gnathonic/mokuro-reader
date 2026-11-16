@@ -21,7 +21,7 @@ const savedVolumes: Array<{
 }> = [];
 
 // Mock the database
-vi.mock('$lib/catalog/db', () => ({
+vi.mock('#lib/catalog/db.js', () => ({
   db: {
     volumes: {
       add: vi.fn().mockImplementation((data) => {
@@ -113,7 +113,7 @@ vi.mock('$lib/catalog/db', () => ({
 }));
 
 // Mock thumbnail generation
-vi.mock('$lib/catalog/thumbnails', () => ({
+vi.mock('#lib/catalog/thumbnails.js', () => ({
   generateThumbnail: vi.fn().mockResolvedValue({
     file: new File([], 'thumbnail.jpg'),
     width: 200,
@@ -122,12 +122,12 @@ vi.mock('$lib/catalog/thumbnails', () => ({
 }));
 
 // Mock snackbar
-vi.mock('$lib/util/snackbar', () => ({
+vi.mock('#lib/util/snackbar.js', () => ({
   showSnackbar: vi.fn()
 }));
 
 // Mock progress tracker
-vi.mock('$lib/util/progress-tracker', () => ({
+vi.mock('#lib/util/progress-tracker.js', () => ({
   progressTrackerStore: {
     addProcess: vi.fn(),
     updateProcess: vi.fn(),
@@ -137,7 +137,7 @@ vi.mock('$lib/util/progress-tracker', () => ({
 
 // Mock modals - auto-continue with missing files (image-only volumes are
 // reviewed through the bridge stand-in below)
-vi.mock('$lib/util/modals', () => ({
+vi.mock('#lib/util/modals.js', () => ({
   promptMissingFiles: vi.fn().mockImplementation((_info, onContinue, _onCancel) => {
     setTimeout(() => onContinue(), 0);
   })
@@ -145,7 +145,7 @@ vi.mock('$lib/util/modals', () => ({
 
 // Worker pool mock - only needed for non-archive operations
 // Archive operations now use direct extraction in test environment (detected via __vitest__)
-vi.mock('$lib/util/file-processing-pool', () => ({
+vi.mock('#lib/util/file-processing-pool.js', () => ({
   getFileProcessingPool: vi.fn().mockResolvedValue({
     addTask: vi.fn()
   }),
@@ -160,12 +160,12 @@ const { hasWritableNonServerProvider, scheduleSeriesFileWrite } = vi.hoisted(() 
   hasWritableNonServerProvider: vi.fn(() => false),
   scheduleSeriesFileWrite: vi.fn((_title: string) => {})
 }));
-vi.mock('$lib/metadata/series-backfill', () => ({ hasWritableNonServerProvider }));
-vi.mock('$lib/metadata/series-file-sync', () => ({ scheduleSeriesFileWrite }));
+vi.mock('#lib/metadata/series-backfill.js', () => ({ hasWritableNonServerProvider }));
+vi.mock('#lib/metadata/series-file-sync.js', () => ({ scheduleSeriesFileWrite }));
 
 // Import after mocks are set up
 import { importFiles, importQueue, isImporting, clearCompletedImports } from '../import-service';
-import { showSnackbar } from '$lib/util/snackbar';
+import { showSnackbar } from '#lib/util/snackbar.js';
 import { installReviewer, type Reviewer } from './helpers/review-bridge';
 
 // Every image-only review step is approved as the dialog shows it.

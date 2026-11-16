@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ControlNodeCache, controlSetEtag, readControlNodes } from './control-file-read';
+import {
+  ControlNodeCache,
+  controlReadKey,
+  controlSetEtag,
+  isPathSafeFolderName,
+  readControlNodes
+} from './control-file-read';
 
 const NAME = '.mokuro-bunko.json';
 
@@ -73,5 +79,37 @@ describe('readControlNodes', () => {
     expect(controlSetEtag([{ id: 'a', etag: '1' }])).not.toBe(
       controlSetEtag([{ id: 'a', etag: '2' }])
     );
+  });
+});
+
+describe('series-folder control reads', () => {
+  const SQ = '.mokuro-series-queue.json';
+
+  it('keys a root read by the name, a folder read by folded folder + name', () => {
+    expect(controlReadKey(NAME)).toBe(NAME);
+    expect(controlReadKey(SQ, 'Example Saga')).toBe(`example saga/${SQ}`);
+    // Every spelling of one folder is one read: case, and NFD vs NFC.
+    expect(controlReadKey(SQ, 'EXAMPLE SAGA')).toBe(controlReadKey(SQ, 'example saga'));
+    expect(controlReadKey(SQ, 'Sa\u0301ga')).toBe(controlReadKey(SQ, 'S\u00e1ga'));
+    expect(controlReadKey(SQ, 'Other Saga')).not.toBe(controlReadKey(SQ, 'Example Saga'));
+  });
+
+  it('a folder read and a root read of one name never evict each other', async () => {
+    const cache = new ControlNodeCache();
+    const download = vi.fn(async (n: { id: string }) => new Blob([n.id]));
+    await readControlNodes(controlReadKey(SQ, 'Saga'), [{ id: 'f', etag: '1' }], download, cache);
+    await readControlNodes(controlReadKey(SQ), [], download, cache);
+    await readControlNodes(controlReadKey(SQ, 'Other'), [{ id: 'o', etag: '1' }], download, cache);
+    await readControlNodes(controlReadKey(SQ, 'SAGA'), [{ id: 'f', etag: '1' }], download, cache);
+    expect(download.mock.calls.map(([n]) => n.id)).toEqual(['f', 'o']);
+  });
+
+  it('a path store accepts one plain folder name, nothing that climbs or nests', () => {
+    expect(isPathSafeFolderName('Example Saga')).toBe(true);
+    expect(isPathSafeFolderName('Saga #1: 50%?')).toBe(true);
+    expect(isPathSafeFolderName('...')).toBe(true);
+    for (const bad of ['', '.', '..', 'a/b', '/a', 'a/', '../x']) {
+      expect(isPathSafeFolderName(bad)).toBe(false);
+    }
   });
 });
