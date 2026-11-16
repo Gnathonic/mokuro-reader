@@ -1922,8 +1922,11 @@ never saw read (spec `2026-11-07-mark-as-read-credit-design.md`;
   again counted nothing, and the editor sat at 0 / N for good.) Time is the
   editor's own adjust, made from the time AFTER the reset
   (`minutesAfterReset`: the reset already takes its credits' time). Recorded
-  only when the pass counts something — a format-2 event in a month makes
-  format-1-only builds skip that whole device-month. "Count pages read
+  only when the pass has something to end (`resetEndsPass`: a read or claimed
+  page, a live credit, any characters in its raw count, the baseline's share)
+  — a format-2 event in a month makes format-1-only builds skip that whole
+  device-month. Never gate on the clamped pass figure: a v1.11.0 Reset All's
+  negative adjust holds it at 0 while the pass's pages are read. "Count pages read
   elsewhere…" is off while a Reset All waits for Save.
 - A `credit`, `retract` or `reset` makes its month segment format 2; every other
   segment stays format 1 byte for byte. Because every other device refuses

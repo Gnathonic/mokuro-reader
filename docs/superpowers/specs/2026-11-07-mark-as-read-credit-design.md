@@ -350,8 +350,11 @@ So:
   every page read in the pass: a re-read counted nothing, and the editor stayed at 0 / N.) The
   editor's time edit starts from the time after the reset (`minutesAfterReset`: the reset already
   takes its credits' time, so an edit from the figure shown took it twice). It is recorded only
-  when the pass counts something (a format-2 event makes a format-1-only build skip the whole
-  device-month), and "Count pages read elsewhere…" is off while a Reset All waits for Save.
+  when the pass has something to end (`resetEndsPass`: a read or claimed page, a live credit, any
+  characters in the pass's raw count, or the baseline's share — NOT the clamped figure shown: a
+  shipped v1.11.0 Reset All's negative adjust can hold that at 0 while pages are read and credits
+  live, and leaving such a pass unended counted a re-read as nothing and took a credit's time
+  twice). A format-2 event makes a format-1-only build skip the whole device-month, and "Count pages read elsewhere…" is off while a Reset All waits for Save.
   **Open owner question:** a new event kind (`reset`) versus another way to end a pass.
 - **Speed.** Unchanged by any of it: credits stay out of samples and the pace, and measured figures
   (figures less credit) equal the figures of the same history without credits; so does the baseline.

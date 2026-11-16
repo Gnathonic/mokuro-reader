@@ -17,6 +17,8 @@ const stats = vi.hoisted(() => {
     passChars: null as number | null,
     /** The time once a reset is applied (`minutesAfterReset`). */
     afterReset: 60,
+    /** Whether the pass has something to end (`resetEndsPass`); `null` = the pass shows characters. */
+    resetEnds: null as boolean | null,
     figuresFor: vi.fn((state: { ready: boolean }) => ({
       minutes: state.ready ? 60 : 5,
       timeMs: 0,
@@ -36,6 +38,7 @@ vi.mock('#lib/reading-history/stats-store.js', async () => {
     readingStatsReady: stats.readingStatsReady,
     figuresFor: stats.figuresFor,
     minutesAfterReset: vi.fn(() => stats.afterReset),
+    resetEndsPass: vi.fn(() => stats.resetEnds ?? (stats.passChars ?? stats.chars) > 0),
     passFiguresFor: vi.fn(() => ({
       pass: 0,
       chars: stats.passChars ?? stats.chars,
@@ -225,6 +228,7 @@ describe('VolumeEditorModal reading progress (#224)', () => {
     stats.chars = 0;
     stats.passChars = null;
     stats.afterReset = 60;
+    stats.resetEnds = null;
     closeVolumeEditor();
     cleanup();
   });
@@ -298,8 +302,9 @@ describe('VolumeEditorModal reading progress (#224)', () => {
     });
   });
 
-  it('Reset All records no reset when the pass counts nothing', async () => {
+  it('Reset All records no reset when the pass has nothing to end', async () => {
     stats.chars = 0;
+    stats.resetEnds = false;
     stats.afterReset = 12;
     const { getByText } = render(VolumeEditorModal);
     promptVolumeEditor('vol-1');
@@ -311,6 +316,24 @@ describe('VolumeEditorModal reading progress (#224)', () => {
     expect(update.reset).toBeUndefined();
     // Nothing is reset, so nothing leaves with it: from the figure shown.
     expect(update).toMatchObject({ progress: 0, completed: false, timeRead: { from: 60, to: 0 } });
+  });
+
+  it('Reset All ends a pass an older editor left at 0 characters: the gate is the pass, not the figure', async () => {
+    // A v1.11.0 Reset All's negative edit holds the pass's figure at 0 while
+    // its pages are read and a credit is live: there is still a pass to end.
+    stats.chars = 0;
+    stats.resetEnds = true;
+    stats.afterReset = 0;
+    const { getByText } = render(VolumeEditorModal);
+    promptVolumeEditor('vol-1');
+    await waitFor(() => expect(progressInput()).not.toBeNull());
+    await fireEvent.click(getByText('Reset All'));
+    await fireEvent.click(getByText('Save'));
+    await waitFor(() => expect(editor.updateVolumeStats).toHaveBeenCalled());
+    expect(editor.updateVolumeStats.mock.calls[0][1]).toMatchObject({
+      reset: true,
+      timeRead: { from: 0, to: 0 }
+    });
   });
 
   it('after Reset All (before Save) a finished volume offers no counting, and shows no credit', async () => {

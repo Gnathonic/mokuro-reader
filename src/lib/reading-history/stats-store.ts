@@ -226,7 +226,7 @@ function snapshotOf(
  * Infinity`) is explained exactly as freezing it now would: by every view
  * and edit so far, never a credit — so the freeze changes no figure, and a
  * credit never moves the baseline in the meantime. (This device freezes a
- * record before it marks it with a credit, `freezeLegacyBaseline`: a live
+ * record before it marks it with a credit, `withFrozenBaselines`: a live
  * count a mark already moved to the whole volume would cut the credit.)
  */
 function unexplained(
@@ -398,6 +398,32 @@ export function minutesAfterReset(
   // Whole milliseconds: a credit's time scaled by its characters is
   // fractional, and 659,999.99… ms must be the 11 minutes it is.
   return Math.floor(Math.max(0, Math.round(timeMs)) / 60_000);
+}
+
+/**
+ * Whether the volume editor's "Reset All" has a pass to end — whether it
+ * records a `reset` (#224). Not "the pass shows characters": that figure is
+ * the pass's CLAMPED net, and an editor edit (a v1.11.0 Reset All recorded
+ * the record's characters as a negative adjust) can hold it at 0 while the
+ * pass's pages are read and its credits live. Unended, such a pass would
+ * count a re-read as nothing, and its credits' time would come off again
+ * with the editor's time edit. So: any page read or claimed in the pass,
+ * any live credit in it, any characters at all in its raw count (an edit
+ * either way), or the pre-history baseline's share in it.
+ */
+export function resetEndsPass(
+  stats: ReadingStatsState,
+  volume: string,
+  record?: BaselineSource
+): boolean {
+  const totals = stats.byVolume.get(volume);
+  if (totals) {
+    const pass = totals.pass;
+    if (totals.passRead.size > 0) return true;
+    if (totals.credits.some((credit) => credit.pass === pass)) return true;
+    if ((totals.passes[pass]?.chars ?? 0) !== 0) return true;
+  }
+  return passFiguresFor(stats, volume, record).chars > 0;
 }
 
 /** The current pass of a volume: what it counts, and of that what credits count. */

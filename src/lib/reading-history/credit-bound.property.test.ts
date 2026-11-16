@@ -17,6 +17,7 @@ import {
   minutesAfterReset,
   pagesNotReadHere,
   passFiguresFor,
+  resetEndsPass,
   type BaselineSource,
   type ReadingStatsState
 } from './stats-store';
@@ -395,16 +396,21 @@ describe('credits never take a pass past its volume: a sweep over states (#224)'
     }
   });
 
-  it("and the editor's Reset All on top of any of them leaves no time, no characters, no credit", () => {
+  it("and the editor's Reset All on top of any of them leaves no time, no characters, no credit — and reading again counts in full", () => {
     for (let seed = 1; seed <= 1000; seed++) {
       const r = rng(seed * 104_729);
-      const { events, record: built, frozenNow } = build(r);
+      const { pageChars, events, record: built, frozenNow } = build(r);
       // The editor works on frozen records (a mark or the start freezes them).
       const record = frozenNow ?? built;
       const before = stateOf(events);
-      const from = minutesAfterReset(before, VOLUME, record);
+      // As the editor saves: the reset only when the pass has something to
+      // end, the time edit from the time after it (else from the figure shown).
+      const reset = resetEndsPass(before, VOLUME, record);
+      const from = reset
+        ? minutesAfterReset(before, VOLUME, record)
+        : figuresFor(before, VOLUME, record).minutes;
       const at = 10_000_000_000;
-      const after = stateOf([
+      const saved: ReadingEvent[] = [
         ...events,
         {
           device: 'dev-c',
@@ -414,10 +420,36 @@ describe('credits never take a pass past its volume: a sweep over states (#224)'
           volume: VOLUME,
           time_delta_ms: -from * MIN,
           chars_delta: 0
-        },
-        { device: 'dev-c', seq: 2_000_001 + seed * 2, t: at + 1, kind: 'reset', volume: VOLUME }
-      ]);
+        }
+      ];
+      if (reset) {
+        saved.push({
+          device: 'dev-c',
+          seq: 2_000_001 + seed * 2,
+          t: at + 1,
+          kind: 'reset',
+          volume: VOLUME
+        });
+      }
+      // Then the whole volume read again in the app, 30 s a page.
+      const DWELL = 30_000;
+      const reread: ReadingEvent[] = pageChars.map((chars, i) => ({
+        device: 'dev-d',
+        seq: 3_000_000 + i,
+        t: at + (i + 1) * MIN,
+        kind: 'page',
+        volume: VOLUME,
+        first_page: i + 1,
+        last_page: i + 1,
+        page_chars: [chars],
+        chars_before: sum(pageChars.slice(0, i)),
+        dwell_ms: DWELL,
+        layout: 'single',
+        orientation: 'portrait',
+        viewport: null
+      }));
       try {
+        const after = stateOf(saved);
         const figures = figuresFor(after, VOLUME, record);
         // The time field said 0: what is left is under a minute (minutes are whole).
         expect(figures.timeMs).toBeGreaterThanOrEqual(0);
@@ -425,6 +457,14 @@ describe('credits never take a pass past its volume: a sweep over states (#224)'
         const pass = passFiguresFor(after, VOLUME, record);
         expect(pass.chars).toBe(0);
         expect(pass.credit).toEqual({ timeMs: 0, chars: 0 });
+        expect(creditsFor(after, VOLUME, record).filter((c) => c.pass === pass.pass)).toEqual([]);
+        // Reading again adds its full time — the clamp in `figuresFor` would
+        // hide a raw time below zero (a credit's time taken off twice) at the
+        // reset, never here — and the whole volume to the pass.
+        const reread$ = stateOf([...saved, ...reread]);
+        const again = figuresFor(reread$, VOLUME, record);
+        expect(again.timeMs - figures.timeMs).toBeCloseTo(pageChars.length * DWELL, 6);
+        expect(passFiguresFor(reread$, VOLUME, record).chars).toBe(sum(pageChars));
       } catch (error) {
         throw new Error(`seed ${seed * 104_729}: ${(error as Error).message}`, { cause: error });
       }

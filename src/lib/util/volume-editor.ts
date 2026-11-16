@@ -237,9 +237,11 @@ export function updateVolumeStats(
     /**
      * "Reset All": the current pass's characters go to zero, and its pages
      * may be read again — recorded as a `reset` event, which the stats apply
-     * on every device (#224). Only when the pass counts something: a reset
-     * is a format-2 event, and a build that reads format 1 only skips the
-     * whole device-month it lands in. A page edit is NOT a characters edit: the
+     * on every device (#224). Only when the pass has something to end
+     * (`resetEndsPass`: a read or claimed page, a live credit, any edit, the
+     * baseline's share — not the clamped figure shown, which an older
+     * editor's negative edit can hold at 0): a reset is a format-2 event, and
+     * a build that reads format 1 only skips the whole device-month it lands in. A page edit is NOT a characters edit: the
      * record's `chars` is the position's count, and a mark-as-read set it to
      * the whole volume's — the difference was never reading.
      */

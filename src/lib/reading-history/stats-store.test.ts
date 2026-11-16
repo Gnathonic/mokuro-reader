@@ -35,6 +35,7 @@ import {
   readingStats,
   readingStatsReady,
   recentReadingSpeed,
+  resetEndsPass,
   seriesReadingSpeed,
   seriesSpeed,
   unexplainedBaseline,
@@ -429,8 +430,13 @@ describe('credits (#224)', () => {
    * adjust, then the reset itself.
    */
   async function resetAll(volume: string, t: number, source?: { legacyStats: LegacyStats }) {
-    const from = minutesAfterReset(get(readingStats), volume, source);
-    await record([
+    const stats = get(readingStats);
+    // As the editor saves: the reset only when the pass has something to end.
+    const reset = resetEndsPass(stats, volume, source);
+    const from = reset
+      ? minutesAfterReset(stats, volume, source)
+      : figuresFor(stats, volume, source).minutes;
+    const events: ReadingEvent[] = [
       {
         device: 'dev-a',
         seq: ++seq,
@@ -439,10 +445,75 @@ describe('credits (#224)', () => {
         volume,
         time_delta_ms: (0 - from) * MIN,
         chars_delta: 0
-      },
-      { device: 'dev-a', seq: ++seq, t: t + 1, kind: 'reset', volume }
-    ]);
+      }
+    ];
+    if (reset) events.push({ device: 'dev-a', seq: ++seq, t: t + 1, kind: 'reset', volume });
+    await record(events);
   }
+
+  /** A shipped v1.11.0 editor's Reset All: the record's characters as a negative adjust. */
+  const v111Reset = (volume: string, t: number, chars: number): ReadingEvent => ({
+    device: 'dev-c',
+    seq: ++seq,
+    t,
+    kind: 'adjust',
+    volume,
+    time_delta_ms: 0,
+    chars_delta: -chars
+  });
+
+  it('Reset All ends a pass a v1.11.0 Reset All left at ≤ 0 characters: reading again counts', async () => {
+    await record([
+      view('ra', 0, 1, 1000, MIN),
+      view('ra', MIN, 2, 1000, MIN),
+      view('ra', 2 * MIN, 3, 1000, MIN),
+      v111Reset('ra', 3 * MIN, 3000)
+    ]);
+    let stats = get(readingStats);
+    // Nothing shows in the pass, yet its pages are read: there is a pass to end.
+    expect(passFiguresFor(stats, 'ra').chars).toBe(0);
+    expect(resetEndsPass(stats, 'ra')).toBe(true);
+    await resetAll('ra', 10 * MIN);
+    await record([1, 2, 3].map((page) => view('ra', 20 * MIN + page * MIN, page, 1000, MIN)));
+    stats = get(readingStats);
+    expect(passFiguresFor(stats, 'ra').chars).toBe(3000);
+    expect(figuresFor(stats, 'ra')).toMatchObject({ timeMs: 3 * MIN, chars: 3000 });
+    // The re-read's views are real samples, not 0-character ones.
+    expect(
+      stats.byVolume
+        .get('ra')!
+        .samples.slice(-3)
+        .map((s) => s.chars)
+    ).toEqual([1000, 1000, 1000]);
+  });
+
+  it('… and with a credit in it, its time comes off once', async () => {
+    await record([
+      v111Reset('rb', 0, 6000),
+      credit('rb', MIN, [1, 2, 3, 4, 5, 6], SIX, 60 * MIN, 6000)
+    ]);
+    let stats = get(readingStats);
+    expect(passFiguresFor(stats, 'rb').chars).toBe(0);
+    expect(resetEndsPass(stats, 'rb')).toBe(true);
+    await resetAll('rb', 70 * MIN);
+    await record(
+      [1, 2, 3, 4, 5, 6].map((page) => view('rb', 80 * MIN + page * MIN, page, 1000, MIN))
+    );
+    stats = get(readingStats);
+    const figures = figuresFor(stats, 'rb');
+    expect(figures).toMatchObject({ timeMs: 6 * MIN, chars: 6000, credit: { timeMs: 0 } });
+    expect(measuredFigures(figures)).toEqual({ timeMs: 6 * MIN, chars: 6000 });
+  });
+
+  it('a pass with nothing in it, or only skims, has nothing for Reset All to end', async () => {
+    expect(resetEndsPass(get(readingStats), 'rn')).toBe(false);
+    // 1000 characters in 2 s: a skim, not reading.
+    await record([view('rn', 10, 1, 1000, 2000)]);
+    expect(resetEndsPass(get(readingStats), 'rn')).toBe(false);
+    // The pre-history baseline's share in the pass is something to end.
+    const legacyStats = { time_ms: MIN, chars: 500, before: 1 };
+    expect(resetEndsPass(get(readingStats), 'rn', { legacyStats })).toBe(true);
+  });
 
   it("Reset All takes a credit's time off once: reading again counts in full", async () => {
     await record([

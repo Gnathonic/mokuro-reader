@@ -667,6 +667,68 @@ test('Reset All of a volume counted when marked read: the counted time leaves on
   expect(await measured(page, VOL1)).toEqual({ chars: PAGES * CHARS, timeMs: PAGES * MIN });
 });
 
+test('Reset All of a pass an older editor left at 0 / N, with a credit in it: the pass ends, a re-read counts in full', async ({
+  browser
+}, testInfo) => {
+  const page = await device(browser);
+  await installSeries(page);
+  await expect.poll(async () => (await figures(page, VOL1)).chars).toBe(40 * CHARS);
+  // A shipped v1.11.0 editor's Reset All, from another device: the record's
+  // characters as a negative characters edit (it had marked the volume
+  // finished, so the whole volume), the pages it read still read.
+  await page.evaluate(
+    async ({ VOL1, PAGES, CHARS }) => {
+      const { historyDb } = await import('/src/lib/reading-history/history-db.ts');
+      const { notifyEventsRecorded } = await import('/src/lib/reading-history/record.ts');
+      const events = [
+        {
+          device: 'e2e-v111-device',
+          seq: 1,
+          t: Date.now() - 10 * 60_000,
+          kind: 'adjust' as const,
+          volume: VOL1,
+          time_delta_ms: 0,
+          chars_delta: -PAGES * CHARS
+        }
+      ];
+      await historyDb().reading_events.bulkAdd(events);
+      notifyEventsRecorded(events);
+    },
+    { VOL1, PAGES, CHARS }
+  );
+  await expect.poll(async () => (await figures(page, VOL1)).chars).toBe(0);
+  await openSeries(page);
+
+  // Pages 41–60 counted when marked read: the pass still shows 0 / N.
+  await cardMenu(page, VOL1, 'Mark as read');
+  await page.getByTestId('mark-read-count').click();
+  await expect
+    .poll(async () => await figures(page, VOL1))
+    .toMatchObject({ timeMs: 60 * MIN, credit: { timeMs: 20 * MIN, chars: 2000 } });
+  const chars = await editorChars(page, VOL1);
+  await expect(chars).toHaveText('0 / 6,000');
+  await page.getByRole('button', { name: 'Reset All' }).click();
+  await page.screenshot({
+    path: testInfo.outputPath('editor-reset-pending-negative-pass.png'),
+    animations: 'disabled'
+  });
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect
+    .poll(async () => await figures(page, VOL1))
+    .toMatchObject({ chars: 0, timeMs: 0, credit: { timeMs: 0, chars: 0 }, completed: false });
+
+  // Read through again: an hour and the whole volume, all of it measured.
+  await readAgain(page);
+  await expect.poll(async () => (await figures(page, VOL1)).chars).toBe(PAGES * CHARS);
+  expect(await figures(page, VOL1)).toMatchObject({
+    timeMs: PAGES * MIN,
+    credit: { timeMs: 0, chars: 0 }
+  });
+  expect(await measured(page, VOL1)).toEqual({ chars: PAGES * CHARS, timeMs: PAGES * MIN });
+  const again = await editorChars(page, VOL1);
+  await expect(again).toHaveText('6,000 / 6,000');
+});
+
 test('after Reset All, before Save, a finished volume offers no "Count pages read elsewhere…"', async ({
   browser
 }, testInfo) => {

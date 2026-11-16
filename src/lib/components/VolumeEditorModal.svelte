@@ -36,7 +36,8 @@
     minutesAfterReset,
     passFiguresFor,
     readingStats,
-    readingStatsReady
+    readingStatsReady,
+    resetEndsPass
   } from '#lib/reading-history/stats-store.js';
   import { isVolumeFinished } from '#lib/util/volume-helpers.js';
   import VolumeEditorCoverPicker from './VolumeEditorCoverPicker.svelte';
@@ -465,14 +466,16 @@
 
       // Reset All: the pass's characters go to zero and its pages may be read
       // again (a `reset` event: every device's stats apply it) — recorded only
-      // when the pass counts something, so a save of an unread volume writes
-      // no event a build without the kind would skip. The reset also takes
+      // when the pass has something to end (`resetEndsPass`: read pages, live
+      // credits, any edit, the baseline's share — not the figure shown, which
+      // an older editor's negative edit can hold at 0), so a save of an unread
+      // volume writes no event a build without the kind would skip. The reset also takes
       // away what the pass's credits count, time included, so the time edit
       // starts from the time AFTER it (`minutesAfterReset`): from the figure
       // shown it would take the credits' time off twice.
       const stats = get(readingStats);
       const record = get(volumesWithTrash)[volumeUuid];
-      const reset = resetChars && passFiguresFor(stats, volumeUuid, record).chars > 0;
+      const reset = resetChars && resetEndsPass(stats, volumeUuid, record);
       const timeFrom = reset ? minutesAfterReset(stats, volumeUuid, record) : loadedMinutes;
 
       // Update localStorage stats
