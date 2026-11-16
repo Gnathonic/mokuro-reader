@@ -20,24 +20,21 @@
     sanitizeInkColor,
     type InkColorSetting
   } from '#lib/reader/ink-color.js';
-  import {
-    PAGE_ADJUST_DEFAULT,
-    PAGE_ADJUST_MAX,
-    PAGE_ADJUST_MIN,
-    PAGE_ADJUST_STEP,
-    clampPageAdjust,
-    sanitizePageAdjustEnabled
-  } from '#lib/reader/page-filter.js';
-  import { previewAfterChange, previewWhileAdjusting } from '#lib/reader/page-adjust-preview.js';
+  import { clampPageAdjust, sanitizePageAdjustEnabled } from '#lib/reader/page-filter.js';
+  import { openPageAdjustPanel } from '#lib/reader/page-adjust-panel.js';
+  import { currentView } from '#lib/util/hash-router.js';
 
   // Page images only (#256): washed-out scans. The OCR text is never filtered.
   // (Ink color below does recolour the OCR text, to match the ink.)
-  type AdjustKey = 'pageBrightness' | 'pageContrast';
-
-  const sliders: { key: AdjustKey; label: string }[] = [
-    { key: 'pageBrightness', label: 'Brightness' },
-    { key: 'pageContrast', label: 'Contrast' }
-  ];
+  //
+  // Brightness and contrast are adjusted over the page, in the reader's page
+  // image panel (#363) — not here, where this drawer's backdrop dims the page
+  // being judged and the drawer itself covers part or (on a phone) all of it.
+  // This card keeps the on/off switch, shows the values, and opens the panel
+  // (which closes the drawer).
+  let inReader = $derived($currentView.type === 'reader');
+  let brightness = $derived(clampPageAdjust($settings.pageBrightness));
+  let contrast = $derived(clampPageAdjust($settings.pageContrast));
 
   // Ink color for black-and-white pages (#256): colour pages are left alone.
   const inkOptions: { value: InkColorSetting; name: string }[] = [
@@ -95,14 +92,6 @@
 
   // On/off without losing the values (#362) — the reader's B key flips it too.
   let adjustEnabled = $derived(sanitizePageAdjustEnabled($settings.pageAdjustEnabled));
-
-  // Live while dragging: the page behind the drawer follows the thumb (and the
-  // drawer's backdrop stops dimming it meanwhile, #363). Moving a slider while
-  // the adjustment is off switches it back on: otherwise the drag shows nothing.
-  function onInput(key: AdjustKey, e: Event) {
-    updateSetting(key, clampPageAdjust(Number((e.target as HTMLInputElement).value)));
-    if (!adjustEnabled) updateSetting('pageAdjustEnabled', true);
-  }
 </script>
 
 <div class="mt-2 rounded-lg border border-gray-200 p-3 dark:border-gray-700">
@@ -112,38 +101,26 @@
       size="small"
       checked={adjustEnabled}
       onchange={() => updateSetting('pageAdjustEnabled', !adjustEnabled)}
-      {@attach previewAfterChange}
     >
       Brightness &amp; contrast
       <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">(B)</span>
     </Toggle>
-    {#each sliders as { key, label } (key)}
-      {@const value = clampPageAdjust($settings[key])}
-      <div>
-        <div class="flex items-center justify-between">
-          <Label for={`page-adjust-${key}`} class="text-gray-900 dark:text-white">
-            {label}: {value}%
-          </Label>
-          <Button
-            size="xs"
-            color="alternative"
-            class="px-2 py-0.5"
-            aria-label={`Reset ${label.toLowerCase()}`}
-            disabled={value === PAGE_ADJUST_DEFAULT}
-            onclick={() => updateSetting(key, PAGE_ADJUST_DEFAULT)}>Reset</Button
-          >
-        </div>
-        <Range
-          id={`page-adjust-${key}`}
-          min={PAGE_ADJUST_MIN}
-          max={PAGE_ADJUST_MAX}
-          step={PAGE_ADJUST_STEP}
-          {value}
-          oninput={(e: Event) => onInput(key, e)}
-          {@attach previewWhileAdjusting}
-        />
-      </div>
-    {/each}
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <p class="text-sm text-gray-700 tabular-nums dark:text-gray-300" data-page-adjust-summary>
+        Brightness {brightness}% · Contrast {contrast}%
+      </p>
+      {#if inReader}
+        <Button size="xs" color="alternative" onclick={openPageAdjustPanel}>
+          Adjust over the page
+          <span class="ml-1.5 text-gray-500 dark:text-gray-400">(A)</span>
+        </Button>
+      {/if}
+    </div>
+    {#if !inReader}
+      <p class="text-xs text-gray-500 dark:text-gray-400">
+        Adjusted over the page itself, in the reader: press A, or use the quick actions menu.
+      </p>
+    {/if}
     <div>
       <div class="flex items-center justify-between gap-2">
         <Label for="page-ink-color" class="text-gray-900 dark:text-white"
@@ -199,7 +176,6 @@
             {value}
             oninput={(e: Event) =>
               updateSetting(slider.key, slider.clamp(Number((e.target as HTMLInputElement).value)))}
-            {@attach previewWhileAdjusting}
           />
         </div>
       {/each}

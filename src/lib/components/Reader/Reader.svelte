@@ -1,6 +1,15 @@
 <script lang="ts">
   import { pageImageUrlFrom } from '#lib/reader/page-image-url.js';
   import { pageAdjustToggleMessage, sanitizePageAdjustEnabled } from '#lib/reader/page-filter.js';
+  // The page image panel (#363): A opens/closes it here; Escape and the keys
+  // typed inside it are the panel's own (PageAdjustPanel.svelte).
+  import {
+    PAGE_ADJUST_PANEL_KEY,
+    closePageAdjustPanel,
+    pageAdjustPanelOpen,
+    togglePageAdjustPanel
+  } from '#lib/reader/page-adjust-panel.js';
+  import PageAdjustPanel from './PageAdjustPanel.svelte';
   import { run } from 'svelte/legacy';
   import type { TransitionConfig } from 'svelte/transition';
 
@@ -468,6 +477,9 @@
       case 'KeyB':
         togglePageAdjust();
         return;
+      case PAGE_ADJUST_PANEL_KEY:
+        togglePageAdjustPanel();
+        return;
       case 'KeyC':
         if (volume) {
           toggleHasCover(volume.volume_uuid);
@@ -585,6 +597,9 @@
 
   // Fire reader closed event when component is destroyed (navigating away)
   onDestroy(() => {
+    // The page image panel is module state: leaving the reader closes it, so
+    // the next volume opened does not start with it up.
+    closePageAdjustPanel();
     if (volume) {
       const { charCount, lineCount } = getCharCount(pages, page);
 
@@ -1854,6 +1869,11 @@
         <p class="text-left" class:hidden={!$settings.pageNum}>{pageDisplay}</p>
       {/key}
     </button>
+  {/if}
+  {#if $pageAdjustPanelOpen}
+    <!-- Before the long-pause prompt: same z-index, so the prompt paints over
+         the panel where they meet. -->
+    <PageAdjustPanel onToggleAdjust={togglePageAdjust} />
   {/if}
   {#if volume && pages?.length}
     <PositionOfferBanner

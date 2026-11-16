@@ -23,8 +23,9 @@
   import About from './About.svelte';
   import QuickAccess from './QuickAccess.svelte';
   import AppearanceSettings from './AppearanceSettings.svelte';
-  import { pageAdjustPreviewing } from '#lib/reader/page-adjust-preview.js';
+  import { closePageAdjustPanel, pageAdjustPanelOpen } from '#lib/reader/page-adjust-panel.js';
   import { focusFirstInView } from '#lib/util/focus-in-view.js';
+  import { untrack } from 'svelte';
 
   let transitionParams = {
     x: 320,
@@ -70,7 +71,8 @@
   // open (a microtask, which scrolls that control into view), so the restore
   // waits a frame to land after it — and then brings keyboard focus along to
   // a control in the restored view: left at the top, the first Tab would
-  // scroll the drawer straight back there.
+  // scroll the drawer straight back there. (The frame callback runs before
+  // that frame is painted: the drawer is never drawn at the top first.)
   function rememberScroll(dlg: HTMLElement) {
     const key = isReader() ? 'reader' : 'app';
     const saved = savedScrollTop.get(key) ?? 0;
@@ -88,6 +90,21 @@
       dlg.removeEventListener('scroll', onScroll);
     };
   }
+
+  // The page image panel and this drawer are never up together (#363): the
+  // panel exists so that nothing dims or covers the page while it is being
+  // adjusted. Opening the panel (from this drawer's Page image card) closes
+  // the drawer; opening the drawer closes the panel.
+  let panelWasOpen = false;
+  $effect(() =>
+    pageAdjustPanelOpen.subscribe((panelOpen) => {
+      if (panelOpen && !panelWasOpen) open = false;
+      panelWasOpen = panelOpen;
+    })
+  );
+  $effect(() => {
+    if (open) untrack(closePageAdjustPanel);
+  });
 
   // Close drawer on navigation (hash route change)
   let previousViewType = $state($currentView.type);
@@ -110,7 +127,6 @@
   id="settings"
   outsideclose={false}
   onmousedown={handleBackdropMousedown}
-  data-page-preview={$pageAdjustPreviewing ? '' : undefined}
   {@attach rememberScroll}
 >
   <h5
@@ -140,12 +156,3 @@
     </div>
   </div>
 </Drawer>
-
-<style>
-  /* While a page image slider is being adjusted (#363) the page behind the
-     drawer is what the user is judging: no dimming. Colour only — nothing
-     moves, the drawer stays where it is. */
-  :global(dialog#settings[data-page-preview]::backdrop) {
-    background-color: transparent;
-  }
-</style>

@@ -74,6 +74,12 @@ describe('keyboardShouldIgnore', () => {
     expect(keyboardShouldIgnore(el('<div data-popover><div data-probe></div></div>'))).toBe(true);
   });
 
+  it('ignores a reader tool panel floating over the page (#363)', () => {
+    expect(
+      keyboardShouldIgnore(el('<div data-reader-panel><button data-probe>x</button></div>'))
+    ).toBe(true);
+  });
+
   it('allows the page itself', () => {
     expect(keyboardShouldIgnore(el('<div data-probe></div>'))).toBe(false);
     expect(keyboardShouldIgnore(null)).toBe(false);
