@@ -112,7 +112,10 @@ opening page one frame later) is a motion owner too: it goes through
 `DeferredPlacement`, and every gate intent `flush()`es it before anything
 else. Otherwise a key pressed before that frame — Page Down right after
 switching into continuous mode — scrolls, and the frame then snaps the view
-back to the opening page, losing the press.
+back to the opening page, losing the press. A handler that MEASURES the
+view before its gate call (the vertical strip's arrow and setting-off page
+keys read the page nearest the centre first) flushes it itself, at its top:
+measured unplaced, the strip is still at its top and the turn heads there.
 
 ### Wheel granularity decides the zoom's shape (#259)
 

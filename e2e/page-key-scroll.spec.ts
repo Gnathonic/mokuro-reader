@@ -188,20 +188,15 @@ async function edgesOf(page: Page, i: number) {
  * animation frame the mount scheduled — the window in which a deferred
  * opening placement used to land after, and undo, the key's scroll.
  */
-async function switchToContinuousPressingAtMount(page: Page) {
-  await page.evaluate(async () => {
+async function switchToContinuousPressingAtMount(page: Page, key = 'PageDown') {
+  await page.evaluate(async (key) => {
     const { updateSetting } = await import('/src/lib/settings/index.ts');
     const pressed = new Promise<void>((resolve) => {
       const observer = new MutationObserver(() => {
         if (!document.querySelector('.scrollbar-hide')) return;
         observer.disconnect();
         document.body.dispatchEvent(
-          new KeyboardEvent('keydown', {
-            key: 'PageDown',
-            code: 'PageDown',
-            bubbles: true,
-            cancelable: true
-          })
+          new KeyboardEvent('keydown', { key, code: key, bubbles: true, cancelable: true })
         );
         resolve();
       });
@@ -209,7 +204,19 @@ async function switchToContinuousPressingAtMount(page: Page) {
     });
     updateSetting('continuousScroll' as never, true as never);
     await pressed;
+  }, key);
+}
+
+/** Continuous modes: the index of the page whose centre is nearest the view's. */
+async function centredPage(page: Page) {
+  const s = await stripState(page);
+  const mid = (s.box.top + s.box.bottom) / 2;
+  let best = 0;
+  s.pages.forEach((p, i) => {
+    const d = Math.abs((p.top + p.bottom) / 2 - mid);
+    if (d < Math.abs((s.pages[best].top + s.pages[best].bottom) / 2 - mid)) best = i;
   });
+  return best;
 }
 
 /** Resolve after `n` animation frames have run. */
@@ -402,6 +409,57 @@ test.describe('Page keys scroll tall pages before turning (#283)', () => {
     expect((await edgesOf(page, 0)).bottom).toBe(0);
     expect([0, 1]).toContain((await stripState(page)).progress);
   });
+
+  // The page-turn keys that MEASURE the strip (the page nearest the centre)
+  // rather than going through pageKey: arrows at fit-to-screen, and page keys
+  // with scroll-first off. Pressed at mount on page 4, they must measure the
+  // placed strip — page 4 — and turn to page 5, not measure the unplaced strip
+  // (scrolled to its top) and head back to page 2.
+  for (const { name, key, settings } of [
+    { name: 'ArrowDown (e-ink)', key: 'ArrowDown', settings: { disableAnimations: true } },
+    { name: 'ArrowDown (animated)', key: 'ArrowDown', settings: { disableAnimations: false } },
+    {
+      name: 'Page Down, scroll-first off (e-ink)',
+      key: 'PageDown',
+      settings: { disableAnimations: true, pageKeysScrollFirst: false }
+    },
+    {
+      name: 'Page Down, scroll-first off (animated)',
+      key: 'PageDown',
+      settings: { disableAnimations: false, pageKeysScrollFirst: false }
+    }
+  ]) {
+    test(`continuous vertical fit-to-screen: ${name} pressed as the strip mounts mid-volume turns on from the opening page`, async ({
+      page
+    }) => {
+      await seedVolume(
+        page,
+        { width: 1000, height: 1400 },
+        {
+          continuousScroll: false,
+          singlePageView: 'single',
+          zoomDefault: 'zoomFitToScreen',
+          scrollMode: 'vertical',
+          continuousZoomDefault: 'zoomFitToScreen',
+          pageDividers: false,
+          pageKeysScrollFirst: true,
+          ...settings
+        }
+      );
+      await openReader(page);
+      await expect.poll(() => pagedState(page)).toMatchObject({ index: 0 });
+      for (const index of [1, 2, 3]) {
+        await page.keyboard.press('PageDown');
+        await expect.poll(() => pagedState(page)).toMatchObject({ index });
+      }
+
+      await switchToContinuousPressingAtMount(page, key);
+      await expect.poll(() => centredPage(page)).toBe(4);
+      await expect.poll(async () => (await stripState(page)).progress).toBe(5);
+      await afterFrames(page, 3);
+      expect(await centredPage(page)).toBe(4);
+    });
+  }
 
   test('continuous vertical: scrolls a screenful while the page continues, then lands on the next page top', async ({
     page

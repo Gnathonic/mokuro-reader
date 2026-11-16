@@ -42,11 +42,13 @@ describe('DeferredPlacement', () => {
     const placement = new DeferredPlacement();
     placement.schedule(() => order.push('place'));
     // Input arriving before the frame: the placement goes first, then the input.
+    expect(frames.size).toBe(1);
     placement.flush();
+    // The flush cancelled the frame it no longer needs.
+    expect(frames.size).toBe(0);
     order.push('input');
     runFrame();
     expect(order).toEqual(['place', 'input']);
-    expect(frames.size).toBe(0);
   });
 
   it('flush with nothing pending is a no-op, also when re-entered from the placement', () => {

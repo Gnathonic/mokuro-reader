@@ -423,6 +423,10 @@
   function handleKeydown(e: KeyboardEvent) {
     if (keyboardShouldIgnore(e.target)) return;
     if (!scrollContainer) return;
+    // Several keys below MEASURE the strip (detectCurrentPage) before any
+    // MotionGate intent runs: place the opening view first, or a key pressed
+    // before the strip's first frame turns from the unplaced top instead.
+    opening.flush();
 
     // In fit-to-screen, pages fit viewport — arrows page.
     // In fit-to-width/original, pages can be taller — arrows pan.
