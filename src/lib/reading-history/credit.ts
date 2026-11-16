@@ -1,7 +1,12 @@
 import { buildPageCharCounts } from '#lib/catalog/page-char-counts.js';
 import type { RetractableCredit } from '#lib/settings/volume-data.js';
 import type { ReadingSpeedResult } from '#lib/util/reading-speed.js';
-import { seriesSpeed, type ReadingStatsState } from './stats-store';
+import {
+  creditsFor,
+  seriesSpeed,
+  type BaselineSource,
+  type ReadingStatsState
+} from './stats-store';
 import type { CreditTotals } from './stats-engine';
 import type { ReadingEvent } from './types';
 
@@ -120,11 +125,18 @@ export function splitTime(totalMs: number, chars: number[]): number[] {
   return parts;
 }
 
-/** The volume's live credits in its latest pass (what un-read and Remove take back). */
-export function currentPassCredits(stats: ReadingStatsState, volume: string): CreditTotals[] {
+/**
+ * The volume's live credits in its latest pass, with what each counts now
+ * (`creditsFor`) — what un-read and Remove take back, and the editor shows.
+ */
+export function currentPassCredits(
+  stats: ReadingStatsState,
+  volume: string,
+  record?: BaselineSource
+): CreditTotals[] {
   const totals = stats.byVolume.get(volume);
   if (!totals) return [];
-  return totals.credits.filter((credit) => credit.pass === totals.pass);
+  return creditsFor(stats, volume, record).filter((credit) => credit.pass === totals.pass);
 }
 
 /**
@@ -140,7 +152,12 @@ export function retractable(credits: CreditTotals[], events: ReadingEvent[]): Re
     return [
       {
         target: [event.device, event.seq] as [string, number],
-        fields: { pages: event.pages, page_chars: event.page_chars, time_ms: event.time_ms }
+        fields: {
+          pages: event.pages,
+          page_chars: event.page_chars,
+          time_ms: event.time_ms,
+          ...(event.total_chars !== undefined && { total_chars: event.total_chars })
+        }
       }
     ];
   });

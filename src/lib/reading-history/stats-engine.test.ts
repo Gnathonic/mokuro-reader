@@ -108,13 +108,17 @@ const resolve = (
   count
 });
 const id = (e: ReadingEvent): [string, number] => [e.device, e.seq];
-/** "Mark as read" counted these pages (#224). */
+/**
+ * "Mark as read" counted these pages (#224), of a volume of `total_chars`
+ * characters — by default one big enough that its budget never binds.
+ */
 const credit = (
   t: number,
   pages: number[],
   page_chars: number[],
   time_ms: number,
-  device = 'dev-a'
+  device = 'dev-a',
+  total_chars = 1_000_000
 ): ReadingEvent => ({
   device,
   seq: ++seq,
@@ -123,7 +127,8 @@ const credit = (
   volume: 'vol',
   pages,
   page_chars,
-  time_ms
+  time_ms,
+  total_chars
 });
 const retract = (t: number, target: [string, number], device = 'dev-a'): ReadingEvent => ({
   device,
@@ -741,7 +746,7 @@ describe('per-device totals', () => {
 
   it('keeps the device on each volume-editor edit', () => {
     expect(prepareVolume([adjust(5, MIN, 40, 'dev-c')]).adjusts).toEqual([
-      { t: 5, ms: MIN, chars: 40, device: 'dev-c' }
+      { t: 5, ms: MIN, chars: 40, device: 'dev-c', pass: 0 }
     ]);
   });
 
@@ -994,6 +999,108 @@ describe('credits (#224: counting pages not read here)', () => {
     expect(after.credits[0].pages).toEqual([5]);
     expect(after.creditChars).toBe(1000);
     expect(after.creditMs).toBeCloseTo(10 * MIN, 6);
+  });
+
+  describe('a credit never takes its pass past the volume', () => {
+    /** The volume of these tests: pages 1–10, 100 characters each. */
+    const mark = (t = 10 * MIN, time = 10 * MIN, device = 'dev-a') =>
+      credit(t, pages, chars, time, device, 1000);
+
+    it('an adjust carries no pages: the credit counts what it leaves, from the last pages', () => {
+      // An older volume editor recorded a page edit as 600 characters.
+      const totals = countVolume(prepareVolume([adjust(0, 0, 600), mark()]), pace, AUTO);
+      expect(totals.readChars).toBe(1000);
+      expect(totals.creditChars).toBe(400);
+      expect(totals.creditMs).toBeCloseTo(4 * MIN, 6);
+      expect(totals.credits[0].pages).toEqual([7, 8, 9, 10]);
+      // Every page is accounted for: none is offered again.
+      expect(totals.passRead.size).toBe(10);
+      expect(totals.passes).toEqual([
+        {
+          start: -Infinity,
+          chars: 1000,
+          creditChars: 400,
+          creditMs: totals.creditMs,
+          volumeChars: 1000
+        }
+      ]);
+    });
+
+    it('whatever order the events arrive in (an adjust synced after the mark)', () => {
+      const later = countVolume(prepareVolume([mark(0), adjust(20 * MIN, 0, 600)]), pace, AUTO);
+      expect(later.readChars).toBe(1000);
+      expect(later.creditChars).toBe(400);
+    });
+
+    it('a converted turn carries a stretch of pages under its first', () => {
+      // Two-page spreads: turns at 1, 3, 5 each carry two pages' characters.
+      const turns = [
+        legacy(0, 1, 100, 2 * MIN),
+        legacy(2 * MIN, 3, 300, 2 * MIN),
+        legacy(4 * MIN, 5, 500, 2 * MIN),
+        legacy(6 * MIN, 7, 700, null)
+      ];
+      const totals = countVolume(prepareVolume([...turns, mark()]), pace, AUTO);
+      expect(totals.readChars).toBe(1000);
+      expect(totals.creditChars).toBe(400);
+      // The turns' 600 characters (cumulative 100 → 700) cover the credit's first
+      // pages, 2 and 4: it keeps 6 and 8–10, the volume's 1,000 in all.
+      expect(totals.credits[0].pages).toEqual([6, 8, 9, 10]);
+    });
+
+    it('pages counted at an older OCR: the credit is cut, part of a page included', () => {
+      const old = [1, 2, 3, 4, 5].map((page) => view(page * MIN, page, [150], 30_000));
+      const totals = countVolume(prepareVolume([...old, mark()]), pace, AUTO);
+      expect(totals.readChars).toBe(1000);
+      expect(totals.creditChars).toBe(250);
+      expect(totals.credits[0].pages).toEqual([8, 9, 10]);
+      expect(totals.credits[0].pageChars).toEqual([50, 100, 100]);
+    });
+
+    it('real reading over the volume leaves a credit nothing, and is never cut itself', () => {
+      const views = pages.map((page) => view(page * MIN, page, [150], 30_000));
+      const without = countVolume(prepareVolume(views), pace, AUTO);
+      const totals = countVolume(prepareVolume([...views, mark(20 * MIN)]), pace, AUTO);
+      expect(totals.readChars).toBe(1500);
+      expect(totals.creditChars).toBe(0);
+      expect(totals.credits[0]).toMatchObject({ chars: 0, ms: 0, pages: [] });
+      expect(totals.samples).toEqual(without.samples);
+    });
+
+    it('two credits of one pass share its budget, the first pages covered first', () => {
+      const a = credit(0, [1, 2, 3, 4, 5], [100, 100, 100, 100, 100], 5 * MIN, 'dev-a', 1000);
+      const b = credit(MIN, [6, 7, 8, 9, 10], [100, 100, 100, 100, 100], 5 * MIN, 'dev-b', 1000);
+      const totals = countVolume(prepareVolume([adjust(0, 0, 700), a, b]), pace, AUTO);
+      expect(totals.creditChars).toBe(300);
+      expect(totals.credits.map((c) => [c.device, c.pages, c.chars])).toEqual([
+        ['dev-a', [], 0],
+        ['dev-b', [8, 9, 10], 300]
+      ]);
+    });
+
+    it("each pass has its own budget: the newest credit's volume size", () => {
+      const first = credit(0, pages, chars, 10 * MIN, 'dev-a', 1000);
+      // An OCR upgrade later recounted the volume at 1,200.
+      const second = credit(10 * MIN, [1, 2], [600, 600], 10 * MIN, 'dev-a', 1200);
+      const totals = countVolume(
+        prepareVolume([first, restart(5 * MIN), adjust(6 * MIN, 0, 1000), second]),
+        pace,
+        AUTO
+      );
+      expect(totals.passes.map((p) => [p.chars, p.creditChars, p.volumeChars])).toEqual([
+        [1000, 1000, 1000],
+        [1200, 200, 1200]
+      ]);
+    });
+
+    it('a credit without a volume size (a pre-release build) counts and claims nothing', () => {
+      const old = { ...mark() } as Extract<ReadingEvent, { kind: 'credit' }>;
+      delete old.total_chars;
+      const totals = countVolume(prepareVolume([view(0, 1, [100], 30_000), old]), pace, AUTO);
+      expect(totals.credits).toEqual([]);
+      expect(totals.readChars).toBe(100);
+      expect([...totals.passRead]).toEqual([1]);
+    });
   });
 
   it('adds timeline entries so totalsBefore still sums', () => {

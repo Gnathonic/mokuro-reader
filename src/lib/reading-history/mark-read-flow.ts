@@ -57,7 +57,10 @@ export interface SheetVolume {
   totalChars?: number;
   /** 1-based page p's characters at index p − 1. */
   pageChars: number[];
-  /** Pages no counting view read and no live credit claims, this pass. */
+  /**
+   * Pages no counting view read and no live credit claims, this pass — never
+   * more characters than the pass has left of the volume (`pagesNotReadHere`).
+   */
   notRead: number[];
 }
 
@@ -145,7 +148,7 @@ export async function prepareSheetVolume(volume: VolumeMetadata): Promise<SheetV
         ? volume.character_count
         : pageChars.reduce((n, c) => n + c, 0) || undefined,
     pageChars,
-    notRead: countable ? pagesNotReadHere(stats, volume.volume_uuid, pageCount, record) : []
+    notRead: countable ? pagesNotReadHere(stats, volume.volume_uuid, pageChars, record) : []
   };
 }
 
@@ -172,11 +175,20 @@ function commit(items: MarkReadItem[], message: string): void {
   );
 }
 
-/** The credit of one volume's not-read pages up to `upTo`, at `minutes` (null = none known). */
+/**
+ * The credit of one volume's not-read pages up to `upTo`, at `ms`. It carries
+ * the volume's characters (`total_chars`, the same count as its pages'): the
+ * stats never let its pass count more.
+ */
 function creditItem(v: SheetVolume, upTo: number, ms: number): MarkReadItem['credit'] {
   const { pages, page_chars, chars } = creditPages(v.notRead, v.pageChars, upTo);
   if (pages.length === 0 || chars <= 0) return undefined;
-  return { pages, page_chars, time_ms: Number.isFinite(ms) ? Math.max(0, Math.round(ms)) : 0 };
+  return {
+    pages,
+    page_chars,
+    time_ms: Number.isFinite(ms) ? Math.max(0, Math.round(ms)) : 0,
+    total_chars: v.pageChars.reduce((n, c) => n + c, 0)
+  };
 }
 
 /** "Mark as read" on one volume: ask, count or skip by the user's setting. */
@@ -324,7 +336,7 @@ function liveCredits(volume: string): {
   credits: RetractableCredit[];
   removed: string;
 } {
-  const totals = currentPassCredits(get(readingStats), volume);
+  const totals = currentPassCredits(get(readingStats), volume, get(volumesWithTrash)[volume]);
   return {
     credits: retractable(totals, getVolumeEvents(volume)),
     removed: removedText(totals)

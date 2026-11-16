@@ -368,7 +368,8 @@ describe('segment codec', () => {
       volume: 'vol-1',
       pages: [3, 4, 5, 9, 11, 12],
       page_chars: [10, 0, 22, 7, 31, 4],
-      time_ms: 38 * 60000
+      time_ms: 38 * 60000,
+      total_chars: 200
     };
     const retract: ReadingEvent = {
       device: DEV,
@@ -407,9 +408,30 @@ describe('segment codec', () => {
       expect(json.format).toBe(2);
       expect(json.targets).toEqual(['dev-b']);
       expect(json.rows).toEqual([
-        [6, 12, T + 70000, 0, 38 * 60000, [3, 5, 9, 9, 11, 12], [10, 0, 22, 7, 31, 4]],
+        [6, 12, T + 70000, 0, 38 * 60000, [3, 5, 9, 9, 11, 12], [10, 0, 22, 7, 31, 4], 200],
         [7, 1, 1000, 0, 0, 40]
       ]);
+    });
+
+    it('reads a pre-release credit row (no volume size) as a credit without one', async () => {
+      const { events: out } = await decodeSegment(
+        await raw({ rows: [[6, 1, T, 0, 60000, [2, 3], [10, 20]]] })
+      );
+      expect(out).toEqual([
+        {
+          device: DEV,
+          seq: 1,
+          t: T,
+          kind: 'credit',
+          volume: 'vol-1',
+          pages: [2, 3],
+          page_chars: [10, 20],
+          time_ms: 60000
+        }
+      ]);
+      // And this device can still write it back (its own month goes up again).
+      const again = await decodeSegment(await encodeSegment(DEV, '2026-10', out));
+      expect(again.events).toEqual(out);
     });
 
     it('writes format 1 when a segment holds neither kind, format 2 when it holds either', async () => {
@@ -436,6 +458,8 @@ describe('segment codec', () => {
       ['a NaN time', { time_ms: NaN }],
       ['a non-finite page char', { pages: [1, 2], page_chars: [1, Infinity] }],
       ['a negative page char', { pages: [1, 2], page_chars: [1, -1] }],
+      ['a volume smaller than its own pages', { total_chars: 50 }],
+      ['a volume size that is not finite', { total_chars: Infinity }],
       // The decoder refuses a run of 100,000 pages or more.
       [
         'a run longer than the decoder takes',
@@ -466,6 +490,8 @@ describe('segment codec', () => {
       ['a negative page char', { rows: [[6, 1, T, 0, 0, [1, 1], [-1]]] }],
       ['a negative time', { rows: [[6, 1, T, 0, -5, [1, 1], [1]]] }],
       ['a huge run', { rows: [[6, 1, T, 0, 0, [1, 1e9], [1]]] }],
+      ['a volume smaller than its pages', { rows: [[6, 1, T, 0, 0, [1, 2], [5, 5], 9]] }],
+      ['a volume size that is not a number', { rows: [[6, 1, T, 0, 0, [1, 1], [5], null]] }],
       ['a retract with no target dictionary', { rows: [[7, 1, T, 0, 0, 3]] }],
       ['a retract of seq 0', { targets: ['d'], rows: [[7, 1, T, 0, 0, 0]] }]
     ])('refuses %s', async (_label, body) => {
@@ -476,7 +502,8 @@ describe('segment codec', () => {
       const long = {
         ...credit,
         pages: Array.from({ length: 100_000 }, (_, i) => i + 1),
-        page_chars: new Array(100_000).fill(1)
+        page_chars: new Array(100_000).fill(1),
+        total_chars: 100_000
       } as ReadingEvent;
       const { events: out } = await decodeSegment(await encodeSegment(DEV, '2026-10', [long]));
       expect(out).toEqual([long]);

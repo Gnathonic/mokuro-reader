@@ -208,16 +208,20 @@ export function deviceStatsFrom(
     totalChars += figures.chars;
     before.timeMs += baseline.timeMs;
     before.readChars += baseline.chars;
+    // What credits count, after the baseline's share of their pass
+    // (`figuresFor`): the engine's per-device parts are before it.
+    marked.timeMs += figures.credit.timeMs;
+    marked.readChars += figures.credit.chars;
+    const cutMs = (totals?.creditMs ?? 0) - figures.credit.timeMs;
+    const cutChars = (totals?.creditChars ?? 0) - figures.credit.chars;
     // `figuresFor` clamps at zero after adding the baseline; only edits
     // (negative adjusts) can go below it, so what the clamp gives back is theirs.
-    edits.timeMs += Math.max(0, -((totals?.timeMs ?? 0) + baseline.timeMs));
-    edits.readChars += Math.max(0, -((totals?.readChars ?? 0) + baseline.chars));
+    edits.timeMs += Math.max(0, -((totals?.timeMs ?? 0) - cutMs + baseline.timeMs));
+    edits.readChars += Math.max(0, -((totals?.readChars ?? 0) - cutChars + baseline.chars));
     if (!totals) continue;
     for (const [id, part] of totals.byDevice) {
       edits.timeMs += part.adjustMs;
       edits.readChars += part.adjustChars;
-      marked.timeMs += part.creditMs;
-      marked.readChars += part.creditChars;
       if (part.firstReadAt === null) continue;
       if (!isDeviceId(id)) {
         addViews(before, part);

@@ -83,8 +83,9 @@ export interface ResolvePayload {
  * "Mark as read" (or the volume editor's "Count pages read elsewhere") counted
  * pages this app never saw read, as read in the current pass (#224). The
  * stats engine lets it CLAIM only pages no counting view read in that pass and
- * no earlier credit claimed, so a later in-app read takes its page back. It is
- * never a speed sample: it feeds totals, not speed or pace.
+ * no earlier credit claimed, so a later in-app read takes its page back, and
+ * never lets it take the pass past `total_chars`. It is never a speed sample:
+ * it feeds totals, not speed or pace.
  */
 export interface CreditPayload {
   kind: 'credit';
@@ -95,6 +96,13 @@ export interface CreditPayload {
   page_chars: number[];
   /** The time the user accepted or typed for these pages; 0 = characters only. */
   time_ms: number;
+  /**
+   * The volume's characters, every page's in the same count as `page_chars`:
+   * the most its pass may count with this credit in it. Every credit is
+   * recorded with it (`appendEvent`); absent only on one a pre-release build
+   * wrote, which counts nothing.
+   */
+  total_chars?: number;
 }
 
 /** Undo, un-read or the editor's "Remove": the target credit counts as never made. */

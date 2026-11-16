@@ -234,9 +234,9 @@ export function updateVolumeStats(
      */
     timeRead?: { from: number; to: number };
     /**
-     * Characters read: `from` what the stats showed when the editor opened,
-     * `to` what the user set ("Reset All" sets 0). The difference is recorded
-     * as an `adjust`. A page edit is NOT a characters edit (#224): the
+     * Characters read in the current pass: `from` what the stats showed when
+     * the editor opened (`passFiguresFor`), `to` what the user set ("Reset
+     * All" sets 0). The difference is recorded as an `adjust`. A page edit is NOT a characters edit (#224): the
      * record's `chars` is the position's count, and a mark-as-read set it to
      * the whole volume's — the difference was never reading.
      */

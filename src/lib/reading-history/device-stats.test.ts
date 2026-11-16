@@ -292,7 +292,8 @@ describe('deviceStats', () => {
       volume: 'v1',
       pages: [2, 3],
       page_chars: [100, 200],
-      time_ms: 6 * MIN
+      time_ms: 6 * MIN,
+      total_chars: 600
     };
     await record([view('dev-a', 'v1', 0, 1, 300, 2 * MIN), credit]);
     const stats = get(deviceStats);

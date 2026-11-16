@@ -108,9 +108,12 @@ Either way it's marked read and counts for your goals.
 
 ### 3. The estimate
 
-- **Pages.** These are the pages not read here (5.3). For a volume with an unexplained pre-history
-  baseline (`figures.baseline.chars > 0`) and no restart, pages 1..progress (before the mark) also
-  count as read. Its old reading is a lump with no pages.
+- **Pages.** These are the pages not read here (5.3), never more characters than the pass has left
+  of the volume (5.5). What the pass counts without pages (the pre-history baseline's share, an
+  older editor's adjusts, a converted turn's stretch, a count from an older OCR) is reading from the
+  start, so the first of those pages go — a page only partly left goes too. (Amended: the first
+  build took pages 1..progress as the baseline's; the position no longer says that after an un-read,
+  a page edit or a look back.)
 - **Characters per page.** Taken from the row's `page_char_counts` (cumulative, so the difference
   between neighbours). Failing that, from the OCR with the reader's own per-page count. Failing that
   (a placeholder or a materialized row), `character_count` spread evenly over the pages, with the sum
@@ -175,6 +178,8 @@ export interface CreditPayload {
   page_chars: number[];
   /** The time the user accepted or typed for them; 0 = characters only. */
   time_ms: number;
+  /** The volume's characters (every page's, the same count): the most its pass may count (5.5). */
+  total_chars: number;
 }
 
 /** Undo, un-read or the editor's "Remove": the target credit counts as never made. */
@@ -191,8 +196,12 @@ later Undo.
 #### 5.2 Codec: format 2, only where needed
 
 - New row layouts:
-  - `6 credit [6, dSeq, dT, vol, time_ms, runs[], page_chars[]]`. `runs` holds `[first, last, …]`
-    pairs, so consecutive pages collapse into one pair.
+  - `6 credit [6, dSeq, dT, vol, time_ms, runs[], page_chars[], total_chars]`. `runs` holds
+    `[first, last, …]` pairs, so consecutive pages collapse into one pair. A row without
+    `total_chars` (written only by pre-release builds of this feature) still decodes; the stats count
+    it as nothing. One whose `total_chars` is below its own pages' characters is malformed. The cell
+    trails the row, so a pre-release build drops it on decode (reading a credit that counts nothing);
+    no released app reads format 2 at all.
   - `7 retract [7, dSeq, dT, vol, target device, target seq]`. The target device goes through the
     `targets` dictionary, as `resolve` does.
 - **Writing.** A segment is written as `format: 2` only when it holds a kind 6 or 7 row. Every other
@@ -221,6 +230,7 @@ This lives in `stats-engine.ts`.
   3. The views loop credits chars and skims as today, except that a page a credit claims is not
      skimmed.
   4. Adjusts are applied as today.
+  5. Each pass's credits are held to its budget (5.5).
 - **Consequences:**
   - **No double counting.** A later in-app read of a credited page takes that page from the credit.
     The view gets the chars, as a normal sample, and the credit shrinks along with its time. Total
@@ -290,6 +300,41 @@ This lives in `stats-engine.ts`.
     difference as an `adjust`.
 - **Checkmark.** `VolumeItem` asks `isVolumeFinished(volume, record)` (bug 2). The credit is never
   progress, so fixing stats never touches the check.
+
+#### 5.5 Bound: a credit never takes a pass past the volume (amended after review)
+
+The first build relied on page-exact claiming for the bound (see Alternatives). The owner found
+volumes counting more characters than they hold. Page claiming bounds only what has pages; a pass
+also counts characters a credit's pages cannot see:
+
+- the pre-history baseline (`legacyStats`), a lump with no pages, whose coverage the sheet guessed as
+  pages 1..progress — wrong after Mark as unread (progress 0), a page edit or a look back, and
+  skipped entirely in a pass begun before history (an archived read);
+- an `adjust` (older editors recorded a page edit as characters);
+- a converted page turn, which carries a whole stretch's characters under its first page (two-page
+  spreads: every other page looked unread);
+- a page counted at another size than the credit's (an OCR upgrade, a placeholder's even spread
+  against another device's real per-page counts).
+
+So:
+
+- Every credit carries the volume's characters, `total_chars`.
+- **Engine.** Each pass has a budget: the newest credit's `total_chars` less what the pass's views
+  and adjusts count. The credits' excess over it comes off their LOWEST pages, across all of the
+  pass's credits (`coverFirstPages`), a page covered in part keeping the rest; the time scales by
+  the characters kept. Real reading is never cut, and a credit never counts a negative.
+- **Store.** A frozen baseline's share of one pass is its position part (the snapshot less reads
+  archived before the freeze, each a pass of its own), in the pass the record was on when frozen.
+  It cuts that pass's credits the same way (`figuresFor`, `creditsFor`, `passFiguresFor`). An
+  unfrozen snapshot is set against every event already, credits included, so it is not cut twice.
+- **Sheet.** `pagesNotReadHere` offers only what the pass has left (5.3 pages).
+- **Per-volume figures.** "Characters Read X / volume" in the editor is the CURRENT pass
+  (`passFiguresFor`), shown no larger than the volume; `figuresFor` stays the lifetime figure (every
+  pass, re-reads counted again, as before). Reset All zeroes the current pass.
+- **Speed.** Unchanged by any of it: credits stay out of samples and the pace, and measured figures
+  (figures less credit) equal the figures of the same history without credits.
+- Pinned by `credit-bound.test.ts` (each state above through the real flow) and
+  `credit-bound.property.test.ts` (a seeded sweep over random histories).
 
 ### 7. Setting and default
 
@@ -394,8 +439,10 @@ This lives in `stats-engine.ts`.
 - **`adjust` with a trailing reason cell (draft 1).** Old decoders drop the cell silently and keep
   the stamp, so the tag is lost for good on every device that imported it before updating. The
   codec rule requires a new format anyway.
-- **A per-volume cap from volume totals (draft 2).** The engine has no volume totals. Page-exact
-  claiming gives the same bound with no new input, and it is exact.
+- **A per-volume cap from volume totals (draft 2).** Rejected at first ("page-exact claiming gives
+  the same bound"); that holds only when every source is page-exact, and four are not. Adopted as
+  5.5, with the volume's size carried by the credit itself, so the engine stays a pure function of
+  events.
 - **A profile setting (both drafts).** The `tracking` section is the codebase's home for the user's
   stats policy (`pauses.ask`). Kept as owner decision 5.
 - **A synthetic `page` event.** It would feed the skip rule, samples, pace and the idle cutoff.

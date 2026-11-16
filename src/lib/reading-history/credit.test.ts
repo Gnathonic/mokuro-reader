@@ -161,11 +161,25 @@ describe('retractable', () => {
       volume: 'v',
       pages: [3, 4],
       page_chars: [10, 20],
-      time_ms: MIN
+      time_ms: MIN,
+      total_chars: 90
     };
-    const live = { device: 'd', seq: 4, t: 0, pass: 0, ms: MIN, chars: 30, pages: [3, 4] };
+    const live = {
+      device: 'd',
+      seq: 4,
+      t: 0,
+      pass: 0,
+      ms: MIN,
+      chars: 30,
+      pages: [3, 4],
+      pageChars: [10, 20]
+    };
+    // An Undo records the same credit again: its volume size included.
     expect(retractable([live, { ...live, seq: 9 }], [event])).toEqual([
-      { target: ['d', 4], fields: { pages: [3, 4], page_chars: [10, 20], time_ms: MIN } }
+      {
+        target: ['d', 4],
+        fields: { pages: [3, 4], page_chars: [10, 20], time_ms: MIN, total_chars: 90 }
+      }
     ]);
   });
 });

@@ -152,7 +152,7 @@ Each event carries `device`, `seq`, `t` (epoch ms, the recording device's clock)
 | `restart` | `volume`                                                                                                                                                                                  | `archivedReads` marker                                                                                     |
 | `forget`  | `volume`, `before`                                                                                                                                                                        | "delete stats" (`deleteVolume`: volume delete with "remove stats", and the speed page's per-volume delete) |
 | `resolve` | `volume` (the target's), `target` (`[device, seq]` of a `page` event), `count`: `'full'` \| `'typical'` \| `'none'`                                                                       | — (the user's answer about a long pause)                                                                   |
-| `credit`  | `volume`, `pages` (1-based, ascending), `page_chars` (per page), `time_ms` (0 = characters only)                                                                                          | — ("mark as read" counting pages not read in the app, #224)                                                |
+| `credit`  | `volume`, `pages` (1-based, ascending), `page_chars` (per page), `time_ms` (0 = characters only), `total_chars` (the volume's characters; the most its pass may count)                    | — ("mark as read" counting pages not read in the app, #224)                                                |
 | `retract` | `volume`, `target` (`[device, seq]` of a `credit` event)                                                                                                                                  | — (Undo, un-read, or the editor's Remove of a credit)                                                      |
 
 - A `page` event is written when the user **leaves** a view (turn, close, tab hidden, idle), so dwell is
@@ -210,16 +210,21 @@ history/<device>/<YYYY-MM>.events     one month of that device's events
   the events in delta-encoded columns, deflated with the built-in `CompressionStream`. Versioned via
   `format`. No new dependency.
 - **Format 2** (#224, `2026-11-07-mark-as-read-credit-design.md`) adds `credit` (kind 6:
-  `[6, dSeq, dT, vol, time_ms, runs[], page_chars[]]`, `runs` = `[first, last, …]` pairs) and `retract`
+  `[6, dSeq, dT, vol, time_ms, runs[], page_chars[], total_chars]`, `runs` = `[first, last, …]` pairs;
+  a row without `total_chars`, written only by pre-release builds, decodes and counts nothing) and `retract`
   (kind 7: `[7, dSeq, dT, vol, target device, target seq]`, the device through the `targets`
   dictionary). It is written ONLY for a segment that holds one of them; every other segment stays format 1,
   byte for byte. Readers accept 1 and 2; kinds 6/7 in a format-1 or legacy segment are malformed. An app
   that knows only format 1 refuses a format-2 segment and keeps the old stamp, so it reads that
   device-month once it updates.
 - **Credits in the stats.** A credit claims, in time order, each of its pages that no counting view read in
-  its pass and no earlier credit claimed; its time is `time_ms × claimed chars / declared chars`. Real
-  reading always wins (a later view takes its page back), a claimed page is not skimmed, and credits never
-  feed samples, the pace, pauses or first/last read. A `retract` hides its target whatever the order.
+  its pass and no earlier credit claimed. A pass's credits count at most its budget: the newest credit's
+  `total_chars` less what the pass's views and adjusts count; the excess comes off their lowest pages (what
+  a pass counts without pages is reading from the start), and the frozen pre-history baseline's share of
+  its pass is set against them the same way (stats store). A credit's time is
+  `time_ms × counted chars / declared chars`. Real reading always wins (a later view takes its page back),
+  a claimed page is not skimmed, and credits never feed samples, the pace, pauses or first/last read. A
+  `retract` hides its target whatever the order.
 - `history/` must join the syncable allowlist (`syncable-file.ts:61-67`) so every provider lists it.
 
 ### Import (how another device's events reach local records)

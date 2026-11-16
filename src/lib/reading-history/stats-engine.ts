@@ -38,9 +38,21 @@ import { eventKey, lookupVisits } from './visits';
  * - **Credits** (#224: "Mark as read" counting pages not read in the app)
  *   fill the gaps, and real reading always wins. Taken in time order, a
  *   credit CLAIMS each of its pages that no counting view read in its pass
- *   and no earlier credit claimed; its characters are the claimed pages',
- *   its time `time_ms × claimed chars / its declared chars`. A claimed page
- *   is not skimmed. Credits never touch views: samples, the pace, pauses and
+ *   and no earlier credit claimed. A claimed page is not skimmed.
+ * - **A credit never takes a pass past the volume.** Page-exact claiming
+ *   alone does not bound a pass: an `adjust` carries no pages, a converted
+ *   turn carries a whole stretch's characters under its first page, and a
+ *   page's characters as a view recorded them can differ from the credit's
+ *   (an OCR upgrade, a placeholder's even spread). So each pass also has a
+ *   character BUDGET: the volume's characters as its newest credit counted
+ *   them (`total_chars`), less what its views and adjusts count. What its
+ *   credits claim beyond that comes off their LOWEST pages, across all of
+ *   them (`coverFirstPages`: what a pass counts without pages is reading from
+ *   the start), and a credit's time is `time_ms × counted chars / its
+ *   declared chars`. Real reading is never cut. The pre-history baseline is
+ *   the store's to set against the same pass (`stats-store.ts`).
+ *   A credit without `total_chars` (written by a pre-release build) counts
+ *   nothing. Credits never touch views: samples, the pace, pauses and
  *   first/last read are the same with or without them. A `retract` cancels
  *   its target whatever the order the two arrive in.
  */
@@ -107,6 +119,8 @@ export interface PreparedCredit {
   timeMs: number;
   /** Σ of its pages' characters, as recorded. */
   declaredChars: number;
+  /** The volume's characters when it was counted (`total_chars`). */
+  volumeChars: number;
 }
 
 export interface PreparedVolume {
@@ -115,8 +129,10 @@ export interface PreparedVolume {
   credits: PreparedCredit[];
   /** The latest pass (restarts so far). */
   pass: number;
+  /** When each pass began: its `restart`'s `t` (−Infinity for the first). */
+  passStarts: number[];
   /** Volume-editor edits, in time order, with the device that made each. */
-  adjusts: Array<{ t: number; ms: number; chars: number; device: string }>;
+  adjusts: Array<{ t: number; ms: number; chars: number; device: string; pass: number }>;
   /** This volume's newest views usable for the pace, `[t, ms per char]`, newest first. */
   paceTail: Array<[t: number, rate: number]>;
 }
@@ -203,6 +219,8 @@ export interface VolumeTotals {
   pass: number;
   /** The latest pass's pages read by a counting view or claimed by a credit. */
   passRead: Set<number>;
+  /** Each pass's characters, index = pass (`passes.length === pass + 1`). */
+  passes: PassTotals[];
 }
 
 export interface CreditTotals {
@@ -210,10 +228,29 @@ export interface CreditTotals {
   seq: number;
   t: number;
   pass: number;
-  /** Effective: what it claims now that real reading took its share. */
+  /**
+   * Effective: what it counts now — the pages real reading left it, within
+   * the pass's budget. `pages` are the pages it counts (a partly counted
+   * page included), never more than its claimed ones.
+   */
   ms: number;
   chars: number;
   pages: number[];
+  /** What it counts of each of `pages` (the first possibly in part). */
+  pageChars: number[];
+}
+
+/** One pass of a volume (`VolumeTotals.passes`). */
+export interface PassTotals {
+  /** When it began: its `restart`'s `t`; −Infinity for the first pass. */
+  start: number;
+  /** Everything it counts: its views' characters, its credits' and its adjusts'. */
+  chars: number;
+  /** Of `chars`, what its credits count, and their time. */
+  creditChars: number;
+  creditMs: number;
+  /** The volume's characters as its newest credit counted them; `null` without a credit. */
+  volumeChars: number | null;
 }
 
 export interface SpeedEstimate {
@@ -270,14 +307,17 @@ export function prepareVolume(events: ReadingEvent[]): PreparedVolume {
   const views: PreparedView[] = [];
   const credits: PreparedCredit[] = [];
   const adjusts: PreparedVolume['adjusts'] = [];
+  const passStarts = [-Infinity];
   let pass = 0;
   for (const e of live) {
     if (e.kind === 'restart') {
       pass++;
+      passStarts.push(e.t);
       continue;
     }
     if (e.kind === 'credit') {
-      if (retracted.has(pauseKey(e))) continue;
+      // No volume size, no budget: a pre-release credit counts nothing.
+      if (retracted.has(pauseKey(e)) || e.total_chars === undefined) continue;
       const pages = e.pages.map((page, i): [number, number] => [page, e.page_chars[i] ?? 0]);
       credits.push({
         t: e.t,
@@ -286,12 +326,13 @@ export function prepareVolume(events: ReadingEvent[]): PreparedVolume {
         pass,
         pages,
         timeMs: e.time_ms,
-        declaredChars: pages.reduce((sum, [, c]) => sum + c, 0)
+        declaredChars: pages.reduce((sum, [, c]) => sum + c, 0),
+        volumeChars: e.total_chars
       });
       continue;
     }
     if (e.kind === 'adjust') {
-      adjusts.push({ t: e.t, ms: e.time_delta_ms, chars: e.chars_delta, device: e.device });
+      adjusts.push({ t: e.t, ms: e.time_delta_ms, chars: e.chars_delta, device: e.device, pass });
       continue;
     }
     if (e.kind !== 'page') continue;
@@ -327,7 +368,7 @@ export function prepareVolume(events: ReadingEvent[]): PreparedVolume {
     paceTail.push([v.t, v.dwell / v.chars]);
   }
   paceTail.sort((a, b) => b[0] - a[0]);
-  return { views, credits, pass, adjusts, paceTail };
+  return { views, credits, pass, passStarts, adjusts, paceTail };
 }
 
 /** Median ms per character over the newest usable views of every volume. */
@@ -472,21 +513,26 @@ export function countVolume(
   }
   // Credits fill what no counting view read, oldest first: each page once.
   const claimed = new Set<string>();
-  const creditParts: Array<{ credit: PreparedCredit; pages: number[]; chars: number }> = [];
+  const creditParts: Array<{ credit: PreparedCredit; pages: Array<[number, number]> }> = [];
   for (const credit of prepared.credits) {
-    const pages: number[] = [];
-    let chars = 0;
+    const pages: Array<[number, number]> = [];
     for (const [page, c] of credit.pages) {
       const key = `${credit.pass}|${page}`;
       if (readPages.has(key) || claimed.has(key)) continue;
       claimed.add(key);
-      pages.push(page);
-      chars += c;
+      pages.push([page, c]);
     }
-    creditParts.push({ credit, pages, chars });
+    creditParts.push({ credit, pages });
   }
   const skippedSeen = new Set<string>();
   const byDevice = new Map<string, DeviceTotals>();
+  const passes: PassTotals[] = prepared.passStarts.map((start) => ({
+    start,
+    chars: 0,
+    creditChars: 0,
+    creditMs: 0,
+    volumeChars: null
+  }));
   for (const { view, ms, reads } of counted) {
     let fresh = 0;
     let skimmed = 0;
@@ -503,6 +549,7 @@ export function countVolume(
     }
     readChars += fresh;
     skippedChars += skimmed;
+    passes[view.pass].chars += fresh;
     entries.push([view.t, ms, fresh, skimmed]);
     const part = deviceTotals(byDevice, view.device);
     part.timeMs += ms;
@@ -516,15 +563,44 @@ export function countVolume(
       part.sampleChars += fresh;
     }
   }
+  for (const a of prepared.adjusts) {
+    timeMs += a.ms;
+    readChars += a.chars;
+    passes[a.pass].chars += a.chars;
+    entries.push([a.t, a.ms, a.chars, 0]);
+    const part = deviceTotals(byDevice, a.device);
+    part.adjustMs += a.ms;
+    part.adjustChars += a.chars;
+  }
+  // Each pass's budget: the volume as its newest credit counted it, less
+  // what the pass counts without credits (its views and adjusts). What the
+  // credits claim beyond it comes off their lowest pages (`coverFirstPages`).
+  const kept: CountedPages[] = new Array(creditParts.length);
+  for (const { credit } of creditParts) passes[credit.pass].volumeChars = credit.volumeChars;
+  for (let pass = 0; pass < passes.length; pass++) {
+    const here = creditParts.flatMap((part, i) => (part.credit.pass === pass ? [i] : []));
+    if (here.length === 0) continue;
+    const claimedPages = here.map((i) => creditParts[i].pages);
+    let claimedChars = 0;
+    for (const pages of claimedPages) for (const [, c] of pages) claimedChars += c;
+    const room = Math.max(0, (passes[pass].volumeChars ?? 0) - passes[pass].chars);
+    const covered = coverFirstPages(claimedPages, claimedChars - room);
+    here.forEach((i, k) => (kept[i] = covered[k]));
+  }
   let creditMs = 0;
   let creditChars = 0;
   const credits: CreditTotals[] = [];
-  for (const { credit, pages, chars } of creditParts) {
+  for (let i = 0; i < creditParts.length; i++) {
+    const { credit } = creditParts[i];
+    const { pages, pageChars, chars } = kept[i];
     const ms = creditShare(credit, pages.length, chars);
     creditMs += ms;
     creditChars += chars;
     timeMs += ms;
     readChars += chars;
+    passes[credit.pass].chars += chars;
+    passes[credit.pass].creditChars += chars;
+    passes[credit.pass].creditMs += ms;
     entries.push([credit.t, ms, chars, 0]);
     const part = deviceTotals(byDevice, credit.device);
     part.creditMs += ms;
@@ -536,16 +612,9 @@ export function countVolume(
       pass: credit.pass,
       ms,
       chars,
-      pages
+      pages,
+      pageChars
     });
-  }
-  for (const a of prepared.adjusts) {
-    timeMs += a.ms;
-    readChars += a.chars;
-    entries.push([a.t, a.ms, a.chars, 0]);
-    const part = deviceTotals(byDevice, a.device);
-    part.adjustMs += a.ms;
-    part.adjustChars += a.chars;
   }
 
   entries.sort((a, b) => a[0] - b[0]);
@@ -580,18 +649,75 @@ export function countVolume(
     creditChars,
     credits,
     pass: prepared.pass,
-    passRead
+    passRead,
+    passes
   };
 }
 
+/** What a credit counts: its pages and each one's characters (the first possibly in part). */
+export interface CountedPages {
+  pages: number[];
+  pageChars: number[];
+  chars: number;
+}
+
 /**
- * A credit's time for what it still claims: its time × claimed chars / its
+ * Credits' pages (one pass, each page in one credit at most) once `over`
+ * characters come off them, LOWEST PAGE FIRST across all of them: what a
+ * pass counts without pages — an adjust, the pre-history baseline, a
+ * converted turn's stretch, a count from an older OCR — is reading from the
+ * start, so it is the first pages it already holds. A page it covers in full
+ * goes; the page it covers in part keeps the rest.
+ */
+export function coverFirstPages(
+  credits: Array<Array<[page: number, chars: number]>>,
+  over: number
+): CountedPages[] {
+  const taken = credits.map((pages) => pages.map(() => -1));
+  if (over > 0) {
+    const order: Array<[page: number, credit: number, index: number]> = [];
+    credits.forEach((pages, i) => pages.forEach(([page], j) => order.push([page, i, j])));
+    order.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    let left = over;
+    for (const [, i, j] of order) {
+      if (left <= 0) break;
+      const take = Math.min(credits[i][j][1], left);
+      taken[i][j] = take;
+      left -= take;
+    }
+  }
+  return credits.map((claimed, i) => {
+    const pages: number[] = [];
+    const pageChars: number[] = [];
+    let chars = 0;
+    claimed.forEach(([page, c], j) => {
+      const take = taken[i][j];
+      if (take >= c && take >= 0) return;
+      const kept = c - Math.max(0, take);
+      pages.push(page);
+      pageChars.push(kept);
+      chars += kept;
+    });
+    return { pages, pageChars, chars };
+  });
+}
+
+/**
+ * A credit's time for what it counts: its time × counted chars / its
  * declared chars (by pages when it declared none — an art-only credit).
  */
-function creditShare(credit: PreparedCredit, claimedPages: number, claimedChars: number): number {
-  if (claimedPages === credit.pages.length) return credit.timeMs;
-  if (credit.declaredChars > 0) return (credit.timeMs * claimedChars) / credit.declaredChars;
-  return credit.pages.length > 0 ? (credit.timeMs * claimedPages) / credit.pages.length : 0;
+function creditShare(
+  credit: Pick<PreparedCredit, 'pages' | 'timeMs' | 'declaredChars'>,
+  countedPages: number,
+  countedChars: number
+): number {
+  if (credit.declaredChars > 0) {
+    return countedChars >= credit.declaredChars
+      ? credit.timeMs
+      : (credit.timeMs * countedChars) / credit.declaredChars;
+  }
+  if (countedPages === credit.pages.length) return credit.timeMs;
+  return credit.pages.length > 0 ? (credit.timeMs * countedPages) / credit.pages.length : 0;
 }
 
 /** The running share of `device` (converted turns all share one key), created empty. */

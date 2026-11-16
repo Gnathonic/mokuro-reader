@@ -1881,6 +1881,23 @@ never saw read (spec `2026-11-07-mark-as-read-credit-design.md`;
   no counting view read in its pass and no earlier credit claimed. Credits
   never feed samples, the pace or any speed — an estimate uses measured
   reading only, and a speed that rounds below 1 char/min is no speed.
+- **A credit never takes a pass past the volume.** Page claiming alone does
+  not bound it: the pre-history baseline, an `adjust`, a converted turn (a
+  stretch of pages under its first) and a page counted at an older OCR all
+  count characters a credit's pages cannot see. So every credit carries
+  `total_chars` (the volume's, same count as `page_chars`; `appendEvent`
+  refuses one without it) and the engine gives each pass a budget — the
+  newest credit's `total_chars` less the pass's views and adjusts — that
+  takes the excess off the credits' LOWEST pages (`coverFirstPages`: what a
+  pass counts without pages is reading from the start). The store does the
+  same for the frozen baseline's share of the pass it was frozen in
+  (`baselineOf`: its position part, archived reads being passes of their
+  own), and the sheet offers only what is left (`pagesNotReadHere` takes
+  page characters). A credit row without `total_chars` (pre-release builds)
+  decodes but counts nothing. Per-volume "X / volume" figures are the
+  CURRENT pass (`passFiguresFor`); `figuresFor` is the lifetime, re-reads
+  included. Pinned by `credit-bound.test.ts` (real states through the flow)
+  and `credit-bound.property.test.ts` (a seeded sweep).
 - A `credit` or `retract` makes its month segment format 2; every other
   segment stays format 1 byte for byte. Because every other device refuses
   a whole device-month over one bad row, forever, `appendEvent` refuses a

@@ -22,7 +22,7 @@ import type {
  *   3 forget  [3, dSeq, dT, vol, before]
  *   4 position [4, dSeq, dT, vol, answer (0 jump, 1 stay, 2 reset), through, page]
  *   5 resolve [5, dSeq, dT, vol, target device, target seq, count (0 full, 1 typical, 2 none)]
- *   6 credit  [6, dSeq, dT, vol, time_ms, runs[], page_chars[]]      (format 2 only)
+ *   6 credit  [6, dSeq, dT, vol, time_ms, runs[], page_chars[], total_chars] (format 2 only)
  *   7 retract [7, dSeq, dT, vol, target device, target seq]          (format 2 only)
  *
  * `target device` indexes a second dictionary, `targets`, written only when
@@ -30,7 +30,10 @@ import type {
  * its bytes). Resolves, credits and retracts live in month segments only: a
  * legacy device never answers, credits or retracts. A credit's `runs` are
  * `[first, last, …]` pairs of its (ascending) pages, so consecutive pages
- * collapse into one pair; `page_chars` lists every page's characters in order.
+ * collapse into one pair; `page_chars` lists every page's characters in order;
+ * `total_chars` is the volume's (the most its pass may count). A credit row
+ * without `total_chars` (written by a pre-release build) still decodes: the
+ * stats count it as nothing.
  *
  * A new event kind or field AFTER a release is a new `format`; a reader refuses
  * formats it does not know (the importer keeps the old stamp, so an updated app
@@ -148,7 +151,15 @@ export async function encodeSegment(
         ];
       case 'credit':
         credits = true;
-        return [6, ...head, vol(e.volume), e.time_ms, creditRuns(e), [...e.page_chars]];
+        return [
+          6,
+          ...head,
+          vol(e.volume),
+          e.time_ms,
+          creditRuns(e),
+          [...e.page_chars],
+          ...(e.total_chars === undefined ? [] : [e.total_chars])
+        ];
       case 'retract':
         credits = true;
         return [7, ...head, vol(e.volume), targets.index(e.target[0]), e.target[1]];
@@ -287,7 +298,18 @@ export async function decodeSegment(
         if (page_chars.length !== pages.length || page_chars.some((c) => c < 0)) {
           throw new SegmentFormatError('credit page chars do not match its pages');
         }
-        payload = { kind: 'credit', volume, pages, page_chars, time_ms };
+        const total_chars = row.length > 7 ? num(row[7]) : undefined;
+        if (total_chars !== undefined && total_chars < sum(page_chars)) {
+          throw new SegmentFormatError('credit counts more than its volume holds');
+        }
+        payload = {
+          kind: 'credit',
+          volume,
+          pages,
+          page_chars,
+          time_ms,
+          ...(total_chars !== undefined && { total_chars })
+        };
         break;
       }
       case 7: {
@@ -331,19 +353,26 @@ export const MAX_CREDIT_RUN = 100_000;
  * A credit's pages as `[first, last, …]` runs, refusing any credit the decoder
  * would not give back: pages whole, positive, strictly ascending and in runs
  * shorter than `MAX_CREDIT_RUN`; one finite, non-negative character count per
- * page; a finite, non-negative time. Every other device refuses a whole
+ * page; a finite, non-negative time; a volume size, when given, no smaller
+ * than its pages' characters. Every other device refuses a whole
  * device-month over one bad row, permanently (events are never edited), so
  * `appendEvent` runs this before a credit is stored and the encoder again.
  */
 export function creditRuns(
-  credit: Pick<CreditPayload, 'pages' | 'page_chars' | 'time_ms'>
+  credit: Pick<CreditPayload, 'pages' | 'page_chars' | 'time_ms' | 'total_chars'>
 ): number[] {
-  const { pages, page_chars, time_ms } = credit;
+  const { pages, page_chars, time_ms, total_chars } = credit;
   if (!Number.isFinite(time_ms) || time_ms < 0) {
     throw new SegmentFormatError('credit time must be finite and non-negative');
   }
   if (page_chars.length !== pages.length || page_chars.some((c) => !Number.isFinite(c) || c < 0)) {
     throw new SegmentFormatError('credit page chars do not match its pages');
+  }
+  if (
+    total_chars !== undefined &&
+    (!Number.isFinite(total_chars) || total_chars < sum(page_chars))
+  ) {
+    throw new SegmentFormatError('credit counts more than its volume holds');
   }
   if (pages.length === 0) throw new SegmentFormatError('a credit with no pages');
   const runs: number[] = [];
@@ -417,4 +446,10 @@ function int(value: unknown): number {
 function numbers(value: unknown): number[] {
   if (!Array.isArray(value)) throw new SegmentFormatError('malformed list cell');
   return value.map(num);
+}
+
+function sum(values: number[]): number {
+  let total = 0;
+  for (const v of values) total += v;
+  return total;
 }

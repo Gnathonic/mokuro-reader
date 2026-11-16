@@ -22,8 +22,10 @@ import {
   freezeLegacyBaselines,
   flushReadingStats,
   initReadingStats,
+  creditsFor,
   measuredFigures,
   pagesNotReadHere,
+  passFiguresFor,
   readingStats,
   readingStatsReady,
   recentReadingSpeed,
@@ -157,7 +159,14 @@ describe('figuresFor', () => {
 });
 
 describe('credits (#224)', () => {
-  const credit = (volume: string, t: number, pages: number[], chars: number[], ms: number) =>
+  const credit = (
+    volume: string,
+    t: number,
+    pages: number[],
+    chars: number[],
+    ms: number,
+    total_chars: number
+  ) =>
     ({
       device: 'dev-a',
       seq: ++seq,
@@ -166,11 +175,24 @@ describe('credits (#224)', () => {
       volume,
       pages,
       page_chars: chars,
-      time_ms: ms
+      time_ms: ms,
+      total_chars
     }) as ReadingEvent;
+  const restart = (volume: string, t: number): ReadingEvent => ({
+    device: 'dev-a',
+    seq: ++seq,
+    t,
+    kind: 'restart',
+    volume
+  });
+  /** Six pages of 1,000 characters. */
+  const SIX = [1000, 1000, 1000, 1000, 1000, 1000];
 
   it('figures carry what credits counted, inside the totals; measured figures leave it out', async () => {
-    await record([view('v1', 0, 1, 300, 3 * MIN), credit('v1', MIN, [2, 3], [200, 100], 10 * MIN)]);
+    await record([
+      view('v1', 0, 1, 300, 3 * MIN),
+      credit('v1', MIN, [2, 3], [200, 100], 10 * MIN, 600)
+    ]);
     const figures = figuresFor(get(readingStats), 'v1');
     expect(figures).toMatchObject({
       timeMs: 13 * MIN,
@@ -185,34 +207,90 @@ describe('credits (#224)', () => {
     await record([
       view('v1', 0, 2, 300, 3 * MIN),
       view('v1', 5 * MIN, 3, 300, 3 * MIN),
-      credit('v1', 10 * MIN, [5], [100], MIN)
+      credit('v1', 10 * MIN, [5], [100], MIN, 1000)
     ]);
-    expect(pagesNotReadHere(get(readingStats), 'v1', 6)).toEqual([1, 4, 6]);
-    expect(pagesNotReadHere(get(readingStats), 'never-read', 3)).toEqual([1, 2, 3]);
+    const pageChars = [100, 300, 300, 100, 100, 100];
+    expect(pagesNotReadHere(get(readingStats), 'v1', pageChars)).toEqual([1, 4, 6]);
+    expect(pagesNotReadHere(get(readingStats), 'never-read', [5, 5, 5])).toEqual([1, 2, 3]);
   });
 
-  it('a volume with unexplained pre-history reading counts pages up to its position as read', async () => {
-    const legacyStats = { time_ms: 30 * MIN, chars: 5000, before: 1 };
-    // No events: the old lump covers pages 1..4 (its position before the mark).
-    expect(pagesNotReadHere(get(readingStats), 'old', 6, { legacyStats, progress: 4 })).toEqual([
+  it('pre-history reading covers the first pages, whatever the position says now', async () => {
+    const legacyStats = { time_ms: 30 * MIN, chars: 4000, before: 1 };
+    // No events: the old lump is four pages' worth, read from the start.
+    expect(pagesNotReadHere(get(readingStats), 'old', SIX, { legacyStats })).toEqual([5, 6]);
+    // Un-read since (the page back at 0) or paged back: still four pages read.
+    expect(
+      pagesNotReadHere(get(readingStats), 'old', SIX, { legacyStats, chars: 0, completed: false })
+    ).toEqual([5, 6]);
+    // Nothing unexplained: nothing covered.
+    expect(pagesNotReadHere(get(readingStats), 'old', SIX, {})).toEqual([1, 2, 3, 4, 5, 6]);
+    // A page only partly covered goes too: a credit may undercount, never overcount.
+    const partial = { ...legacyStats, chars: 3500 };
+    expect(pagesNotReadHere(get(readingStats), 'old', SIX, { legacyStats: partial })).toEqual([
       5, 6
     ]);
-    // Nothing unexplained: the position says nothing about what was read here.
-    expect(pagesNotReadHere(get(readingStats), 'old', 6, { progress: 4 })).toEqual([
+    // After a restart since the freeze the old lump belongs to an earlier pass.
+    await record([restart('old', 5)]);
+    expect(pagesNotReadHere(get(readingStats), 'old', SIX, { legacyStats })).toEqual([
       1, 2, 3, 4, 5, 6
     ]);
-    // After a restart the old lump belongs to an earlier pass.
-    const restart: ReadingEvent = {
-      device: 'dev-a',
-      seq: ++seq,
-      t: 5,
-      kind: 'restart',
-      volume: 'old'
+  });
+
+  it("an archived pre-history read is its own pass: only the position's part is this pass's", async () => {
+    // Read once (archived, a restart at `at`), then four pages again, all before history.
+    const at = -10;
+    const record0 = {
+      legacyStats: { time_ms: 60 * MIN, chars: 6000 + 4000, before: 1 },
+      archivedReads: [{ at, chars: 6000 }]
     };
-    await record([restart]);
-    expect(pagesNotReadHere(get(readingStats), 'old', 6, { legacyStats, progress: 4 })).toEqual([
-      1, 2, 3, 4, 5, 6
+    await record([restart('old', at)]);
+    expect(pagesNotReadHere(get(readingStats), 'old', SIX, record0)).toEqual([5, 6]);
+    expect(passFiguresFor(get(readingStats), 'old', record0)).toMatchObject({
+      pass: 1,
+      chars: 4000
+    });
+  });
+
+  it('the baseline cuts the credits in its pass to what the volume has left, from the first pages', async () => {
+    const legacyStats = { time_ms: 30 * MIN, chars: 4000, before: 1 };
+    // Counted on a device that did not know the old reading: every page.
+    await record([
+      credit('old', 10, [1, 2, 3], [1000, 1000, 1000], 30 * MIN, 6000),
+      credit('old', 20, [4, 5, 6], [1000, 1000, 1000], 30 * MIN, 6000)
     ]);
+    const stats = get(readingStats);
+    const figures = figuresFor(stats, 'old', { legacyStats });
+    // 4,000 before history + what the volume has left: 2,000.
+    expect(figures.chars).toBe(6000);
+    expect(figures.credit).toEqual({ timeMs: 20 * MIN, chars: 2000 });
+    expect(measuredFigures(figures)).toEqual({ timeMs: 30 * MIN, chars: 4000 });
+    // The old reading covers the first pages: the credits keep pages 5 and 6.
+    expect(creditsFor(stats, 'old', { legacyStats }).map((c) => [c.pages, c.chars, c.ms])).toEqual([
+      [[], 0, 0],
+      [[5, 6], 2000, 20 * MIN]
+    ]);
+    expect(passFiguresFor(stats, 'old', { legacyStats })).toEqual({
+      pass: 0,
+      chars: 6000,
+      credit: { timeMs: 20 * MIN, chars: 2000 }
+    });
+  });
+
+  it('a credit in a later pass, or an unfrozen snapshot, is not cut', async () => {
+    await record([restart('v1', 5), credit('v1', 10, [1, 2, 3, 4, 5, 6], SIX, 60 * MIN, 6000)]);
+    const frozen = { legacyStats: { time_ms: 30 * MIN, chars: 6000, before: 1 } };
+    expect(figuresFor(get(readingStats), 'v1', frozen)).toMatchObject({
+      chars: 12_000,
+      credit: { chars: 6000 }
+    });
+    expect(passFiguresFor(get(readingStats), 'v1', frozen).chars).toBe(6000);
+    // Unfrozen (a record on the old minute counter): credits explain it.
+    await record([credit('v2', 10, [1, 2, 3, 4, 5, 6], SIX, 60 * MIN, 6000)]);
+    const unfrozen = { timeReadInMinutes: 30, chars: 4000 };
+    expect(figuresFor(get(readingStats), 'v2', unfrozen)).toMatchObject({
+      chars: 6000,
+      credit: { chars: 6000 }
+    });
   });
 });
 

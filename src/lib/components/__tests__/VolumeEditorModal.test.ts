@@ -13,6 +13,8 @@ const stats = vi.hoisted(() => {
     release: () => release(),
     readingStatsReady: vi.fn(() => gate),
     chars: 0,
+    /** The current pass's characters (`passFiguresFor`); `null` = the same as `chars`. */
+    passChars: null as number | null,
     figuresFor: vi.fn((state: { ready: boolean }) => ({
       minutes: state.ready ? 60 : 5,
       timeMs: 0,
@@ -30,7 +32,16 @@ vi.mock('#lib/reading-history/stats-store.js', async () => {
   return {
     readingStats: readingStats.store,
     readingStatsReady: stats.readingStatsReady,
-    figuresFor: stats.figuresFor
+    figuresFor: stats.figuresFor,
+    passFiguresFor: vi.fn(() => ({
+      pass: 0,
+      chars: stats.passChars ?? stats.chars,
+      credit: { timeMs: 0, chars: 0 }
+    })),
+    creditsFor: vi.fn(
+      (state: { byVolume?: Map<string, { credits: unknown[] }> }, volume: string) =>
+        state.byVolume?.get(volume)?.credits ?? []
+    )
   };
 });
 
@@ -209,6 +220,7 @@ describe('VolumeEditorModal reading progress (#224)', () => {
   });
   afterEach(() => {
     stats.chars = 0;
+    stats.passChars = null;
     closeVolumeEditor();
     cleanup();
   });
@@ -232,6 +244,27 @@ describe('VolumeEditorModal reading progress (#224)', () => {
     // The record's position count: 4 pages of 50 characters.
     expect(update.chars).toBe(200);
     expect(update.charsRead).toBeUndefined();
+  });
+
+  it("shows this pass's characters beside the volume's, never more than it", async () => {
+    // A re-read: the lifetime counts both passes; the field is about this one.
+    stats.chars = 12_000;
+    stats.passChars = 3_000;
+    const first = render(VolumeEditorModal);
+    promptVolumeEditor('vol-1');
+    await waitFor(() => expect(text('editor-chars')).toBe('3,000 / 5,000'));
+    closeVolumeEditor();
+    first.unmount();
+    // Pages counted at an older OCR can exceed today's count: shown as the whole volume.
+    stats.passChars = 7_000;
+    const { getByText } = render(VolumeEditorModal);
+    promptVolumeEditor('vol-1');
+    await waitFor(() => expect(text('editor-chars')).toBe('5,000 / 5,000'));
+    // Reset All takes the pass's own figure back, not the lifetime's.
+    await fireEvent.click(getByText('Reset All'));
+    await fireEvent.click(getByText('Save'));
+    await waitFor(() => expect(editor.updateVolumeStats).toHaveBeenCalled());
+    expect(editor.updateVolumeStats.mock.calls[0][1].charsRead).toEqual({ from: 7_000, to: 0 });
   });
 
   it('Reset All zeroes the characters too, as an explicit edit', async () => {

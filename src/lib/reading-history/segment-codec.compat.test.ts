@@ -62,7 +62,8 @@ const credit: ReadingEvent = {
   volume: 'vol-1',
   pages: [3, 4, 5],
   page_chars: [40, 40, 40],
-  time_ms: 120000
+  time_ms: 120000,
+  total_chars: 400
 };
 
 describe('segments as an app that has not updated reads them', () => {

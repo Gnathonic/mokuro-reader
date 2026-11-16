@@ -339,9 +339,116 @@ test('a credit reaches another device through sync, and counts the same there', 
     .map(([, entry]) => JSON.parse(inflateRawSync(entry.body).toString('utf8')));
   const credited = segments.filter((s) => s.rows.some((row: unknown[]) => row[0] === 6));
   expect(credited.map((s) => s.format)).toEqual([2]);
+  // The row carries the volume's characters: every device bounds the pass by it.
+  const row = credited[0].rows.find((r: unknown[]) => r[0] === 6);
+  expect(row[7]).toBe(PAGES * CHARS);
   await sync(phone);
   await expect
     .poll(async () => (await figures(phone, VOL1)).credit, { timeout: 15000 })
     .toEqual({ timeMs: 20 * MIN, chars: 2000 });
   expect((await figures(phone, VOL1)).chars).toBe(60 * CHARS);
+});
+
+/**
+ * Vol 2 as a library from before reading history has it: read on the old
+ * counter (`legacyStats`, frozen a day ago), up to `page` of its pages.
+ */
+async function readBeforeHistory(page: Page, through: number) {
+  await page.evaluate(
+    async ({ VOL2, CHARS, MIN, PAGES, through }) => {
+      const { VolumeData, volumesWithTrash } = await import('/src/lib/settings/volume-data.ts');
+      const finished = through === PAGES;
+      volumesWithTrash.update((all) => ({
+        ...all,
+        [VOL2]: new VolumeData({
+          progress: through,
+          chars: through * CHARS,
+          completed: finished,
+          ...(finished && { completedAt: new Date(Date.now() - 86_400_000).toISOString() }),
+          lastProgressUpdate: new Date(Date.now() - 86_400_000).toISOString(),
+          legacyStats: {
+            time_ms: through * MIN,
+            chars: through * CHARS,
+            before: Date.now() - 86_400_000
+          }
+        })
+      }));
+    },
+    { VOL2, CHARS, MIN, PAGES, through }
+  );
+}
+
+/** The volume editor's "Characters Read" for a volume, opened from its card. */
+async function editorChars(page: Page, volume: string) {
+  await cardMenu(page, volume, 'Edit');
+  const chars = page.getByTestId('editor-chars');
+  await expect(chars).toBeVisible();
+  return chars;
+}
+
+test('a credit never counts past the volume: reading from before history, un-read and marked again', async ({
+  browser
+}, testInfo) => {
+  const page = await device(browser);
+  await installSeries(page);
+  await readBeforeHistory(page, PAGES);
+  await expect.poll(async () => (await figures(page, VOL2)).chars).toBe(PAGES * CHARS);
+  await openSeries(page);
+
+  // Off and on again: the old reading already holds the whole volume.
+  await cardMenu(page, VOL2, 'Mark as unread');
+  await expect.poll(async () => (await figures(page, VOL2)).completed).toBe(false);
+  await cardMenu(page, VOL2, 'Mark as read');
+  await expect(snackbar(page)).toContainText('Marked Vol 2 as read');
+  await expect(snackbar(page)).not.toContainText('counted');
+  await expect(sheet(page)).toBeHidden();
+  await expect.poll(async () => (await figures(page, VOL2)).completed).toBe(true);
+  expect(await figures(page, VOL2)).toMatchObject({
+    chars: PAGES * CHARS,
+    credit: { timeMs: 0, chars: 0 }
+  });
+
+  const chars = await editorChars(page, VOL2);
+  await expect(chars).toHaveText('6,000 / 6,000');
+  await page.screenshot({
+    path: testInfo.outputPath('editor-finished-before-history.png'),
+    animations: 'disabled'
+  });
+});
+
+test('a credit never counts past the volume: half read before history, the page moved back', async ({
+  browser
+}, testInfo) => {
+  const page = await device(browser);
+  await installSeries(page);
+  await readBeforeHistory(page, 30);
+  await openSeries(page);
+
+  // The editor's page field moves the position only.
+  await cardMenu(page, VOL2, 'Edit');
+  await page.locator('#progress').fill('5');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect.poll(async () => (await figures(page, VOL2)).progress).toBe(5);
+
+  // What is left is the second half, whatever the page says now.
+  await cardMenu(page, VOL2, 'Mark as read');
+  await expect(sheet(page)).toContainText('30 of its 60 pages weren’t read in this app.');
+  await expect(page.getByTestId('mark-read-estimate')).toContainText('30 pages · 3,000 characters');
+  await page.screenshot({
+    path: testInfo.outputPath('sheet-half-before-history.png'),
+    animations: 'disabled'
+  });
+  await page.getByTestId('mark-read-count').click();
+  await expect.poll(async () => (await figures(page, VOL2)).credit.chars).toBe(30 * CHARS);
+  expect((await figures(page, VOL2)).chars).toBe(PAGES * CHARS);
+
+  const chars = await editorChars(page, VOL2);
+  await expect(chars).toHaveText('6,000 / 6,000');
+  await expect(page.getByTestId('editor-credit')).toContainText(
+    'Counted when marked read: 30 min · 3,000 characters (30 pages)'
+  );
+  await page.screenshot({
+    path: testInfo.outputPath('editor-half-before-history.png'),
+    animations: 'disabled'
+  });
 });

@@ -31,7 +31,12 @@
   import type { VolumeMetadata } from '#lib/types/index.js';
   import { get } from 'svelte/store';
   import { volumesWithTrash } from '#lib/settings/volume-data.js';
-  import { figuresFor, readingStats, readingStatsReady } from '#lib/reading-history/stats-store.js';
+  import {
+    figuresFor,
+    passFiguresFor,
+    readingStats,
+    readingStatsReady
+  } from '#lib/reading-history/stats-store.js';
   import { isVolumeFinished } from '#lib/util/volume-helpers.js';
   import VolumeEditorCoverPicker from './VolumeEditorCoverPicker.svelte';
   import {
@@ -77,14 +82,21 @@
   let missingPagePaths = $state<string[]>([]);
 
   /**
-   * Characters read, as the stats count them (history + baseline, credits
-   * included). A page edit moves the POSITION only (#224): the old linear
-   * estimate here recorded the difference as reading, and after a mark it
-   * deducted pages that were never read.
+   * Characters read in the CURRENT pass, as the stats count them (views,
+   * credits, edits, and the pre-history baseline's share; `passFiguresFor`) —
+   * this time through the volume, beside its size. The lifetime figure counts
+   * every re-read and is no fraction of one volume. A page edit moves the
+   * POSITION only (#224): the old linear estimate here recorded the
+   * difference as reading, and after a mark it deducted pages that were
+   * never read.
    */
   let charsRead = $state(0);
   /** "Reset All" asks the save to zero the characters as well as the time, and un-read. */
   let resetChars = $state(false);
+  /** Shown beside the volume's size: never more than it (an older OCR's count can be). */
+  let charsShown = $derived(
+    resetChars ? 0 : characterCount > 0 ? Math.min(charsRead, characterCount) : charsRead
+  );
   /** Each page's characters and the pages not read here (`prepareSheetVolume`). */
   let sheetVolume = $state<SheetVolume | null>(null);
   /** The record says finished (stored flag or page): "up to" defaults to the last page. */
@@ -264,8 +276,8 @@
       timeReadInMinutes = figures.minutes;
       updateTimeFromMinutes(timeReadInMinutes);
     }
-    charsRead = figures.chars;
-    const credits = currentPassCredits(stats, volumeUuid);
+    charsRead = passFiguresFor(stats, volumeUuid, record).chars;
+    const credits = currentPassCredits(stats, volumeUuid, record);
     const ms = credits.reduce((n, c) => n + c.ms, 0);
     const chars = credits.reduce((n, c) => n + c.chars, 0);
     const pages = credits.reduce((n, c) => n + c.pages.length, 0);
@@ -738,9 +750,7 @@
               <Label class="mb-1 text-gray-500">Characters Read</Label>
               <div class="flex items-center gap-2 py-2">
                 <span class="text-sm text-gray-600 dark:text-gray-400" data-testid="editor-chars">
-                  {(resetChars ? 0 : charsRead).toLocaleString()} / {(
-                    characterCount ?? 0
-                  ).toLocaleString()}
+                  {charsShown.toLocaleString()} / {(characterCount ?? 0).toLocaleString()}
                 </span>
               </div>
             </div>

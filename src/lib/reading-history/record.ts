@@ -1,6 +1,6 @@
 import { generateUUID } from '#lib/util/uuid.js';
 import type { HistoryDexie } from './history-db';
-import { creditRuns } from './segment-codec';
+import { SegmentFormatError, creditRuns } from './segment-codec';
 import type { EventPayload, PagePayload, PauseCount, ReadingEvent } from './types';
 
 const DEVICE_ID_KEY = 'device_id';
@@ -43,8 +43,14 @@ export async function appendEvent(
 ): Promise<ReadingEvent> {
   // A credit no segment could carry is refused HERE, before it is stored: once
   // stored it is permanent, and its month would fail to encode on this device
-  // and (were it written) to decode on every other one.
-  if (payload.kind === 'credit') creditRuns(payload);
+  // and (were it written) to decode on every other one. A new credit always
+  // says how big its volume is: without that the stats count it as nothing.
+  if (payload.kind === 'credit') {
+    if (payload.total_chars === undefined) {
+      throw new SegmentFormatError('a credit must say how many characters its volume holds');
+    }
+    creditRuns(payload);
+  }
   const event = await db.transaction('rw', db.history_meta, db.reading_events, async () => {
     const { device, seq } = await takeSeqs(db, 1);
     const stored = { ...payload, device, seq, t } as ReadingEvent;
