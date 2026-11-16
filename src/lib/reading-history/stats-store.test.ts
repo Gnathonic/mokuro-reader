@@ -292,6 +292,84 @@ describe('credits (#224)', () => {
       credit: { chars: 6000 }
     });
   });
+
+  /**
+   * The review's counterexample: native views from before the freeze (a
+   * record merge kept a later device's snapshot), pages 1–4 read and 5–10
+   * skimmed, all of it in the old counter's 1,000.
+   */
+  const readThenSkimmed = (volume: string) => [
+    ...[1, 2, 3, 4].map((page) => view(volume, page * MIN, page, 100, MIN)),
+    ...[5, 6, 7, 8, 9, 10].map((page) => view(volume, (10 + page) * MIN, page, 100, 500))
+  ];
+  const frozenAfter = { legacyStats: { time_ms: 10 * MIN, chars: 1000, before: 30 * MIN } };
+  const TEN = Array.from({ length: 10 }, () => 100);
+
+  it('a credit on pages skimmed before the freeze counts as a credit, never as baseline', async () => {
+    await record(readThenSkimmed('sk'));
+    const before = figuresFor(get(readingStats), 'sk', frozenAfter);
+    expect(before).toMatchObject({ chars: 400, baseline: { chars: 0 } });
+    // The sheet offers the skimmed pages: they were never read.
+    expect(pagesNotReadHere(get(readingStats), 'sk', TEN, frozenAfter)).toEqual([
+      5, 6, 7, 8, 9, 10
+    ]);
+    await record([credit('sk', 40 * MIN, [5, 6, 7, 8, 9, 10], TEN.slice(4), 6 * MIN, 1000)]);
+    const after = figuresFor(get(readingStats), 'sk', frozenAfter);
+    expect(after).toMatchObject({
+      chars: 1000,
+      baseline: { chars: 0 },
+      credit: { chars: 600, timeMs: 6 * MIN }
+    });
+    // Speed: the same reading as before the mark.
+    expect(measuredFigures(after)).toEqual(measuredFigures(before));
+    expect(creditsFor(get(readingStats), 'sk', frozenAfter)[0].chars).toBe(600);
+  });
+
+  it('… and with an older editor’s adjust filling the pass, the credit adds nothing', async () => {
+    const adjust: ReadingEvent = {
+      device: 'dev-c',
+      seq: ++seq,
+      t: 35 * MIN,
+      kind: 'adjust',
+      volume: 'sa',
+      time_delta_ms: 0,
+      chars_delta: 600
+    };
+    await record([...readThenSkimmed('sa'), adjust]);
+    const before = figuresFor(get(readingStats), 'sa', frozenAfter);
+    expect(before.chars).toBe(1000);
+    await record([credit('sa', 40 * MIN, [5, 6, 7, 8, 9, 10], TEN.slice(4), 6 * MIN, 1000)]);
+    const stats = get(readingStats);
+    expect(figuresFor(stats, 'sa', frozenAfter)).toMatchObject({
+      chars: 1000,
+      credit: { chars: 0 }
+    });
+    expect(passFiguresFor(stats, 'sa', frozenAfter).chars).toBe(1000);
+    expect(measuredFigures(figuresFor(stats, 'sa', frozenAfter))).toEqual(measuredFigures(before));
+  });
+
+  it('Reset All takes the pass to zero, the baseline’s share included; reading again counts again', async () => {
+    const legacyStats = { time_ms: 30 * MIN, chars: 4000, before: 1 };
+    await record([
+      view('rs', 10, 5, 1000, 5 * MIN),
+      credit('rs', 20, [6], [1000], 5 * MIN, 6000),
+      { device: 'dev-a', seq: ++seq, t: 30, kind: 'reset', volume: 'rs' }
+    ]);
+    let stats = get(readingStats);
+    expect(passFiguresFor(stats, 'rs', { legacyStats })).toMatchObject({ pass: 1, chars: 0 });
+    expect(figuresFor(stats, 'rs', { legacyStats })).toMatchObject({
+      chars: 0,
+      baseline: { chars: 0 },
+      credit: { chars: 0 }
+    });
+    expect(pagesNotReadHere(stats, 'rs', SIX, { legacyStats })).toEqual([1, 2, 3, 4, 5, 6]);
+    // Read through again in the app.
+    await record([1, 2, 3, 4, 5, 6].map((page) => view('rs', 100 + page * MIN, page, 1000, MIN)));
+    stats = get(readingStats);
+    expect(passFiguresFor(stats, 'rs', { legacyStats }).chars).toBe(6000);
+    expect(figuresFor(stats, 'rs', { legacyStats }).chars).toBe(6000);
+    expect(pagesNotReadHere(stats, 'rs', SIX, { legacyStats })).toEqual([]);
+  });
 });
 
 describe('recomputation', () => {

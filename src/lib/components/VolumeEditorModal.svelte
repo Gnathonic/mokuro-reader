@@ -464,7 +464,9 @@
         timeRead: { from: loadedMinutes, to: timeReadInMinutes },
         // Reset All un-reads too: the card's check follows the stored flag
         // (`isVolumeFinished`), so page 0 alone would leave it showing read.
-        ...(resetChars && { charsRead: { from: charsRead, to: 0 }, completed: false }),
+        // The pass's characters go to zero and its pages may be read again (a
+        // `reset` event: every device's stats apply it).
+        ...(resetChars && { reset: true, completed: false }),
         ...(completedAt && { completedAt }),
         series_uuid: finalSeriesUuid,
         series_title: finalSeriesTitle,

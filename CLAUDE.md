@@ -1674,8 +1674,8 @@ uncapped `dwell_ms`, emitted when the view ends via `ViewTracker`; a hidden
 tab has no view), `adjust` (volume editor time/chars edits), `restart`
 ("restart series"), `forget` (delete stats), `position` (an answer to a
 cross-device position offer — see below), `resolve` (an answer about a long
-pause — see below), `credit` / `retract` (pages counted by "Mark as read" —
-see below). Record through `recordEvent` (`recordView` for a view and
+pause — see below), `credit` / `retract` / `reset` (pages counted by "Mark as
+read", and the editor's Reset All — see below). Record through `recordEvent` (`recordView` for a view and
 its answer in one transaction, `recordResolve` for a later answer), which
 never throw and load the DB module lazily (`volume-data.ts` imports it; many
 suites mock `dexie` bare).
@@ -1897,8 +1897,26 @@ never saw read (spec `2026-11-07-mark-as-read-credit-design.md`;
   decodes but counts nothing. Per-volume "X / volume" figures are the
   CURRENT pass (`passFiguresFor`); `figuresFor` is the lifetime, re-reads
   included. Pinned by `credit-bound.test.ts` (real states through the flow)
-  and `credit-bound.property.test.ts` (a seeded sweep).
-- A `credit` or `retract` makes its month segment format 2; every other
+  and `credit-bound.property.test.ts` (a seeded sweep, snapshots frozen at
+  any point of the history).
+- **A credit never explains the baseline.** The engine's timeline (what
+  `totalsBefore` gives `unexplained`) holds views and edits only, and its
+  skims ignore claims. A record merge can keep a snapshot frozen AFTER other
+  devices' views; were a credit on a page skimmed before that freeze to stop
+  the skim explaining the snapshot, the baseline would grow by the page and
+  the credit's characters would come back as measured "Before history"
+  reading — past the budget, into speed, and out of reach of Remove. So the
+  baseline, and every measured figure, is the same with or without credits.
+  (An UNFROZEN snapshot is the record's live count, which a mark has already
+  moved: there, as before, everything explains it, credits too.)
+- **Reset All is a `reset` event**, not a characters adjust: it ends its pass
+  (a pass for the stats only — no archive, no position offer, unlike
+  `restart`) and takes that pass to zero, the baseline's share included; its
+  credits claim nothing. Pages may then be read or credited again. (An adjust
+  of minus the pass left every page "read in this pass": reading the volume
+  again counted nothing, and the editor sat at 0 / N for good.) Time is the
+  editor's own adjust, as before.
+- A `credit`, `retract` or `reset` makes its month segment format 2; every other
   segment stays format 1 byte for byte. Because every other device refuses
   a whole device-month over one bad row, forever, `appendEvent` refuses a
   credit no segment could carry (`creditRuns`: finite non-negative time and

@@ -23,15 +23,20 @@ import type { ReadingEvent } from './types';
 
 /*
  * A sweep over the states a volume's history can be in (#224): reading here
- * and on other devices, skims, converted page turns, older editors' adjusts,
- * Reset All, restarts, reading from before history (frozen snapshots with
- * archived reads), pages counted at an older OCR, credits made by THIS flow
+ * and on other devices, skims, converted page turns (some too fast to say
+ * what was read), older editors' adjusts, this editor's Reset All, restarts,
+ * reading from before history (snapshots frozen at any point of the history —
+ * views, skims and credits before the freeze included — with archived
+ * reads), pages counted at an older OCR, credits made by THIS flow
  * (`pagesNotReadHere` → the credit `markRead` records) and by a device that
  * had not seen the rest, retracts, double marks. Whatever the state:
  *
  * - a pass never counts more than the volume once credits are in: what
  *   credits add stops at the volume's characters, less what the pass counts
- *   without them (views, adjusts, the baseline's share);
+ *   without them (views, adjusts, the baseline's share) — in the engine's
+ *   totals and in the figures (`passFiguresFor`, the baseline in);
+ * - the baseline is the same with or without credits, and a pass Reset All
+ *   ended counts nothing;
  * - what the sheet offers fits in what the pass has left;
  * - a credit counts only pages it claimed, each page once per pass, never one
  *   a view read, never more of a page than the page holds;
@@ -100,29 +105,35 @@ function build(r: Rng): Case {
     ({ device, seq: ++seq, t: tick(), volume: VOLUME, ...payload }) as ReadingEvent;
   const cumulative = (page: number, counts: number[]) => sum(counts.slice(0, page));
 
-  // Reading from before history: the old counter's lump, frozen at `before`.
+  // Reading from before history: the old counter's lump, frozen at `before`
+  // — at ANY point of the history, not only before it: a record merge keeps
+  // the winning record's snapshot, so a device that froze later leaves other
+  // devices' views, skims, edits and even credits before `before`.
   const record: BaselineSource = {};
-  if (r.chance(0.4)) {
-    const archived = r.chance(0.3) ? [{ at: t - 10 * MIN, chars: size }] : [];
-    if (archived.length > 0) {
-      events.push({
-        device: `legacy:${VOLUME}`,
-        seq: archived[0].at,
-        t: archived[0].at,
-        kind: 'restart',
-        volume: VOLUME
-      });
-    }
+  const archived = r.chance(0.12) ? [{ at: t - 30 * MIN, chars: size }] : [];
+  if (archived.length > 0) {
+    events.push({
+      device: `legacy:${VOLUME}`,
+      seq: archived[0].at,
+      t: archived[0].at,
+      kind: 'restart',
+      volume: VOLUME
+    });
+  }
+  const steps = r.int(1, 16);
+  /** The step the snapshot is frozen at (`steps` = after them all); −1 = none. */
+  const freezeAt = r.chance(0.45) ? r.int(0, steps) : -1;
+  const freeze = () => {
     const position = cumulative(r.int(0, pages), pageChars);
     record.archivedReads = archived;
     record.legacyStats = {
       time_ms: r.int(0, 60) * MIN,
       chars: position + sum(archived.map((a) => a.chars)),
-      before: t + MIN
+      before: t + 1
     };
     pageExact = false;
-  }
-  // Converted page turns (before the freeze), one per spread.
+  };
+  // Converted page turns, one per spread; some too fast to say what was read.
   if (r.chance(0.25)) {
     for (let page = 1; page <= pages; page += 2) {
       const at = t - (pages - page + 1) * MIN;
@@ -136,7 +147,7 @@ function build(r: Rng): Case {
         last_page: page,
         page_chars: [0],
         chars_before: cumulative(page, pageChars),
-        dwell_ms: page + 2 <= pages ? MIN : null,
+        dwell_ms: page + 2 <= pages ? (r.chance(0.3) ? 100 : MIN) : null,
         layout: 'unknown',
         orientation: 'unknown',
         viewport: null
@@ -146,11 +157,11 @@ function build(r: Rng): Case {
   }
   t += 2 * MIN;
 
-  const steps = r.int(1, 14);
   for (let step = 0; step < steps; step++) {
+    if (step === freezeAt) freeze();
     const roll = r.next();
     if (roll < 0.35) {
-      // A page view; sometimes counted at an older OCR, sometimes a skim.
+      // A page view; sometimes counted at an older OCR, often a skim.
       const page = r.int(1, pages);
       const old = r.chance(0.2);
       if (old) pageExact = false;
@@ -162,18 +173,21 @@ function build(r: Rng): Case {
           last_page: page,
           page_chars: [counts[page - 1]],
           chars_before: cumulative(page - 1, counts),
-          dwell_ms: r.chance(0.2) ? 500 : r.int(10, 90) * 1000,
+          dwell_ms: r.chance(0.35) ? 500 : r.int(10, 90) * 1000,
           layout: 'single',
           orientation: 'portrait',
           viewport: null
         })
       );
-    } else if (roll < 0.45) {
-      // An older editor's page edit (+) or Reset All (−).
+    } else if (roll < 0.42) {
+      // An older editor's page edit (+) or Reset All (−), recorded as characters.
       events.push(
         ev({ kind: 'adjust', time_delta_ms: 0, chars_delta: r.int(-size, size) }, 'dev-c')
       );
       pageExact = false;
+    } else if (roll < 0.47) {
+      // This editor's Reset All.
+      events.push(ev({ kind: 'reset' }, 'dev-c'));
     } else if (roll < 0.52) {
       events.push(ev({ kind: 'restart' }));
     } else if (roll < 0.85) {
@@ -217,6 +231,7 @@ function build(r: Rng): Case {
       }
     }
   }
+  if (freezeAt === steps) freeze();
   return { pageChars, events, record, pageExact };
 }
 
@@ -241,6 +256,11 @@ function check({ pageChars, events, record, pageExact }: Case) {
   const reference = figuresFor(bare, VOLUME, record);
   expect(measured.chars).toBeCloseTo(reference.chars, 6);
   expect(measured.timeMs).toBeCloseTo(reference.timeMs, 6);
+  // The baseline (measured "Before history" reading) never moves for a credit.
+  expect(figures.baseline.chars).toBeCloseTo(reference.baseline.chars, 6);
+  expect(figures.baseline.timeMs).toBeCloseTo(reference.baseline.timeMs, 6);
+  // So the lifetime figure is at most what reading alone counts, plus the credits.
+  expect(figures.chars).toBeLessThanOrEqual(reference.chars + figures.credit.chars + 1e-6);
 
   // What credits count matches the figures, and is never negative.
   expect(figures.credit.chars).toBeGreaterThanOrEqual(0);
@@ -255,6 +275,18 @@ function check({ pageChars, events, record, pageExact }: Case) {
     expect(creditChars).toBeLessThanOrEqual(Math.max(0, size - without) + 1e-6);
     expect(totals.passes[pass].chars).toBeLessThanOrEqual(Math.max(size, without) + 1e-6);
     if (pageExact) expect(totals.passes[pass].chars).toBeLessThanOrEqual(size);
+
+    // The same, as the figures count each pass: the baseline's share in it.
+    const counted = passFiguresFor(state, VOLUME, record, pass);
+    const countedWithout = passFiguresFor(bare, VOLUME, record, pass).chars;
+    expect(counted.chars).toBeLessThanOrEqual(Math.max(size, countedWithout) + 1e-6);
+    expect(counted.credit.chars).toBeLessThanOrEqual(Math.max(0, size - countedWithout) + 1e-6);
+    expect(counted.credit.chars).toBeGreaterThanOrEqual(0);
+    // A pass Reset All ended counts nothing, credits and baseline included.
+    if (totals.passes[pass].reset) {
+      expect(counted.chars).toBe(0);
+      expect(counted.credit.chars).toBe(0);
+    }
 
     // Pages: claimed once, never one a view read, never more than the page holds.
     const seen = new Set<number>();

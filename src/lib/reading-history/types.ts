@@ -112,6 +112,19 @@ export interface RetractPayload {
   target: [device: string, seq: number];
 }
 
+/**
+ * The volume editor's "Reset All" (#224): the characters the current pass
+ * counted — its views', credits' and edits', and the pre-history baseline's
+ * share of it — count as nothing from here, and its pages may be read again.
+ * A pass of its own for the stats only: unlike `restart` it archives nothing
+ * and moves no position (the record's page is the editor's to set). Time is
+ * the editor's own `adjust`.
+ */
+export interface ResetPayload {
+  kind: 'reset';
+  volume: string;
+}
+
 export type EventPayload =
   | PagePayload
   | AdjustPayload
@@ -120,7 +133,8 @@ export type EventPayload =
   | PositionPayload
   | ResolvePayload
   | CreditPayload
-  | RetractPayload;
+  | RetractPayload
+  | ResetPayload;
 
 /** `t` = epoch ms on the recording device (for `page`: when the view opened). */
 export type ReadingEvent = { device: string; seq: number; t: number } & EventPayload;

@@ -243,7 +243,7 @@ describe('VolumeEditorModal reading progress (#224)', () => {
     expect(update.progress).toBe(4);
     // The record's position count: 4 pages of 50 characters.
     expect(update.chars).toBe(200);
-    expect(update.charsRead).toBeUndefined();
+    expect(update.reset).toBeUndefined();
   });
 
   it("shows this pass's characters beside the volume's, never more than it", async () => {
@@ -257,17 +257,12 @@ describe('VolumeEditorModal reading progress (#224)', () => {
     first.unmount();
     // Pages counted at an older OCR can exceed today's count: shown as the whole volume.
     stats.passChars = 7_000;
-    const { getByText } = render(VolumeEditorModal);
+    render(VolumeEditorModal);
     promptVolumeEditor('vol-1');
     await waitFor(() => expect(text('editor-chars')).toBe('5,000 / 5,000'));
-    // Reset All takes the pass's own figure back, not the lifetime's.
-    await fireEvent.click(getByText('Reset All'));
-    await fireEvent.click(getByText('Save'));
-    await waitFor(() => expect(editor.updateVolumeStats).toHaveBeenCalled());
-    expect(editor.updateVolumeStats.mock.calls[0][1].charsRead).toEqual({ from: 7_000, to: 0 });
   });
 
-  it('Reset All zeroes the characters too, as an explicit edit', async () => {
+  it('Reset All zeroes the characters too: a reset of the pass, recorded on save', async () => {
     const { getByText } = render(VolumeEditorModal);
     promptVolumeEditor('vol-1');
     await waitFor(() => expect(progressInput()).not.toBeNull());
@@ -275,7 +270,12 @@ describe('VolumeEditorModal reading progress (#224)', () => {
     expect(text('editor-chars')).toBe('0 / 5,000');
     await fireEvent.click(getByText('Save'));
     await waitFor(() => expect(editor.updateVolumeStats).toHaveBeenCalled());
-    expect(editor.updateVolumeStats.mock.calls[0][1].charsRead).toEqual({ from: 1234, to: 0 });
+    expect(editor.updateVolumeStats.mock.calls[0][1]).toMatchObject({
+      reset: true,
+      progress: 0,
+      timeRead: { from: 60, to: 0 }
+    });
+    expect('charsRead' in editor.updateVolumeStats.mock.calls[0][1]).toBe(false);
   });
 
   it('Reset All un-reads a finished volume; a plain save leaves the flag alone', async () => {

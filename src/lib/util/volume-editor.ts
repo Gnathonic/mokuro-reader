@@ -234,13 +234,13 @@ export function updateVolumeStats(
      */
     timeRead?: { from: number; to: number };
     /**
-     * Characters read in the current pass: `from` what the stats showed when
-     * the editor opened (`passFiguresFor`), `to` what the user set ("Reset
-     * All" sets 0). The difference is recorded as an `adjust`. A page edit is NOT a characters edit (#224): the
+     * "Reset All": the current pass's characters go to zero, and its pages
+     * may be read again — recorded as a `reset` event, which the stats apply
+     * on every device (#224). A page edit is NOT a characters edit: the
      * record's `chars` is the position's count, and a mark-as-read set it to
      * the whole volume's — the difference was never reading.
      */
-    charsRead?: { from: number; to: number };
+    reset?: boolean;
     completed?: boolean;
     /**
      * When the current pass was finished, as the user corrected it (#304). An
@@ -254,15 +254,11 @@ export function updateVolumeStats(
   }
 ): void {
   let timeDeltaMs = 0;
-  let charsDelta = 0;
 
   volumesWithTrash.update((prev: Volumes) => {
     const currentVolume = prev[volumeUuid] || new VolumeData();
     if (updates.timeRead) {
       timeDeltaMs = (updates.timeRead.to - updates.timeRead.from) * 60000;
-    }
-    if (updates.charsRead) {
-      charsDelta = updates.charsRead.to - updates.charsRead.from;
     }
     // A stat edit is a user action and must win the next merge like a page
     // turn does; without a fresh stamp the other device's older copy replaced
@@ -312,14 +308,15 @@ export function updateVolumeStats(
   });
 
   // Reading history: the edit is an event, so every device's stats can apply it.
-  if (timeDeltaMs !== 0 || charsDelta !== 0) {
+  if (timeDeltaMs !== 0) {
     void recordEvent({
       kind: 'adjust',
       volume: volumeUuid,
       time_delta_ms: timeDeltaMs,
-      chars_delta: charsDelta
+      chars_delta: 0
     });
   }
+  if (updates.reset) void recordEvent({ kind: 'reset', volume: volumeUuid });
 }
 
 /** A stored completion date as the editor's `<input type="date">` value (local day). */

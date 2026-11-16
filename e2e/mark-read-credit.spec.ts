@@ -452,3 +452,148 @@ test('a credit never counts past the volume: half read before history, the page 
     animations: 'disabled'
   });
 });
+
+/**
+ * Vol 2 as another device left it before this record's snapshot was frozen
+ * (a record merge kept the later device's snapshot): pages 1..`read` read, the
+ * rest skimmed (half a second a page), two days ago; finished, and the old
+ * counter's whole volume frozen a day ago.
+ */
+async function readThenSkimmedElsewhere(page: Page, read: number) {
+  await page.evaluate(
+    async ({ VOL2, CHARS, MIN, PAGES, read }) => {
+      const { historyDb } = await import('/src/lib/reading-history/history-db.ts');
+      const { notifyEventsRecorded } = await import('/src/lib/reading-history/record.ts');
+      const { VolumeData, volumesWithTrash } = await import('/src/lib/settings/volume-data.ts');
+      const t0 = Date.now() - 2 * 86_400_000;
+      const events = Array.from({ length: PAGES }, (_, i) => ({
+        device: 'e2e-other-device',
+        seq: i + 1,
+        t: t0 + i * MIN,
+        kind: 'page' as const,
+        volume: VOL2,
+        first_page: i + 1,
+        last_page: i + 1,
+        page_chars: [CHARS],
+        chars_before: i * CHARS,
+        dwell_ms: i < read ? MIN : 500,
+        layout: 'single' as const,
+        orientation: 'portrait' as const,
+        viewport: null
+      }));
+      await historyDb().reading_events.bulkAdd(events);
+      notifyEventsRecorded(events);
+      volumesWithTrash.update((all) => ({
+        ...all,
+        [VOL2]: new VolumeData({
+          progress: PAGES,
+          chars: PAGES * CHARS,
+          completed: true,
+          completedAt: new Date(Date.now() - 86_400_000).toISOString(),
+          lastProgressUpdate: new Date(Date.now() - 86_400_000).toISOString(),
+          legacyStats: {
+            time_ms: read * MIN + (PAGES - read) * 500,
+            chars: PAGES * CHARS,
+            before: Date.now() - 86_400_000
+          }
+        })
+      }));
+    },
+    { VOL2, CHARS, MIN, PAGES, read }
+  );
+}
+
+/** What the stats measured (the figures less what was counted when marked read). */
+async function measured(page: Page, volume: string) {
+  const f = await figures(page, volume);
+  return { chars: f.chars - f.credit.chars, timeMs: f.timeMs - f.credit.timeMs };
+}
+
+test('pages skimmed before history froze: counted as marked read, never as measured reading', async ({
+  browser
+}, testInfo) => {
+  const page = await device(browser);
+  await installSeries(page);
+  await readThenSkimmedElsewhere(page, 20);
+  // 20 pages read, 40 skimmed: the skims explain the rest of the old count.
+  await expect.poll(async () => (await figures(page, VOL2)).chars).toBe(20 * CHARS);
+  const before = await measured(page, VOL2);
+  await openSeries(page);
+
+  await cardMenu(page, VOL2, 'Mark as unread');
+  await expect.poll(async () => (await figures(page, VOL2)).completed).toBe(false);
+  await cardMenu(page, VOL2, 'Mark as read');
+  await expect(sheet(page)).toContainText('40 of its 60 pages weren’t read in this app.');
+  await expect(page.getByTestId('mark-read-estimate')).toContainText('40 pages · 4,000 characters');
+  await page.getByTestId('mark-read-count').click();
+  await expect(snackbar(page)).toContainText('counted 4,000 characters');
+  await expect.poll(async () => (await figures(page, VOL2)).credit.chars).toBe(40 * CHARS);
+  expect((await figures(page, VOL2)).chars).toBe(PAGES * CHARS);
+  // Speed: the same reading as before the mark — the 4,000 are the credit's.
+  expect(await measured(page, VOL2)).toEqual(before);
+
+  const chars = await editorChars(page, VOL2);
+  await expect(chars).toHaveText('6,000 / 6,000');
+  await expect(page.getByTestId('editor-credit')).toContainText('4,000 characters (40 pages)');
+  await expect(page.getByTestId('editor-credit-remove')).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath('editor-skimmed-before-history.png'),
+    animations: 'disabled'
+  });
+});
+
+test('Reset All, then the volume read again in the app: it counts again, up to the volume', async ({
+  browser
+}, testInfo) => {
+  const page = await device(browser);
+  await installSeries(page);
+  await expect.poll(async () => (await figures(page, VOL1)).chars).toBe(40 * CHARS);
+  await openSeries(page);
+
+  const chars = await editorChars(page, VOL1);
+  await expect(chars).toHaveText('4,000 / 6,000');
+  await page.getByRole('button', { name: 'Reset All' }).click();
+  await expect(chars).toHaveText('0 / 6,000');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect.poll(async () => (await figures(page, VOL1)).chars).toBe(0);
+
+  // Read through again, here.
+  await page.evaluate(
+    async ({ VOL1, PAGES, CHARS, MIN }) => {
+      const { recordEvent } = await import('/src/lib/reading-history/record.ts');
+      const start = Date.now() + 1000;
+      for (let p = 1; p <= PAGES; p++) {
+        await recordEvent(
+          {
+            kind: 'page',
+            volume: VOL1,
+            first_page: p,
+            last_page: p,
+            page_chars: [CHARS],
+            chars_before: (p - 1) * CHARS,
+            dwell_ms: MIN,
+            layout: 'single',
+            orientation: 'portrait',
+            viewport: { w: 400, h: 800 }
+          },
+          start + p * MIN
+        );
+      }
+    },
+    { VOL1, PAGES, CHARS, MIN }
+  );
+  await expect.poll(async () => (await figures(page, VOL1)).chars).toBe(PAGES * CHARS);
+  const again = await editorChars(page, VOL1);
+  await expect(again).toHaveText('6,000 / 6,000');
+  await page.screenshot({
+    path: testInfo.outputPath('editor-read-again-after-reset.png'),
+    animations: 'disabled'
+  });
+  // Marking it read finds nothing left to count.
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await cardMenu(page, VOL1, 'Mark as read');
+  await expect(snackbar(page)).toContainText('Marked Vol 1 as read');
+  await expect(snackbar(page)).not.toContainText('counted');
+  await expect(sheet(page)).toBeHidden();
+  expect((await figures(page, VOL1)).chars).toBe(PAGES * CHARS);
+});

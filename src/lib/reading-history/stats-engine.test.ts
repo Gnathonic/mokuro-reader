@@ -1021,7 +1021,8 @@ describe('credits (#224: counting pages not read here)', () => {
           chars: 1000,
           creditChars: 400,
           creditMs: totals.creditMs,
-          volumeChars: 1000
+          volumeChars: 1000,
+          reset: false
         }
       ]);
     });
@@ -1103,21 +1104,129 @@ describe('credits (#224: counting pages not read here)', () => {
     });
   });
 
-  it('adds timeline entries so totalsBefore still sums', () => {
+  it('never explains the pre-history snapshot: the timeline holds reading and edits only', () => {
     const totals = countVolume(
       prepareVolume([view(0, 1, [100], 30_000), credit(10 * MIN, [2], [100], 5 * MIN)]),
       pace,
       AUTO
     );
+    expect(totals.readChars).toBe(200);
     expect(totalsBefore(totals, 5 * MIN)).toEqual({
       timeMs: 30_000,
       readChars: 100,
       skippedChars: 0
     });
+    // A snapshot frozen after the credit is explained by the view alone.
     expect(totalsBefore(totals, 11 * MIN)).toEqual({
-      timeMs: 30_000 + 5 * MIN,
-      readChars: 200,
+      timeMs: 30_000,
+      readChars: 100,
       skippedChars: 0
     });
+  });
+
+  it("the timeline's skims ignore claims: a credit on a skimmed page leaves what it explains", () => {
+    // Page 1 read, pages 2–3 skimmed (500 ms each), then a credit on 2–3.
+    const views = [
+      view(0, 1, [100], 30_000),
+      view(MIN, 2, [100], 500),
+      view(2 * MIN, 3, [100], 500)
+    ];
+    const without = countVolume(prepareVolume(views), pace, AUTO);
+    const totals = countVolume(
+      prepareVolume([...views, credit(10 * MIN, [2, 3], [100, 100], 2 * MIN)]),
+      pace,
+      AUTO
+    );
+    // Claimed pages are read now, not skimmed …
+    expect(without.skippedChars).toBe(200);
+    expect(totals.skippedChars).toBe(0);
+    expect(totals.creditChars).toBe(200);
+    // … but what explains a snapshot is the same with or without the credit.
+    for (const at of [MIN / 2, 5 * MIN, 20 * MIN]) {
+      expect(totalsBefore(totals, at)).toEqual(totalsBefore(without, at));
+    }
+  });
+});
+
+describe('reset (#224: the volume editor’s Reset All)', () => {
+  const pace = 100;
+  const reset = (t: number, device = 'dev-a'): ReadingEvent => ({
+    device,
+    seq: ++seq,
+    t,
+    kind: 'reset',
+    volume: 'vol'
+  });
+  const credit = (t: number, pages: number[], ms: number, total = 1000): ReadingEvent => ({
+    device: 'dev-a',
+    seq: ++seq,
+    t,
+    kind: 'credit',
+    volume: 'vol',
+    pages,
+    page_chars: pages.map(() => 100),
+    time_ms: ms,
+    total_chars: total
+  });
+  const readAll = (from: number) =>
+    Array.from({ length: 10 }, (_, i) => view(from + i * MIN, i + 1, [100], 30_000));
+
+  it('takes its pass to zero; the pages may be read again and count again', () => {
+    const totals = countVolume(
+      prepareVolume([...readAll(0), reset(20 * MIN), ...readAll(30 * MIN)]),
+      pace,
+      AUTO
+    );
+    expect(totals.pass).toBe(1);
+    expect(totals.passes.map((p) => [p.chars, p.reset])).toEqual([
+      [0, true],
+      [1000, false]
+    ]);
+    expect(totals.readChars).toBe(1000);
+    expect(totals.passRead.size).toBe(10);
+    // An edit of the device that reset; time is untouched (the editor's own adjust).
+    expect(totals.byDevice.get('dev-a')).toMatchObject({ readChars: 2000, adjustChars: -1000 });
+    expect(totals.timeMs).toBe(20 * 30_000);
+    // Speed keeps both reads' samples.
+    expect(totals.samples).toHaveLength(20);
+  });
+
+  it("its pass's credits count nothing; a new credit may claim the pages again", () => {
+    const totals = countVolume(
+      prepareVolume([
+        ...readAll(0).slice(0, 4),
+        credit(10 * MIN, [5, 6, 7, 8, 9, 10], 6 * MIN),
+        reset(20 * MIN),
+        credit(30 * MIN, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 10 * MIN)
+      ]),
+      pace,
+      AUTO
+    );
+    expect(totals.credits.map((c) => [c.pass, c.chars])).toEqual([
+      [0, 0],
+      [1, 1000]
+    ]);
+    expect(totals.passes.map((p) => p.chars)).toEqual([0, 1000]);
+    expect(totals.readChars).toBe(1000);
+    expect(totals.creditChars).toBe(1000);
+  });
+
+  it('a pass an older editor took below zero comes back to zero', () => {
+    const adjust: ReadingEvent = {
+      device: 'dev-c',
+      seq: ++seq,
+      t: 5 * MIN,
+      kind: 'adjust',
+      volume: 'vol',
+      time_delta_ms: 0,
+      chars_delta: -700
+    };
+    const totals = countVolume(
+      prepareVolume([...readAll(0).slice(0, 3), adjust, reset(20 * MIN)]),
+      pace,
+      AUTO
+    );
+    expect(totals.passes[0].chars).toBe(0);
+    expect(totals.readChars).toBe(0);
   });
 });

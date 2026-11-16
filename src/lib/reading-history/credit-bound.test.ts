@@ -68,6 +68,7 @@ import {
 } from './stats-store';
 import { _resetHistoryTurns, getVolumeEvents, loadHistoryTurns } from './turns-store';
 import { markRead, markUnread, prepareSheetVolume } from './mark-read-flow';
+import { updateVolumeStats } from '#lib/util/volume-editor.js';
 import type { ReadingEvent } from './types';
 
 const MIN = 60_000;
@@ -299,6 +300,75 @@ describe('a credit never takes a volume past its characters (#224)', () => {
     const sheet = await prepareSheetVolume(volume('a'));
     // 700 of the volume were counted before history: 300 are left, its last pages.
     expect(sheet.notRead).toEqual([8, 9, 10]);
+  });
+
+  it('pages skimmed before the freeze: counted as marked read, never as reading from before history', async () => {
+    // Another device read pages 1–2 and skimmed 3–10 before this record's
+    // snapshot was frozen (a record merge kept the later device's snapshot).
+    const t0 = Date.now() - 3 * DAY;
+    const skims = Array.from({ length: PAGES }, (_, i) => ({
+      device: 'dev-other',
+      seq: i + 1,
+      t: t0 + i * MIN,
+      kind: 'page' as const,
+      volume: 's',
+      first_page: i + 1,
+      last_page: i + 1,
+      page_chars: [100],
+      chars_before: i * 100,
+      dwell_ms: i < 2 ? MIN : 500,
+      layout: 'single' as const,
+      orientation: 'portrait' as const,
+      viewport: null
+    }));
+    await arrive(skims);
+    setRecord('s', {
+      progress: PAGES,
+      chars: TOTAL,
+      completed: true,
+      legacyStats: { time_ms: 12 * MIN, chars: TOTAL, before: Date.now() - DAY }
+    });
+    await settle();
+    const before = figures('s');
+    expect(before).toMatchObject({ chars: 200, baseline: { chars: 0 } });
+    await markUnread(volume('s'));
+    await settle();
+    await markCounted(volume('s'));
+    const after = figures('s');
+    expect(after).toMatchObject({ chars: TOTAL, baseline: { chars: 0 }, credit: { chars: 800 } });
+    expect(pass('s').chars).toBe(TOTAL);
+    // What was counted is the credit's, not measured reading: speed is unmoved.
+    expect(measuredFigures(after)).toEqual(measuredFigures(before));
+  });
+
+  it('Reset All, then the volume read again in the app: it counts again, never past the volume', async () => {
+    for (let page = 1; page <= PAGES; page++) {
+      await view('r', page, 100, (page - 1) * 100, 3 * DAY - page * MIN);
+    }
+    await settle();
+    expect(pass('r').chars).toBe(TOTAL);
+    // The editor's Reset All.
+    updateVolumeStats('r', {
+      progress: 0,
+      chars: 0,
+      timeRead: { from: figures('r').minutes, to: 0 },
+      reset: true,
+      completed: false
+    });
+    await settle();
+    expect(pass('r').chars).toBe(0);
+    expect(figures('r')).toMatchObject({ chars: 0, minutes: 0 });
+    // After the reset (a few seconds on).
+    for (let page = 1; page <= PAGES; page++) {
+      await view('r', page, 100, (page - 1) * 100, -page * 1000);
+    }
+    await settle();
+    expect(pass('r').chars).toBe(TOTAL);
+    expect(figures('r').chars).toBe(TOTAL);
+    // And a mark finds nothing left to count.
+    await markCounted(volume('r'));
+    expect(getVolumeEvents('r').some((e) => e.kind === 'credit')).toBe(false);
+    expect(pass('r').chars).toBe(TOTAL);
   });
 
   it('a capped credit leaves speed alone: measured figures are the same with or without it', async () => {

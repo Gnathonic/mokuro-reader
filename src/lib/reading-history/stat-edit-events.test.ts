@@ -45,10 +45,11 @@ describe('stat edits record history events', () => {
     })();
   });
 
-  it('volume editor: an explicit characters edit is recorded as given', () => {
-    updateVolumeStats('vol-a', { charsRead: { from: 5000, to: 0 } });
+  it('volume editor: Reset All records the time edit and a reset, no characters delta', () => {
+    updateVolumeStats('vol-a', { timeRead: { from: 40, to: 0 }, progress: 0, reset: true });
     expect(recorded.mock.calls.map((c) => c[0])).toEqual([
-      { kind: 'adjust', volume: 'vol-a', time_delta_ms: 0, chars_delta: -5000 }
+      { kind: 'adjust', volume: 'vol-a', time_delta_ms: -40 * 60000, chars_delta: 0 },
+      { kind: 'reset', volume: 'vol-a' }
     ]);
   });
 

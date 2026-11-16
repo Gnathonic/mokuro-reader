@@ -24,6 +24,7 @@ import type {
  *   5 resolve [5, dSeq, dT, vol, target device, target seq, count (0 full, 1 typical, 2 none)]
  *   6 credit  [6, dSeq, dT, vol, time_ms, runs[], page_chars[], total_chars] (format 2 only)
  *   7 retract [7, dSeq, dT, vol, target device, target seq]          (format 2 only)
+ *   8 reset   [8, dSeq, dT, vol]                                     (format 2 only)
  *
  * `target device` indexes a second dictionary, `targets`, written only when
  * the segment holds a resolve or a retract (so a segment without one keeps
@@ -38,14 +39,14 @@ import type {
  * A new event kind or field AFTER a release is a new `format`; a reader refuses
  * formats it does not know (the importer keeps the old stamp, so an updated app
  * retries). Format 1 was settled before any release read segments, `position`
- * (kind 4) and `resolve` (kind 5) included. Format 2 adds `credit` and
- * `retract` (#224) and is written ONLY for a segment that holds one of them:
+ * (kind 4) and `resolve` (kind 5) included. Format 2 adds `credit`, `retract`
+ * and `reset` (#224) and is written ONLY for a segment that holds one of them:
  * every other segment stays format 1, byte for byte, so an app that knows
  * only format 1 misses nothing but the device-months that hold a credit, and
  * picks those up once it updates.
  */
 export const HISTORY_SEGMENT_FORMAT = 1;
-/** The format of a segment that holds a `credit` or `retract` row. */
+/** The format of a segment that holds a `credit`, `retract` or `reset` row. */
 export const CREDIT_SEGMENT_FORMAT = 2;
 const READABLE_FORMATS: readonly number[] = [HISTORY_SEGMENT_FORMAT, CREDIT_SEGMENT_FORMAT];
 
@@ -102,7 +103,7 @@ export async function encodeSegment(
   let prevSeq = 0;
   let prevT = 0;
   let prevDevice = '';
-  /** A credit or retract row makes this a format-2 segment. */
+  /** A credit, retract or reset row makes this a format-2 segment. */
   let credits = false;
   const rows: Row[] = sorted.map((e) => {
     const owner = legacy ? legacyDeviceFor(e.volume) : device;
@@ -163,6 +164,9 @@ export async function encodeSegment(
       case 'retract':
         credits = true;
         return [7, ...head, vol(e.volume), targets.index(e.target[0]), e.target[1]];
+      case 'reset':
+        credits = true;
+        return [8, ...head, vol(e.volume)];
     }
   });
 
@@ -321,6 +325,10 @@ export async function decodeSegment(
         payload = { kind: 'retract', volume, target: [targetDevice, targetSeq] };
         break;
       }
+      case 8:
+        if (legacy || !format2) throw new SegmentFormatError('reset outside a format-2 segment');
+        payload = { kind: 'reset', volume };
+        break;
       default:
         throw new SegmentFormatError(`unknown event kind ${row[0]}`);
     }

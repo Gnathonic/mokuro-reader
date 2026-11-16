@@ -55,6 +55,16 @@ import { eventKey, lookupVisits } from './visits';
  *   nothing. Credits never touch views: samples, the pace, pauses and
  *   first/last read are the same with or without them. A `retract` cancels
  *   its target whatever the order the two arrive in.
+ * - **Credits never explain the baseline.** The timeline (`totalsBefore`,
+ *   what the pre-history snapshot's events explain) holds views and edits
+ *   only, and its skims ignore claims. Otherwise a credit on a page skimmed
+ *   before the freeze would grow the unexplained baseline by that page, and
+ *   the credit's characters would come back as measured "Before history"
+ *   reading — past the budget, and into speed.
+ * - **Reset.** The volume editor's "Reset All" (`reset`) ends its pass like
+ *   a restart, and takes that pass to zero characters: an edit of the
+ *   resetting device by whatever its views and edits counted; its credits
+ *   claim nothing. Its pages may then be read (or credited) again.
  */
 
 export const DEFAULT_K = 3;
@@ -133,6 +143,8 @@ export interface PreparedVolume {
   passStarts: number[];
   /** Volume-editor edits, in time order, with the device that made each. */
   adjusts: Array<{ t: number; ms: number; chars: number; device: string; pass: number }>;
+  /** "Reset All"s, in time order: each ends the pass it names (`ResetPayload`). */
+  resets: Array<{ t: number; device: string; pass: number }>;
   /** This volume's newest views usable for the pace, `[t, ms per char]`, newest first. */
   paceTail: Array<[t: number, rate: number]>;
 }
@@ -251,6 +263,8 @@ export interface PassTotals {
   creditMs: number;
   /** The volume's characters as its newest credit counted them; `null` without a credit. */
   volumeChars: number | null;
+  /** A "Reset All" ended it: it counts no characters (`chars` is 0). */
+  reset: boolean;
 }
 
 export interface SpeedEstimate {
@@ -307,10 +321,12 @@ export function prepareVolume(events: ReadingEvent[]): PreparedVolume {
   const views: PreparedView[] = [];
   const credits: PreparedCredit[] = [];
   const adjusts: PreparedVolume['adjusts'] = [];
+  const resets: PreparedVolume['resets'] = [];
   const passStarts = [-Infinity];
   let pass = 0;
   for (const e of live) {
-    if (e.kind === 'restart') {
+    if (e.kind === 'restart' || e.kind === 'reset') {
+      if (e.kind === 'reset') resets.push({ t: e.t, device: e.device, pass });
       pass++;
       passStarts.push(e.t);
       continue;
@@ -368,7 +384,7 @@ export function prepareVolume(events: ReadingEvent[]): PreparedVolume {
     paceTail.push([v.t, v.dwell / v.chars]);
   }
   paceTail.sort((a, b) => b[0] - a[0]);
-  return { views, credits, pass, passStarts, adjusts, paceTail };
+  return { views, credits, pass, passStarts, adjusts, resets, paceTail };
 }
 
 /** Median ms per character over the newest usable views of every volume. */
@@ -511,11 +527,17 @@ export function countVolume(
   for (const { view, reads } of counted) {
     if (reads) for (const [page] of view.pages) readPages.add(`${view.pass}|${page}`);
   }
-  // Credits fill what no counting view read, oldest first: each page once.
+  // Credits fill what no counting view read, oldest first: each page once. A
+  // pass a "Reset All" ended counts no characters, so its credits claim nothing.
+  const resetPasses = new Set(prepared.resets.map((r) => r.pass));
   const claimed = new Set<string>();
   const creditParts: Array<{ credit: PreparedCredit; pages: Array<[number, number]> }> = [];
   for (const credit of prepared.credits) {
     const pages: Array<[number, number]> = [];
+    if (resetPasses.has(credit.pass)) {
+      creditParts.push({ credit, pages });
+      continue;
+    }
     for (const [page, c] of credit.pages) {
       const key = `${credit.pass}|${page}`;
       if (readPages.has(key) || claimed.has(key)) continue;
@@ -525,24 +547,37 @@ export function countVolume(
     creditParts.push({ credit, pages });
   }
   const skippedSeen = new Set<string>();
+  // The timeline's skims ignore credits: what the pre-history snapshot's
+  // events explain must not move when a credit claims a skimmed page, or the
+  // baseline would take the credit's characters back as measured reading.
+  const skimmedSeen = new Set<string>();
   const byDevice = new Map<string, DeviceTotals>();
-  const passes: PassTotals[] = prepared.passStarts.map((start) => ({
+  const passes: PassTotals[] = prepared.passStarts.map((start, pass) => ({
     start,
     chars: 0,
     creditChars: 0,
     creditMs: 0,
-    volumeChars: null
+    volumeChars: null,
+    reset: resetPasses.has(pass)
   }));
   for (const { view, ms, reads } of counted) {
     let fresh = 0;
     let skimmed = 0;
+    let skimmedAny = 0;
     for (const [page, chars] of view.pages) {
       const key = `${view.pass}|${page}`;
       if (reads) {
         if (credited.has(key)) continue;
         credited.add(key);
         fresh += chars;
-      } else if (view.skip && !readPages.has(key) && !claimed.has(key) && !skippedSeen.has(key)) {
+        continue;
+      }
+      if (!view.skip || readPages.has(key)) continue;
+      if (!skimmedSeen.has(key)) {
+        skimmedSeen.add(key);
+        skimmedAny += chars;
+      }
+      if (!claimed.has(key) && !skippedSeen.has(key)) {
         skippedSeen.add(key);
         skimmed += chars;
       }
@@ -550,7 +585,7 @@ export function countVolume(
     readChars += fresh;
     skippedChars += skimmed;
     passes[view.pass].chars += fresh;
-    entries.push([view.t, ms, fresh, skimmed]);
+    entries.push([view.t, ms, fresh, skimmedAny]);
     const part = deviceTotals(byDevice, view.device);
     part.timeMs += ms;
     part.readChars += fresh;
@@ -601,7 +636,8 @@ export function countVolume(
     passes[credit.pass].chars += chars;
     passes[credit.pass].creditChars += chars;
     passes[credit.pass].creditMs += ms;
-    entries.push([credit.t, ms, chars, 0]);
+    // Not in the timeline: what explains the pre-history snapshot is reading
+    // and edits only, so a credit never moves the baseline (`totalsBefore`).
     const part = deviceTotals(byDevice, credit.device);
     part.creditMs += ms;
     part.creditChars += chars;
@@ -615,6 +651,17 @@ export function countVolume(
       pages,
       pageChars
     });
+  }
+  // "Reset All" takes its pass to zero characters: an edit of the device that
+  // reset, by whatever the pass counted (views and edits — its credits claimed
+  // nothing). Time is the editor's own adjust.
+  for (const reset of prepared.resets) {
+    const chars = -passes[reset.pass].chars;
+    if (chars === 0) continue;
+    readChars += chars;
+    passes[reset.pass].chars = 0;
+    entries.push([reset.t, 0, chars, 0]);
+    deviceTotals(byDevice, reset.device).adjustChars += chars;
   }
 
   entries.sort((a, b) => a[0] - b[0]);

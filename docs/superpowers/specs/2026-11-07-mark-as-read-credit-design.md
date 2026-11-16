@@ -327,14 +327,29 @@ So:
   archived before the freeze, each a pass of its own), in the pass the record was on when frozen.
   It cuts that pass's credits the same way (`figuresFor`, `creditsFor`, `passFiguresFor`). An
   unfrozen snapshot is set against every event already, credits included, so it is not cut twice.
+- **The baseline never takes a credit back** (second review). A record merge can keep a snapshot
+  frozen AFTER other devices' views, skims included. The first amendment let a credit's claim stop a
+  page counting as skimmed everywhere — also in what explains the snapshot — so a credit on a page
+  skimmed before the freeze grew the unexplained baseline by that page. The cut could then take only
+  the credit's own characters: the credit came back as measured "Before history" reading (speed
+  polluted, nothing to Remove), and where the budget had already cut the credit, the pass went past
+  the volume (1,600 of 1,000 with an older editor's +600). Now what explains a frozen snapshot is
+  views and edits only, its skims counted whatever a credit claims later: the baseline is a function
+  of reading alone.
 - **Sheet.** `pagesNotReadHere` offers only what the pass has left (5.3 pages).
 - **Per-volume figures.** "Characters Read X / volume" in the editor is the CURRENT pass
   (`passFiguresFor`), shown no larger than the volume; `figuresFor` stays the lifetime figure (every
-  pass, re-reads counted again, as before). Reset All zeroes the current pass.
+  pass, re-reads counted again, as before).
+- **Reset All** records a `reset` event (format 2, kind 8): it ends the pass for the stats (no archive,
+  no position offer — the record's page is the editor's) and takes it to zero characters, the
+  baseline's share included; its credits claim nothing. The pages may be read or credited again, so
+  reading the volume through after a reset shows N / N. (Recording minus the pass as an adjust left
+  every page read in the pass: a re-read counted nothing, and the editor stayed at 0 / N.)
 - **Speed.** Unchanged by any of it: credits stay out of samples and the pace, and measured figures
-  (figures less credit) equal the figures of the same history without credits.
+  (figures less credit) equal the figures of the same history without credits; so does the baseline.
 - Pinned by `credit-bound.test.ts` (each state above through the real flow) and
-  `credit-bound.property.test.ts` (a seeded sweep over random histories).
+  `credit-bound.property.test.ts` (a seeded sweep over random histories, snapshots frozen at any
+  point of them, resets included).
 
 ### 7. Setting and default
 

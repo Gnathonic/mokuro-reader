@@ -154,6 +154,7 @@ Each event carries `device`, `seq`, `t` (epoch ms, the recording device's clock)
 | `resolve` | `volume` (the target's), `target` (`[device, seq]` of a `page` event), `count`: `'full'` \| `'typical'` \| `'none'`                                                                       | — (the user's answer about a long pause)                                                                   |
 | `credit`  | `volume`, `pages` (1-based, ascending), `page_chars` (per page), `time_ms` (0 = characters only), `total_chars` (the volume's characters; the most its pass may count)                    | — ("mark as read" counting pages not read in the app, #224)                                                |
 | `retract` | `volume`, `target` (`[device, seq]` of a `credit` event)                                                                                                                                  | — (Undo, un-read, or the editor's Remove of a credit)                                                      |
+| `reset`   | `volume`                                                                                                                                                                                  | — (the volume editor's Reset All: the current pass ends at zero characters, #224)                          |
 
 - A `page` event is written when the user **leaves** a view (turn, close, tab hidden, idle), so dwell is
   known, which fixes problem 5.
@@ -213,8 +214,9 @@ history/<device>/<YYYY-MM>.events     one month of that device's events
   `[6, dSeq, dT, vol, time_ms, runs[], page_chars[], total_chars]`, `runs` = `[first, last, …]` pairs;
   a row without `total_chars`, written only by pre-release builds, decodes and counts nothing) and `retract`
   (kind 7: `[7, dSeq, dT, vol, target device, target seq]`, the device through the `targets`
-  dictionary). It is written ONLY for a segment that holds one of them; every other segment stays format 1,
-  byte for byte. Readers accept 1 and 2; kinds 6/7 in a format-1 or legacy segment are malformed. An app
+  dictionary), and `reset` (kind 8: `[8, dSeq, dT, vol]`). It is written ONLY for a segment that holds
+  one of them; every other segment stays format 1, byte for byte. Readers accept 1 and 2; kinds 6–8 in a
+  format-1 or legacy segment are malformed. An app
   that knows only format 1 refuses a format-2 segment and keeps the old stamp, so it reads that
   device-month once it updates.
 - **Credits in the stats.** A credit claims, in time order, each of its pages that no counting view read in
@@ -224,7 +226,12 @@ history/<device>/<YYYY-MM>.events     one month of that device's events
   its pass is set against them the same way (stats store). A credit's time is
   `time_ms × counted chars / declared chars`. Real reading always wins (a later view takes its page back),
   a claimed page is not skimmed, and credits never feed samples, the pace, pauses or first/last read. A
-  `retract` hides its target whatever the order.
+  `retract` hides its target whatever the order. Credits never explain the pre-history snapshot: what
+  `totalsBefore` sets against it is views and edits only, its skims counted whatever a credit later claims,
+  so the baseline (measured "Before history" reading) is the same with or without credits.
+- **Reset.** A `reset` ends its pass like a restart (for the stats only: nothing archived, no position
+  offer) and takes the pass to zero characters, the baseline's share of it included; its credits claim
+  nothing. The pages may then be read or credited again.
 - `history/` must join the syncable allowlist (`syncable-file.ts:61-67`) so every provider lists it.
 
 ### Import (how another device's events reach local records)

@@ -220,14 +220,21 @@ function snapshotOf(
  * What a snapshot holds beyond the events from before its freeze: the old
  * counter's reading that history does not explain (a skim counts as
  * explained — it was in the old lifetime count, and it is not re-read).
+ *
+ * A frozen snapshot is explained by the reading and edits from before its
+ * freeze only (the engine's timeline: never a credit, #224). An unfrozen one
+ * (`before: Infinity`) is the record's LIVE count, which a mark as read has
+ * already moved to the whole volume: everything explains it, credits too.
  */
 function unexplained(
   snapshot: LegacyStats,
   totals: VolumeTotals | undefined
 ): { timeMs: number; chars: number } {
-  const explained = totals
-    ? totalsBefore(totals, snapshot.before)
-    : { timeMs: 0, readChars: 0, skippedChars: 0 };
+  const explained = !totals
+    ? { timeMs: 0, readChars: 0, skippedChars: 0 }
+    : Number.isFinite(snapshot.before)
+      ? totalsBefore(totals, snapshot.before)
+      : totals;
   return {
     timeMs: Math.max(0, snapshot.time_ms - explained.timeMs),
     chars: Math.max(0, snapshot.chars - explained.readChars - explained.skippedChars)
@@ -260,10 +267,14 @@ const NO_CUT = { chars: 0, ms: 0 };
  * restarts) — in the pass the record was on when it was frozen (`lump`).
  * A credit in that pass gives up what would take the pass past the
  * volume's characters with the lump in it (`cut`; `creditsFor` takes it off
- * the lowest pages the pass's credits hold, as the engine does).
+ * the lowest pages the pass's credits hold, as the engine does). A pass a
+ * "Reset All" ended keeps none of the lump.
  *
- * An unfrozen snapshot (`before: Infinity`) is set against every event,
- * credits included — a credit already explains it, so nothing is cut.
+ * Credits never explain a frozen snapshot (the engine's timeline leaves them
+ * out), so its baseline is the same with or without them and what they count
+ * is never measured reading. An unfrozen snapshot (`before: Infinity`, the
+ * record's live count) is set against every event, credits included — a
+ * credit already explains it, so nothing is cut.
  */
 function baselineOf(
   totals: VolumeTotals | undefined,
@@ -286,8 +297,17 @@ function baselineOf(
   let pass = 0;
   const passes = totals?.passes ?? [];
   for (let p = 1; p < passes.length; p++) if (passes[p].start < snapshot.before) pass = p;
-  const lump = { pass, chars };
   const inPass = passes[pass];
+  // "Reset All" ended that pass: its share of the lump counts nothing either.
+  if (inPass?.reset) {
+    return {
+      baseline: { timeMs: baseline.timeMs, chars: baseline.chars - chars },
+      lump: { pass, chars: 0 },
+      cut: NO_CUT
+    };
+  }
+  const lump = { pass, chars };
+  // Unfrozen: the credits already explain it (`unexplained`), nothing to cut.
   if (!Number.isFinite(snapshot.before) || !inPass || inPass.creditChars <= 0) {
     return { baseline, lump, cut: NO_CUT };
   }
@@ -344,15 +364,17 @@ export interface PassFigures {
 /**
  * The volume's CURRENT PASS as the stats count it (#224) — the reading of
  * this time through the volume, which never exceeds it once credits are in;
- * `figuresFor` is the lifetime (every pass, re-reads included).
+ * `figuresFor` is the lifetime (every pass, re-reads included). `which`
+ * names an earlier pass instead (tests sweep every one).
  */
 export function passFiguresFor(
   stats: ReadingStatsState,
   volume: string,
-  record?: BaselineSource
+  record?: BaselineSource,
+  which?: number
 ): PassFigures {
   const totals = stats.byVolume.get(volume);
-  const pass = totals?.pass ?? 0;
+  const pass = which ?? totals?.pass ?? 0;
   const current = totals?.passes[pass];
   const { lump, cut } = baselineOf(totals, record);
   const here = lump?.pass === pass;

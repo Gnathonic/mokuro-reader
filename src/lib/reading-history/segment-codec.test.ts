@@ -498,6 +498,28 @@ describe('segment codec', () => {
       await expect(decodeSegment(await raw(body))).rejects.toThrow(SegmentFormatError);
     });
 
+    it('reset (kind 8): round-trips, makes the segment format 2, and only there', async () => {
+      const reset: ReadingEvent = {
+        device: DEV,
+        seq: 14,
+        t: T + 72000,
+        kind: 'reset',
+        volume: 'vol-1'
+      };
+      const json = await inflate(await encodeSegment(DEV, '2026-10', [reset]));
+      expect(json.format).toBe(2);
+      expect(json.rows).toEqual([[8, 14, T + 72000, 0]]);
+      const all = [...events, credit, retract, reset];
+      const { events: out } = await decodeSegment(await encodeSegment(DEV, '2026-10', all));
+      expect(out).toEqual(all);
+      for (const body of [
+        { format: 1, rows: [[8, 1, T, 0]] },
+        { legacy: true, rows: [[8, 1, T, 0]] }
+      ]) {
+        await expect(decodeSegment(await raw(body))).rejects.toThrow(SegmentFormatError);
+      }
+    });
+
     it('the longest run it writes is one the decoder takes back', async () => {
       const long = {
         ...credit,
