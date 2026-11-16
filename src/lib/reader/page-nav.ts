@@ -12,10 +12,10 @@
  * volume navigation.
  */
 
-import type { Page } from '$lib/types';
-import type { PageViewMode } from '$lib/settings';
+import type { Page } from '#lib/types/index.js';
+import type { PageViewMode } from '#lib/settings/index.js';
 import { isWideSpread, shouldShowSinglePage } from './page-mode-detection';
-import { getCharCount } from '$lib/util/count-chars';
+import { getCharCount } from '#lib/util/count-chars.js';
 
 /**
  * Scroll readers' volume-boundary handling: navigating past either end

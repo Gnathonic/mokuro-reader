@@ -83,6 +83,24 @@ describe('lastReadTime / seriesLastRead', () => {
     expect(lastReadTime('a', { lastProgressUpdate: iso(6 * HOUR) }, times)).toBe(0);
   });
 
+  it('a finished volume was last read when it was finished (#304)', () => {
+    // A look back in it later is history, but not reading that moves its series.
+    const times = new Map([['a', { at: 9 * HOUR, since: 0 }]]);
+    const finished = {
+      completed: true,
+      completedAt: iso(3 * HOUR),
+      lastProgressUpdate: iso(9 * HOUR)
+    };
+    expect(lastReadTime('a', finished, times)).toBe(3 * HOUR);
+    expect(lastReadTime('a', finished, new Map())).toBe(3 * HOUR);
+    expect(seriesLastRead(['a'], { a: { ...finished, progress: 30 } }, times)).toBe(3 * HOUR);
+    // Not finished (a re-read under way), or finished with no date: as before.
+    expect(lastReadTime('a', { ...finished, completed: false }, times)).toBe(9 * HOUR);
+    expect(lastReadTime('a', { completed: true, lastProgressUpdate: iso(9 * HOUR) }, times)).toBe(
+      9 * HOUR
+    );
+  });
+
   it('seriesLastRead ignores volumes at progress ≤ 1, as smart sort did', () => {
     const records = {
       a: { progress: 1, lastProgressUpdate: iso(9 * HOUR) },

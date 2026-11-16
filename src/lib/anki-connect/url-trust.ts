@@ -15,7 +15,7 @@
  * the URL. They are per device by design: nothing syncs or exports that key,
  * so a profile can carry a URL to another device but never the trust in it.
  */
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 import { get, writable, type Readable } from 'svelte/store';
 
 /** AnkiConnect's own default: Anki on this machine. */

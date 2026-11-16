@@ -6,7 +6,7 @@ const refreshSeriesIndexForSeries = vi.fn(
 );
 const cloudVolumeTitlesFor = vi.fn((_title: string) => new Set(['Volume 1']));
 const activeProvider = vi.hoisted(() => ({ current: null as { type: string } | null }));
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: {
     refreshSeriesIndexForSeries: (t: string) => refreshSeriesIndexForSeries(t),
     cloudVolumeTitlesFor: (t: string) => cloudVolumeTitlesFor(t),
@@ -16,18 +16,18 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
 }));
 
 const requestOcrUpgradePass = vi.fn(async (_provider: string, _series: unknown[]) => {});
-vi.mock('$lib/catalog/ocr-upgrade-pass', () => ({
+vi.mock('#lib/catalog/ocr-upgrade-pass.js', () => ({
   requestOcrUpgradePass: (provider: string, series: unknown[]) =>
     requestOcrUpgradePass(provider, series)
 }));
 
 const materializeSeriesVolumes = vi.fn(async (_args: unknown): Promise<number> => 1);
-vi.mock('$lib/catalog/materialize', () => ({
+vi.mock('#lib/catalog/materialize.js', () => ({
   materializeSeriesVolumes: (args: unknown) => materializeSeriesVolumes(args as never)
 }));
 
 const installCoversForSeries = vi.fn(async (_title: string): Promise<number> => 1);
-vi.mock('$lib/catalog/cover-install', () => ({
+vi.mock('#lib/catalog/cover-install.js', () => ({
   installCoversForSeries: (t: string) => installCoversForSeries(t)
 }));
 

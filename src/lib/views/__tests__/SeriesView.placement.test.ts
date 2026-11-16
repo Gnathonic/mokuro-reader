@@ -53,12 +53,12 @@ function emptyStore<T>(value: T) {
   };
 }
 
-vi.mock('$lib/catalog', () => ({
+vi.mock('#lib/catalog/index.js', () => ({
   catalog: emptyStore<unknown[]>([]),
   currentSeries,
   volumes: emptyStore<Record<string, unknown>>({})
 }));
-vi.mock('$lib/settings/settings', () => ({
+vi.mock('#lib/settings/settings.js', () => ({
   preferredTitleLanguage: emptyStore('imported'),
   // `cover-persist.ts` now imports `volumes` directly from
   // `$lib/settings/volume-data` (bypassing the `$lib/settings` barrel mock
@@ -67,7 +67,7 @@ vi.mock('$lib/settings/settings', () => ({
   // though nothing in this suite exercises it.
   settings: emptyStore({})
 }));
-vi.mock('$lib/settings', () => ({
+vi.mock('#lib/settings/index.js', () => ({
   deleteVolume: vi.fn(),
   volumes: emptyStore<Record<string, unknown>>({ 'uuid-1': { progress: 1 } }),
   progress: readingProgress,
@@ -75,29 +75,32 @@ vi.mock('$lib/settings', () => ({
   markVolumeAsComplete: vi.fn(),
   markVolumeAsUnread: vi.fn()
 }));
-vi.mock('$lib/settings/reading-speed', () => ({
+vi.mock('#lib/settings/reading-speed.js', () => ({
   personalizedReadingSpeed: emptyStore({ isPersonalized: false, charsPerMinute: 0 })
 }));
-vi.mock('$lib/catalog/db', () => ({
+vi.mock('#lib/catalog/db.js', () => ({
   db: {
     volumes: { get: vi.fn(async () => undefined) },
     volume_ocr: { get: vi.fn(async () => undefined) }
   }
 }));
 vi.mock('dexie', () => ({ liveQuery: () => ({ subscribe: () => ({ unsubscribe: () => {} }) }) }));
-vi.mock('$lib/import', () => ({ removeVolumeFiles: vi.fn(), deleteVolumeCompletely: vi.fn() }));
-vi.mock('$lib/util', () => ({
+vi.mock('#lib/import/index.js', () => ({
+  removeVolumeFiles: vi.fn(),
+  deleteVolumeCompletely: vi.fn()
+}));
+vi.mock('#lib/util/index.js', () => ({
   promptConfirmation: vi.fn(),
   showSnackbar: vi.fn(),
   zipManga: vi.fn()
 }));
-vi.mock('$lib/util/zip', () => ({ zipManga: vi.fn() }));
-vi.mock('$lib/util/modals', () => ({
+vi.mock('#lib/util/zip.js', () => ({ zipManga: vi.fn() }));
+vi.mock('#lib/util/modals.js', () => ({
   promptExtraction: vi.fn(),
   promptSeriesEditor: vi.fn(),
   promptVolumeEditor: vi.fn()
 }));
-vi.mock('$lib/util/hash-router', () => ({
+vi.mock('#lib/util/hash-router.js', () => ({
   nav: {
     toReader: vi.fn(),
     toSeries: vi.fn(),
@@ -108,7 +111,7 @@ vi.mock('$lib/util/hash-router', () => ({
   routeParams,
   navigateBack: vi.fn()
 }));
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: {
     cloudFiles: cloudListing,
     isFetching: emptyStore(false),
@@ -124,34 +127,34 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
     deleteFile: vi.fn()
   }
 }));
-vi.mock('$lib/util/sync', () => ({ providerManager: { status: providerStatus } }));
-vi.mock('$lib/util/backup-queue', () => ({
+vi.mock('#lib/util/sync/index.js', () => ({ providerManager: { status: providerStatus } }));
+vi.mock('#lib/util/backup-queue.js', () => ({
   backupQueue: { queueVolumeForBackup: vi.fn(), queueSeriesVolumesForBackup: vi.fn() }
 }));
-vi.mock('$lib/util/download-queue', () => ({
+vi.mock('#lib/util/download-queue.js', () => ({
   downloadQueue: {
     subscribe: (fn: (v: unknown[]) => void) => (fn([]), () => {}),
     queueVolume: vi.fn()
   },
   queueSeriesVolumes
 }));
-vi.mock('$lib/util/progress-tracker', () => ({
+vi.mock('#lib/util/progress-tracker.js', () => ({
   progressTrackerStore: {
     subscribe: (fn: (v: { processes: unknown[] }) => void) => (fn({ processes: [] }), () => {})
   }
 }));
-vi.mock('$lib/metadata/store', () => ({ seriesMetadataMap: emptyStore(new Map()) }));
-vi.mock('$lib/metadata/series-file-sync', () => ({ reconcileMissingMetadataFiles: vi.fn() }));
-vi.mock('$lib/metadata/series-open', () => ({ openSeries: vi.fn(async () => {}) }));
-vi.mock('$lib/catalog/series-delete', () => ({
+vi.mock('#lib/metadata/store.js', () => ({ seriesMetadataMap: emptyStore(new Map()) }));
+vi.mock('#lib/metadata/series-file-sync.js', () => ({ reconcileMissingMetadataFiles: vi.fn() }));
+vi.mock('#lib/metadata/series-open.js', () => ({ openSeries: vi.fn(async () => {}) }));
+vi.mock('#lib/catalog/series-delete.js', () => ({
   promptSeriesRemoval: vi.fn(),
   deleteSeriesFromCloudByTitle: vi.fn()
 }));
-vi.mock('$lib/components/Series/SeriesMetadataBar.svelte', () => ({ default: () => ({}) }));
-vi.mock('$lib/components/BackupButton.svelte', () => ({ default: () => ({}) }));
+vi.mock('#lib/components/Series/SeriesMetadataBar.svelte', () => ({ default: () => ({}) }));
+vi.mock('#lib/components/BackupButton.svelte', () => ({ default: () => ({}) }));
 
 import SeriesView from '../SeriesView.svelte';
-import type { VolumeMetadata } from '$lib/types';
+import type { VolumeMetadata } from '#lib/types/index.js';
 
 function volume(title: string, overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
   return {

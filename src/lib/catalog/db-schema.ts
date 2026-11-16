@@ -28,7 +28,7 @@ import type { Transaction } from 'dexie';
  *
  * This module deliberately imports NOTHING at runtime (`import type` is erased),
  * so the Worker can take the schema without dragging in the main-thread graph
- * `db-v3.ts` carries — `$app/environment`, the progress tracker, the thumbnail
+ * `db-v3.ts` carries — `$app/env`, the progress tracker, the thumbnail
  * generator.
  */
 export const MOKURO_DB_NAME = 'mokuro_v3';

@@ -7,7 +7,7 @@ import {
   type ReviewCandidate
 } from '../image-only-review';
 import { storedTitle } from '../image-only-naming';
-import { generateDeterministicUUID } from '$lib/util/series-extraction';
+import { generateDeterministicUUID } from '#lib/util/series-extraction.js';
 
 const candidate = (id: string, basePath: string, titlePath?: string): ReviewCandidate => ({
   id,

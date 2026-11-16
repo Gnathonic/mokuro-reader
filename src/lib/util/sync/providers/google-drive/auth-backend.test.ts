@@ -22,7 +22,7 @@ import {
   takeCallback
 } from './auth-backend';
 import { ensureDeviceKey, forgetCachedDeviceKeyForTest } from './device-key';
-import { checkProof, parseProof } from '$lib/server/gdrive-auth/pop';
+import { checkProof, parseProof } from '#lib/server/gdrive-auth/pop.js';
 
 const json = (status: number, body: unknown) =>
   new Response(JSON.stringify(body), {

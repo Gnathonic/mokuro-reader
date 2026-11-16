@@ -2,7 +2,7 @@
   import { AccordionItem, Label } from 'flowbite-svelte';
   import { DownloadSolid, CheckCircleSolid, TrashBinSolid } from 'flowbite-svelte-icons';
   import { get } from 'svelte/store';
-  import { settings, updateSetting, PRESETS, type ThemeTokens } from '$lib/settings';
+  import { settings, updateSetting, PRESETS, type ThemeTokens } from '#lib/settings/index.js';
 
   const presetList = Object.values(PRESETS);
 

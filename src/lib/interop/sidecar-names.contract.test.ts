@@ -8,14 +8,14 @@
  */
 import { expect, it } from 'vitest';
 import { describeContractFile, sidecarNameVectors } from './contract';
-import { cbzStemsOf, classifyMokuroSidecar } from '$lib/util/sync/syncable-file';
-import { layerIdStaysLocal } from '$lib/catalog/mokuro-hash';
+import { cbzStemsOf, classifyMokuroSidecar } from '#lib/util/sync/syncable-file.js';
+import { layerIdStaysLocal } from '#lib/catalog/mokuro-hash.js';
 import {
   isCuratedLayerId,
   isPersonalLayerId,
   isReservedLayerId,
   isServerKeepsakeLayerId
-} from '$lib/reader/edit/layer-names';
+} from '#lib/reader/edit/layer-names.js';
 
 const vectors = sidecarNameVectors();
 

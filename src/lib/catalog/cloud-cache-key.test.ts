@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 
 const { getActiveProvider } = vi.hoisted(() => ({ getActiveProvider: vi.fn() }));
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: { getActiveProvider }
 }));
 

@@ -109,17 +109,23 @@ src/
 └── app.d.ts                   # App-level type definitions
 ```
 
-**Routing:** The app uses a hash-based router (`$lib/util/hash-router.ts`) with views loaded dynamically from `$lib/views/`. Routes like `#/series/uuid` or `#/reader/uuid` are handled client-side.
+**Routing:** The app uses a hash-based router (`src/lib/util/hash-router.ts`) with views loaded dynamically from `src/lib/views/`. Routes like `#/series/uuid` or `#/reader/uuid` are handled client-side.
 
-**Imports and config (SvelteKit 3):** `$lib` stays for now. SvelteKit 3 no longer provides it;
-`vite.config.ts` keeps it through kit's deprecated `alias` option (`alias: { $lib: 'src/lib' }`),
-which also generates the tsconfig `paths`, so write imports as before (`$lib/catalog/db`, no
-extension). `$app/environment` and `$env/dynamic/private` are deprecated too and kept likewise
-(kit 3 ships no types for them: `src/kit-deprecated-modules.d.ts` supplies them).
-The move to `#lib` subpath imports and `$app/env` is issue #359, done later so it does not
-conflict with every open branch. A worker's `new URL(…, import.meta.url)` stays relative.
+**Imports and config (SvelteKit 3):** `src/lib` is imported as `#lib/...`, a subpath import
+declared in package.json (`"imports": { "#lib/*": "./src/lib/*" }`; SvelteKit 3 provides no
+`$lib` and its `alias` option is deprecated). A subpath import names a file, so write the
+extension it resolves with: a `.ts`/`.js` module as `.js` (`#lib/catalog/db.js`), a directory
+as `/index.js`, a `.svelte` file or asset as it is, a `?query` after the extension.
+`$app/env` (not the deprecated `$app/environment`), and the server env from
+`$app/env/private` (not `$env/dynamic/private`). A worker's `new URL(…, import.meta.url)` stays
+relative: `#lib` in a URL is a fragment. A branch still carrying `$lib` imports runs
+`node scripts/migrate-lib-subpath.mjs | xargs -r npx prettier --write` (idempotent; issue #359;
+it only REPORTS `$env/dynamic/private`, whose replacement is `import * as env`, a hand fix).
+`src/migrate-lib-subpath.test.ts` runs its `--check` on the repo, so any old specifier fails
+`npm test` — including one in a `vi.mock` string, where `$app/environment` still resolves (to
+a module nothing imports) and the mock would silently never apply.
 SvelteKit's options live in `vite.config.ts` (`sveltekit({...})`); there is no
-`svelte.config.js`. The app registers its own service worker (`$lib/util/sw-register.ts`, from
+`svelte.config.js`. The app registers its own service worker (`src/lib/util/sw-register.ts`, from
 `hooks.client.ts`) with SvelteKit's registration off: SvelteKit 3 registers it
 `{ type: 'module' }` in every build, the app CLASSIC in production, as SvelteKit 2 did.
 `scripts/check-service-worker.mjs` (part of `npm run build`) runs the built worker and fails if
@@ -449,7 +455,7 @@ interface VolumeFiles {
 **Usage:**
 
 ```typescript
-import { db } from '$lib/catalog/db';
+import { db } from '#lib/catalog/db.js';
 
 // Query volumes
 const volumes = await db.volumes.toArray();
@@ -473,7 +479,7 @@ import {
   listLayerMetas,
   getLayerPages,
   putLayerWithPages
-} from '$lib/catalog/layer-store';
+} from '#lib/catalog/layer-store.js';
 
 const layers = await listLayerMetas(db, volume_uuid); // metadata only — never reads pages
 const pages = await getLayerPages(db, volume_uuid, layer_id); // one layer's pages
@@ -494,7 +500,7 @@ on "remove from device".
 
 Thumbnails are generated automatically on app load via `startThumbnailProcessing()`.
 
-**Volume states** (`$lib/catalog/volume-state.ts` — always test them through
+**Volume states** (`src/lib/catalog/volume-state.ts` — always test them through
 `isVolumeInstalled(v)` / `needsDownload(v)`, never the raw flags):
 
 | State         | Row? | `volume_ocr` / `volume_files` | Marked by             |
@@ -675,8 +681,8 @@ keepsake — a case merge's `curated-<n>`, its copy of a second, different
 They are filed kind `edit` whatever `ocr_engine` stamp their file carries, and
 a pull never re-files one as `ocr`. `pre-upgrade*` and `previous-ocr*` are
 NOT special: bunko no longer writes or reserves them, so a layer under one of
-those ids is an ordinary hand-made layer everywhere — named from its id,
-filed by its stamp, pushed, uploaded beside a backup and deleted under the
+those ids is an ordinary hand-made layer everywhere — named by what made
+its file (below), filed by its stamp, pushed, uploaded beside a backup and deleted under the
 same rights as any other library file.
 Two capabilities say what this server does with them
 (`ProviderStatus`): `editLayerSync` is `push` when bunko's identity lists
@@ -884,6 +890,57 @@ answer a client PUT of `curated` without the right, or of `curated-<n>`, with
 any other hand-made layer); and (cloud-direct) write `curated: true` into the marker when the folder's
 owner may publish.
 
+**What OCR is called** (`reader/edit/ocr-label.ts`, pure). The primary and
+every layer read from a file are named by what MADE the file: its
+`ocr_engine.parts` (bunko: each tool, display order, `name` already a display
+name, `version` optional) joined as "Hayai Nova 2.5 · PP-OCR Manga 0.3"; else
+its `ocr_engine.id`'s display name (`layerNameForId`: "Hayai Nova", "PP-OCR
+Manga"); else mokuro's — `mokuro <version>`, plain `mokuro` for an image-only
+volume. Malformed `parts` (not an array of objects with a string `name`) count
+as none.
+
+- **The primary** is named by the maker of the CURRENT main,
+  `VolumeMetadata.ocr_maker` (`MainOcrMaker`: engine id, parts, version;
+  `mainMakerOfFile`), set by every install (`saveVolume`), the image-only
+  upgrade and the OCR upgrade's `upgraded` (a file with no `ocr_engine` is
+  mokuro's, whatever the replaced main was; an EDITED file's maker is unknown:
+  cleared) and `recorded` with a stamped file; promoting a layer that knows its
+  maker (`mainMakerOfLayer`: engine/`maker_engine`, parts, version) takes that
+  layer's, any other promote keeps the main's. An edit keeps it: an edited
+  Bunko main still reads "Hayai Nova 2.5 · …", never "mokuro 0.2.5" (the
+  version Bunko writes). A row from before `ocr_maker`: its newest provenance
+  entry while unedited, else `mokuro <version>`.
+- **Layers.** A row remembers its file's `ocr_parts` and `mokuro_version` —
+  the version its PAGES name (mokuro writes it on every page and the reader
+  keeps it), else the file's — both unindexed (`layerFileMaker`). An `edited`
+  file, or one with no `ocr_engine` (a file the reader wrote, re-imported) over
+  a row that already knows its maker, leaves them as they were
+  (`makerFieldsOnWrite`). Ids that say what a layer IS keep their names
+  (corrections, `curated`, hand-made ids); an engine layer without parts is
+  still named from its id. A set-aside main (`pre-upgrade[-n]`,
+  `previous-ocr[-n]`) and the upgrade's `updated-ocr` are named by their maker
+  ("mokuro 0.2.2"); `updated-ocr` keeps its engine in `maker_engine`, for the
+  name only (an `engine` would file the mirror as server model output). Rows
+  stored before versions were kept get theirs from their pages once per
+  browser (`backfillSetAsideLayerVersions`, `set-aside-versions.ts`).
+- **Whose name.** A typed name is the user's for good: a rename and a layer
+  made by name set `named_by_user`, every rewrite carries it, and such a row is
+  never relabelled. A row is relabelled only when it came from a file (cloud
+  stamp, engine, maker fields, archive or upgrade marks) and still has a name
+  the reader gave it (`isAutoNamedLayer`): the title-cased slug, the id's
+  display name, v1.10.0's "Previous OCR"/"Previous OCR (n)" for
+  `previous-ocr*` (`PREVIOUS_OCR_NAME_RE`, shared with its cleanup), "Updated
+  OCR" for `updated-ocr`, or its current label. Such a row is SHOWN with the
+  current label (`summarizeLayers`) and re-named on every rewrite from a file
+  (`layerNameOnWrite`).
+- **Pending server jobs** (`server-ocr-pending.ts`) are named the same way
+  from the queue file's optional per-job `parts` (malformed → dropped, the job
+  kept), else their generation id — the main file's job too, never "Text". A
+  line shows the recognizer alone, the parts without versions only where two
+  lines would read the same, cut to 16 characters (`distinctShortNames`); the
+  label keeps the full name. Lines run soonest first: running by ETA, queued by
+  ETA, then unpriced and held, ties in the server's order.
+
 Edit mode is paged-mode only (`Reader.svelte` bails out under continuous
 scroll). It's entered by the `E` key, the quick actions menu, the settings
 toggle, or "Edit text" in the text-box context menu — all funnel through the
@@ -1021,14 +1078,48 @@ min`); `released` at once; rank epoch desc, claimed_at asc, instance_id asc.
   beside readable ones keeps its last record, and a read with NO node keeps
   the still-fresh records UNSTAMPED, so they go stale at 2 × ttl — the scope
   is forgotten only once nothing kept is fresh.
-- `.mokuro-queue.json` (`server-ocr-queue.ts`, `cloudSourceFor`): the server
-  queue file plus `instance_id`, `truncated` and `done[]`. Trusted only when
-  `instance_id` names the top-ranked fresh marker. The cloud poller keeps
-  going while the tab is visible (per-provider floors; MEGA also on its live
-  tree's events), completes a volume ONLY via `done[]` (absence from a
-  truncated list is waiting), and then relists (the hook `+layout.svelte`
-  sets), runs the OCR upgrade pass and pulls layers — never
-  `pullCompletedVolume`. Cloud uploads are watched while a marker is fresh.
+- Queue file v2 (bunko `docs/design/queue-file-v2.md`): NO root queue file is
+  read from a cloud library. The marker's `series_queue` block carries the
+  hold, held rows and the ETA work clock; `MarkerPoller`
+  (`server-ocr-queue.ts`) reads the marker every max(floor, ttl/3) while the
+  tab is visible (MEGA also on root control-file events). Each series folder
+  holds `.mokuro-series-queue.json` (`series-queue.ts`: parser, clock, trust,
+  slice), read ONLY by the open series page's loop (`series-queue-loop.ts`,
+  hooked from `SeriesView`): a stored copy counts only when its
+  `instance_id` names a fresh holder with `series_queue`, the highest `rev`
+  wins, a lower `rev` and torn JSON keep the last good copy. Over a bunko
+  server the virtual file carries `live` and is trusted as is; a 404 for a
+  series the listing holds marks that server v1 for the session and hands it
+  to its root-file `QueuePoller`. Cards read `seriesQueueStore` (one slice per
+  series, set only when what they show changed) before the v1 statuses
+  (`pendingStatusFor`). Completions (a job gone, a newer `done` entry) run
+  the SCOPED pull (`SeriesPulls` in `server-ocr-queue.ts`), on a cloud
+  library and on the connected bunko server alike: per series, debounced
+  10 s, ≥ 60 s apart, one in flight, retried at +60/+120/+240 s while
+  neither `series.json` nor a finished volume's sidecar moved.
+  `unifiedCloudManager.refreshSeriesFolder(S)` lists ONLY S (Drive: the
+  change feed when `changeFeedUsable()`, else `listFolder`; others
+  `listFolder`) and swaps only the cached entries under `S/`
+  (`CloudCache.replaceFolderEntries`, which replays writes made meanwhile,
+  `CoalescedCacheStore.beginPartialListing`), then
+  `refreshSeriesIndexForSeries(S)`; then the upgrade pass and
+  `pullLayersForVolume` per finished local row. NEVER `refreshSeriesIndexes`
+  with a partial map (it deletes other series' indexes) and never a
+  whole-account `fetchAllCloudVolumes`. The manifest pull
+  (`pullCompletedVolume`) is kept only for deep links and v1 servers.
+- Watches (uploads to a library a Bunko runs, deep-link imports; 24 h) are
+  read off their page by `WatchSchedule` (`series-queue-watch.ts`): first at
+  creation + 2 W, then at the soonest watched ETA + W (≥ W, ≤ 15 min), at
+  most 20 series in rotation, paused while hidden. An upload watch reads
+  through the connected library (`lookSeriesQueue`: the page loop's memo,
+  trust and completions) and waits while that library is not connected or
+  the page is open; a deep link's reads `<dav root>/<S>/.mokuro-series-queue.json`
+  through the link's origin, anonymously under the link's redirect rule
+  (`fetchForPull`), and its 404 hands the server to its v1 poller. Done or
+  vanished ends the watch (a link's through its manifest); never listed
+  after 2 reads → one scoped pull, and a `.mokuro` newer than the watch
+  completes it. `saveWatches` is debounced 1 s (flushed when the tab hides):
+  a bulk upload no longer rewrites every watch per volume.
 - Folder dedup keeps EVERY copy of both control files when duplicate roots
   merge (`dedupKeepsEveryCopy`, beside the merged root files): trashing the
   older one would pull a marker or queue out from under a running Bunko. A
@@ -1121,7 +1212,7 @@ re-fetches it and swaps the new OCR in — automatically, in the background
   device edits it, and that device published this file as the edit's base.
 - **Edited volumes keep their edits.** With `ocr_edited_at` set, a file equal
   to the pre-edit `original` layer only records the hash; otherwise it is
-  filed as the `updated-ocr` layer ("Updated OCR", kind `ocr`) carrying
+  filed as the `updated-ocr` layer (named by its maker, kind `ocr`) carrying
   `source_sha256` and `source_at` (= `updated_at` while untouched, compared
   like `passive_at`). While untouched that row is a mirror of the cloud's own
   primary: never pushed as a layer file (`layerNeedsPush`, the backup's layer
@@ -2195,7 +2286,7 @@ The sync system (`src/lib/util/sync/`) uses a provider abstraction. To extend:
 Always use the Dexie instance from `src/lib/catalog/db.ts`:
 
 ```typescript
-import { db } from '$lib/catalog/db';
+import { db } from '#lib/catalog/db.js';
 
 // Query volumes
 const volumes = await db.volumes.toArray();

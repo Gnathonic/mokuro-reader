@@ -8,14 +8,14 @@
     ChartLineUpOutline,
     CalendarMonthOutline
   } from 'flowbite-svelte-icons';
-  import { nav, isOnReader } from '$lib/util/hash-router';
+  import { nav, isOnReader } from '#lib/util/hash-router.js';
   import Settings from './Settings/Settings.svelte';
   import UploadModal from './UploadModal.svelte';
-  import Icon from '$lib/assets/icon.webp';
-  import { showSnackbar } from '$lib/util';
-  import { tokenManager } from '$lib/util/sync/providers/google-drive';
-  import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
-  import { unifiedProviderState } from '$lib/util/sync/unified-provider-state';
+  import Icon from '#lib/assets/icon.webp';
+  import { showSnackbar } from '#lib/util/index.js';
+  import { tokenManager } from '#lib/util/sync/providers/google-drive/index.js';
+  import { unifiedCloudManager } from '#lib/util/sync/unified-cloud-manager.js';
+  import { unifiedProviderState } from '#lib/util/sync/unified-provider-state.js';
 
   // Use $state to make these reactive
   let settingsOpen = $state(false);

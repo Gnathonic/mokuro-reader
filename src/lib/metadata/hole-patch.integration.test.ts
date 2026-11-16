@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import 'fake-indexeddb/auto';
-import { countIdbOps } from '$lib/catalog/__tests__/idb-op-counter';
+import { countIdbOps } from '#lib/catalog/__tests__/idb-op-counter.js';
 import type { SeriesFile, SeriesFileVolume } from './series-file';
 import type { SeriesIndexRecord } from './series-index';
 
@@ -18,9 +18,9 @@ import type { SeriesIndexRecord } from './series-index';
  * one controllable seam: releasing it is what lands the 30 `series.json`
  * records, exactly as the listing-wide refresh does.
  */
-vi.mock('$lib/catalog/db', async () => {
+vi.mock('#lib/catalog/db.js', async () => {
   const { CatalogDexieV3 } =
-    await vi.importActual<typeof import('$lib/catalog/db-v3')>('$lib/catalog/db-v3');
+    await vi.importActual<typeof import('#lib/catalog/db-v3.js')>('#lib/catalog/db-v3.js');
   return { db: new CatalogDexieV3('mokuro_v3_hole_patch_integration_test') };
 });
 
@@ -41,9 +41,9 @@ const { progressStore } = vi.hoisted(() => {
     }
   };
 });
-vi.mock('$lib/settings/volume-data', () => ({ volumes: progressStore }));
+vi.mock('#lib/settings/volume-data.js', () => ({ volumes: progressStore }));
 const enrichAllOrphanedVolumes = vi.fn(async () => {});
-vi.mock('$lib/settings', () => ({
+vi.mock('#lib/settings/index.js', () => ({
   get volumes() {
     return progressStore;
   },
@@ -51,24 +51,24 @@ vi.mock('$lib/settings', () => ({
 }));
 
 const openSeries = vi.fn(async (_title: string) => {});
-vi.mock('$lib/metadata/series-open', () => ({ openSeries: (t: string) => openSeries(t) }));
+vi.mock('#lib/metadata/series-open.js', () => ({ openSeries: (t: string) => openSeries(t) }));
 
 /** The listing: every seeded series folder, with its one archive. */
 let listing = new Map<string, Set<string>>();
 /** The index refresh in flight; `null` = nothing running. */
 let indexRefresh: Promise<void> | null = null;
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: {
     getActiveProvider: () => ({ type: 'webdav' }),
     cloudVolumeTitlesFor: (title: string) => listing.get(title) ?? new Set<string>(),
     whenSeriesIndexesSettled: () => indexRefresh ?? Promise.resolve()
   }
 }));
-vi.mock('$lib/util/sync/cache-manager', () => ({
+vi.mock('#lib/util/sync/cache-manager.js', () => ({
   cacheManager: { getCache: () => ({ isLoaded: () => true }) }
 }));
 
-import { db } from '$lib/catalog/db';
+import { db } from '#lib/catalog/db.js';
 import { resolveSyncedProgress } from './hole-patch';
 import { resetHistoryRowsSessionForTests } from './history-rows';
 

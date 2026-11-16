@@ -2,9 +2,9 @@
   import { run } from 'svelte/legacy';
 
   import { Button, Modal, Toggle } from 'flowbite-svelte';
-  import { extractionModalStore } from '$lib/util/modals';
+  import { extractionModalStore } from '#lib/util/modals.js';
   import { onMount } from 'svelte';
-  import { extractionSettings, updateExtractionSetting } from '$lib/settings';
+  import { extractionSettings, updateExtractionSetting } from '#lib/settings/index.js';
 
   let open = $state(false);
   let singleVolume = $state(false);

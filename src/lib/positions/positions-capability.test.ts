@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { ProviderStatus } from '$lib/util/sync/provider-interface';
+import type { ProviderStatus } from '#lib/util/sync/provider-interface.js';
 import { positionsReadAllowed, positionsWriteAllowed } from './positions-capability';
 
 const base: ProviderStatus = {

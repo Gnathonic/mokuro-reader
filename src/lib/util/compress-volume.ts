@@ -1,24 +1,28 @@
 import { BlobReader, Uint8ArrayReader, BlobWriter, TextReader, ZipWriter } from '@zip.js/zip.js';
 import Dexie from 'dexie';
-import type { VolumeMetadata } from '$lib/types';
+import type { VolumeMetadata } from '#lib/types/index.js';
 import {
   SERIES_FILE_NAME,
   buildSeriesFileFrom,
   type SeriesFile,
   stringifySeriesFile
-} from '$lib/metadata/series-file';
-import { normalizeSeriesKey } from '$lib/metadata/series-key';
-import { MOKURO_DB_NAME, declareMokuroSchema } from '$lib/catalog/db-schema';
-import { listLayersWithPages } from '$lib/catalog/layer-store';
-import { mainSidecarPagesForCloud } from '$lib/catalog/main-sidecar';
-import { layerStaysLocal, syncedForOtherAccount, type LayerTarget } from '$lib/catalog/mokuro-hash';
-import { editBaseSeal } from '$lib/catalog/ocr-provenance';
+} from '#lib/metadata/series-file.js';
+import { normalizeSeriesKey } from '#lib/metadata/series-key.js';
+import { MOKURO_DB_NAME, declareMokuroSchema } from '#lib/catalog/db-schema.js';
+import { listLayersWithPages } from '#lib/catalog/layer-store.js';
+import { mainSidecarPagesForCloud } from '#lib/catalog/main-sidecar.js';
+import {
+  layerStaysLocal,
+  syncedForOtherAccount,
+  type LayerTarget
+} from '#lib/catalog/mokuro-hash.js';
+import { editBaseSeal } from '#lib/catalog/ocr-provenance.js';
 import {
   buildLayerMokuroMetadata,
   buildPrimaryMokuroMetadata,
   type MokuroMetadata
 } from './mokuro-metadata';
-import { buildPageCharCounts } from '$lib/catalog/page-char-counts';
+import { buildPageCharCounts } from '#lib/catalog/page-char-counts.js';
 import { layerSidecarName } from './sync/syncable-file';
 
 // Re-exported for existing importers (volume-sidecars, zip, tests).
@@ -192,7 +196,7 @@ function getDatabase(): Dexie {
     // divergence between them is silent data loss (see `db-schema.ts`).
     //
     // `db-schema.ts` imports nothing at runtime, so this does NOT pull the
-    // main-thread graph `db-v3.ts` carries ($app/environment, the progress
+    // main-thread graph `db-v3.ts` carries ($app/env, the progress
     // tracker, the thumbnail generator) into the Worker bundle.
     workerDb = new Dexie(MOKURO_DB_NAME);
     declareMokuroSchema(workerDb);

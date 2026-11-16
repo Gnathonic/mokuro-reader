@@ -2,21 +2,21 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import 'fake-indexeddb/auto';
 import { get } from 'svelte/store';
 
-vi.mock('$lib/catalog/thumbnails', () => ({ generateThumbnail: vi.fn() }));
-vi.mock('$lib/util/progress-tracker', () => ({
+vi.mock('#lib/catalog/thumbnails.js', () => ({ generateThumbnail: vi.fn() }));
+vi.mock('#lib/util/progress-tracker.js', () => ({
   progressTrackerStore: { addProcess: vi.fn(), updateProcess: vi.fn(), removeProcess: vi.fn() }
 }));
-vi.mock('$lib/catalog/db', async () => {
+vi.mock('#lib/catalog/db.js', async () => {
   const { CatalogDexieV3 } =
-    await vi.importActual<typeof import('$lib/catalog/db-v3')>('$lib/catalog/db-v3');
+    await vi.importActual<typeof import('#lib/catalog/db-v3.js')>('#lib/catalog/db-v3.js');
   return { db: new CatalogDexieV3('mokuro_v3_layer_summaries_test') };
 });
-vi.mock('$lib/util/sync/sidecar-backfill', () => ({ noteOcrEdited: vi.fn() }));
+vi.mock('#lib/util/sync/sidecar-backfill.js', () => ({ noteOcrEdited: vi.fn() }));
 
-import { countIdbOps } from '$lib/catalog/__tests__/idb-op-counter';
-import { db } from '$lib/catalog/db';
-import { clearAllLayers, putLayerWithPages } from '$lib/catalog/layer-store';
-import type { Page } from '$lib/types';
+import { countIdbOps } from '#lib/catalog/__tests__/idb-op-counter.js';
+import { db } from '#lib/catalog/db.js';
+import { clearAllLayers, putLayerWithPages } from '#lib/catalog/layer-store.js';
+import type { Page } from '#lib/types/index.js';
 import { layerSummaries, type LayerSummary } from './layer-list';
 import { persistLayerPageEdit } from './layers';
 

@@ -5,7 +5,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { googleDriveCore } from '../google-drive-core';
-import { ProviderError } from '$lib/util/sync/provider-interface';
+import { ProviderError } from '#lib/util/sync/provider-interface.js';
 import { MAX_RETRY_ATTEMPTS } from '../../http-retry';
 
 /** What the fake XHR answers each request with, in order. */

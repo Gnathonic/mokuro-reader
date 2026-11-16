@@ -3,8 +3,8 @@ import { render, cleanup } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import Snackbar from '../Snackbar.svelte';
 import ProgressTracker from '../ProgressTracker.svelte';
-import { snackbarStore } from '$lib/util/snackbar';
-import { progressTrackerStore } from '$lib/util/progress-tracker';
+import { snackbarStore } from '#lib/util/snackbar.js';
+import { progressTrackerStore } from '#lib/util/progress-tracker.js';
 
 describe('Snackbar', () => {
   afterEach(() => {

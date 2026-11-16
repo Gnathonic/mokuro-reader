@@ -10,9 +10,9 @@
   import { Accordion, Button, Drawer } from 'flowbite-svelte';
   import { UserSettingsSolid } from 'flowbite-svelte-icons';
   import { sineIn } from 'svelte/easing';
-  import { resetSettings } from '$lib/settings';
-  import { isReader, promptConfirmation } from '$lib/util';
-  import { currentView } from '$lib/util/hash-router';
+  import { resetSettings } from '#lib/settings/index.js';
+  import { isReader, promptConfirmation } from '#lib/util/index.js';
+  import { currentView } from '#lib/util/hash-router.js';
   import AnkiConnectSettings from './AnkiConnectSettings.svelte';
   import ReaderSettings from './Reader/ReaderSettings.svelte';
   import Profiles from './Profiles/Profiles.svelte';
@@ -23,8 +23,8 @@
   import About from './About.svelte';
   import QuickAccess from './QuickAccess.svelte';
   import AppearanceSettings from './AppearanceSettings.svelte';
-  import { pageAdjustPreviewing } from '$lib/reader/page-adjust-preview';
-  import { focusFirstInView } from '$lib/util/focus-in-view';
+  import { pageAdjustPreviewing } from '#lib/reader/page-adjust-preview.js';
+  import { focusFirstInView } from '#lib/util/focus-in-view.js';
 
   let transitionParams = {
     x: 320,

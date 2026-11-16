@@ -1,16 +1,16 @@
 <script lang="ts">
-  import { catalog } from '$lib/catalog';
-  import { nav, routeParams } from '$lib/util/hash-router';
-  import { db } from '$lib/catalog/db';
-  import { isVolumeInstalled } from '$lib/catalog/volume-state';
-  import { getCharCount } from '$lib/util/count-chars';
+  import { catalog } from '#lib/catalog/index.js';
+  import { nav, routeParams } from '#lib/util/hash-router.js';
+  import { db } from '#lib/catalog/db.js';
+  import { isVolumeInstalled } from '#lib/catalog/volume-state.js';
+  import { getCharCount } from '#lib/util/count-chars.js';
   import { Button, Alert } from 'flowbite-svelte';
   import { ArrowLeftOutline, ClipboardOutline, CheckOutline } from 'flowbite-svelte-icons';
   import { Spinner } from 'flowbite-svelte';
-  import type { VolumeData, VolumeMetadata } from '$lib/types';
+  import type { VolumeData, VolumeMetadata } from '#lib/types/index.js';
   import { onMount } from 'svelte';
-  import { personalizedReadingSpeed } from '$lib/settings/reading-speed';
-  import { calculateEstimatedTime } from '$lib/util/reading-speed';
+  import { personalizedReadingSpeed } from '#lib/settings/reading-speed.js';
+  import { calculateEstimatedTime } from '#lib/util/reading-speed.js';
 
   let seriesId = $derived($routeParams.manga || '');
   let normalizedSeriesId = $derived(seriesId.trim().replace(/\s+/g, ' ').toLowerCase());

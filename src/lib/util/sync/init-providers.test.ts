@@ -13,7 +13,7 @@ const boot = vi.hoisted(() => ({
 }));
 
 vi.mock('./provider-detection', () => ({ getConfiguredProviderType: () => boot.configured }));
-vi.mock('$lib/util/sync/providers/google-drive/auth-backend', () => ({
+vi.mock('#lib/util/sync/providers/google-drive/auth-backend.js', () => ({
   hasPendingCallback: () => boot.callbackPending
 }));
 vi.mock('./providers/google-drive/google-drive-provider', () => ({
@@ -33,10 +33,10 @@ vi.mock('./unified-cloud-manager', () => ({
     syncProgress: vi.fn(async () => ({ succeeded: 1, failed: 0 }))
   }
 }));
-vi.mock('$lib/util/sync/providers/google-drive/api-client', () => ({
+vi.mock('#lib/util/sync/providers/google-drive/api-client.js', () => ({
   driveApiClient: { initialize: vi.fn(async () => order.push('initialize')) }
 }));
-vi.mock('$lib/util/sync/providers/google-drive/token-manager', () => ({
+vi.mock('#lib/util/sync/providers/google-drive/token-manager.js', () => ({
   tokenManager: {
     restoreSession: vi.fn(async () => order.push('restoreSession')),
     getTimeUntilExpiry: vi.fn((): number | null => null),
@@ -44,14 +44,14 @@ vi.mock('$lib/util/sync/providers/google-drive/token-manager', () => ({
     reAuthenticate: vi.fn()
   }
 }));
-vi.mock('$lib/settings/misc', async () => {
+vi.mock('#lib/settings/misc.js', async () => {
   const { writable } = await import('svelte/store');
   return { miscSettings: writable({ gdriveAutoReAuth: true }) };
 });
 vi.mock('../snackbar', () => ({ showSnackbar: vi.fn() }));
 
 import { initializeProviders } from './init-providers';
-import { tokenManager } from '$lib/util/sync/providers/google-drive/token-manager';
+import { tokenManager } from '#lib/util/sync/providers/google-drive/token-manager.js';
 import { unifiedCloudManager } from './unified-cloud-manager';
 
 beforeEach(() => {

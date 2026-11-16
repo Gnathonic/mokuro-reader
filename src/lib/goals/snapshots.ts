@@ -3,7 +3,7 @@ import { volumes } from '../settings/volume-data';
 // Placeholders included, for the same reason `active-progress` uses them: a
 // volume read on another device and never downloaded here has no catalog row,
 // and a snapshot is permanent — undercounting one is not recoverable.
-import { volumesWithPlaceholders as catalogVolumes } from '$lib/catalog';
+import { volumesWithPlaceholders as catalogVolumes } from '#lib/catalog/index.js';
 import { completionEventsFor } from './completed-at';
 import { dateUtils } from './date-utils';
 import { partialProgressInPeriod } from './goal-counting';

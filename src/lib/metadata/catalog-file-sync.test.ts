@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { readable } from 'svelte/store';
 
-vi.mock('$app/environment', () => ({ browser: true }));
+vi.mock('$app/env', () => ({ browser: true }));
 
 let status = {
   hasAnyAuthenticated: true,
@@ -11,7 +11,7 @@ let status = {
     { isReadOnly?: boolean; serverCompilesMetadata?: boolean } | null
   >
 };
-vi.mock('$lib/util/sync/provider-manager', () => ({
+vi.mock('#lib/util/sync/provider-manager.js', () => ({
   providerManager: {
     get status() {
       return readable(status);
@@ -20,17 +20,17 @@ vi.mock('$lib/util/sync/provider-manager', () => ({
 }));
 
 const writeCatalogFile = vi.fn(async () => 'written' as const);
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: { writeCatalogFile: () => writeCatalogFile() }
 }));
 
 const ensureFreshCloudListing = vi.fn(async () => true);
-vi.mock('$lib/metadata/series-file-sync', () => ({
+vi.mock('#lib/metadata/series-file-sync.js', () => ({
   ensureFreshCloudListing: () => ensureFreshCloudListing()
 }));
 
 const listeners: Array<(title: string) => void> = [];
-vi.mock('$lib/metadata/store', () => ({
+vi.mock('#lib/metadata/store.js', () => ({
   registerFactsChangeListener: (fn: (title: string) => void) => {
     listeners.push(fn);
     return () => {

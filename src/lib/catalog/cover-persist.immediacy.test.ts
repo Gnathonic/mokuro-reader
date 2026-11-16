@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { VolumeMetadata } from '$lib/types';
+import type { VolumeMetadata } from '#lib/types/index.js';
 
 /**
  * The flush IMMEDIACY of `cover-persist.ts` (`scheduleDrain`/`runDrain`/
@@ -28,7 +28,7 @@ import type { VolumeMetadata } from '$lib/types';
  * advance a clock far enough for a timer-based window to fire.
  */
 
-vi.mock('$lib/catalog/thumbnail-cache', () => ({
+vi.mock('#lib/catalog/thumbnail-cache.js', () => ({
   thumbnailCache: { invalidate: vi.fn() }
 }));
 
@@ -46,7 +46,7 @@ const { rowsByUuid, transactionSpy, batchSizes, txGate } = vi.hoisted(() => ({
    */
   txGate: { hold: null as Promise<void> | null }
 }));
-vi.mock('$lib/catalog/db', () => ({
+vi.mock('#lib/catalog/db.js', () => ({
   db: {
     volumes: {
       get: async (uuid: string) => rowsByUuid.get(uuid),
@@ -99,7 +99,7 @@ const readingHistory = vi.hoisted(() => {
     }
   };
 });
-vi.mock('$lib/settings/volume-data', () => ({
+vi.mock('#lib/settings/volume-data.js', () => ({
   volumes: readingHistory.store
 }));
 

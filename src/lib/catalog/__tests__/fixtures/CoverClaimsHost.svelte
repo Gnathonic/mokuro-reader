@@ -8,8 +8,8 @@
    * `targets` and forgetting the action — cannot be rendered by any of them. This
    * host can render it on purpose.
    */
-  import type { VolumeMetadata } from '$lib/types';
-  import { createCoverClaims } from '$lib/catalog/cover-claims.svelte';
+  import type { VolumeMetadata } from '#lib/types/index.js';
+  import { createCoverClaims } from '#lib/catalog/cover-claims.svelte.js';
 
   interface Props {
     /** Claimed and (unless {@link withTargets} is false) asked for. */

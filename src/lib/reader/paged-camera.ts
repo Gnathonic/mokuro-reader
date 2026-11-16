@@ -138,6 +138,31 @@ export class PagedCamera {
     this.settle();
   }
 
+  /**
+   * The content's vertical extent on screen (viewport px) where the pan will
+   * come to rest — the pan TARGET, not the animated position, so a held page
+   * key chains its steps instead of re-measuring a half-finished glide.
+   */
+  verticalExtent(): { start: number; end: number } {
+    const start = this.panY.target;
+    return { start, end: start + this.scaledSize().height };
+  }
+
+  /**
+   * Re-place the view with the content's BOTTOM edge on the viewport's —
+   * where reading backwards into this page continues from (#283). A no-op
+   * when the content fits the viewport's height (it stays centered).
+   */
+  placeAtEnd(): void {
+    const scaled = this.scaledSize();
+    const viewport = this.config.getViewport();
+    if (scaled.height <= viewport.height) return;
+    this.stopPan();
+    this.ty = viewport.height - scaled.height;
+    this.clampAndRender(true);
+    this.settle();
+  }
+
   /** Set the user zoom multiplier (controller frame step). Clamps and renders. */
   setUserZoom(zoom: number): void {
     this.userZoom = zoom;

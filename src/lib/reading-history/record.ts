@@ -1,4 +1,4 @@
-import { generateUUID } from '$lib/util/uuid';
+import { generateUUID } from '#lib/util/uuid.js';
 import type { HistoryDexie } from './history-db';
 import type { EventPayload, PagePayload, PauseCount, ReadingEvent } from './types';
 
@@ -137,17 +137,6 @@ export function recordView(
   return historyFor(db)
     .then((resolved) => appendView(resolved, page, t, answer))
     .catch(warnOnce);
-}
-
-/** An answer given after the view ended (the review list): never throws. */
-export function recordResolve(
-  volume: string,
-  target: [device: string, seq: number],
-  count: PauseCount,
-  t: number = Date.now(),
-  db?: HistoryDexie
-): Promise<ReadingEvent | null> {
-  return recordEvent({ kind: 'resolve', volume, target, count }, t, db);
 }
 
 function historyFor(db?: HistoryDexie): Promise<HistoryDexie> {

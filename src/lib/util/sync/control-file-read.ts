@@ -9,6 +9,29 @@
  * GET with `If-None-Match`, MEGA's in-memory tree) — and hands the nodes here.
  */
 import type { ControlFileNode, ControlFileResult } from './provider-interface';
+import { foldFolderName } from './syncable-file';
+
+/**
+ * The cache key of a control-file read: the bare `name` at the library root,
+ * `<folded folder>/<name>` in a series folder. Folded, because a read returns
+ * the nodes of EVERY spelling of the folder, so two spellings are one read.
+ */
+export function controlReadKey(name: string, folder?: string): string {
+  return folder === undefined ? name : `${foldFolderName(folder)}/${name}`;
+}
+
+/**
+ * Can `folder` be one series-folder name on a store that addresses files by
+ * PATH (WebDAV, OneDrive, a local folder)? Not when empty, `.`/`..`, or
+ * holding a `/`: series folders sit directly under the library root, and a
+ * read never resolves a path that climbs or nests. A store that finds folders
+ * by NAME (Drive, MEGA, where a `/` is just a character) only needs it
+ * non-empty. A provider answers a folder that fails this with null: "no such
+ * file".
+ */
+export function isPathSafeFolderName(folder: string): boolean {
+  return folder !== '' && folder !== '.' && folder !== '..' && !folder.includes('/');
+}
 
 export interface ListedControlNode {
   id: string;
@@ -58,7 +81,9 @@ export class ControlNodeCache {
 
 /**
  * Turn a listing of a control file's nodes into a `readControlFile` result.
- * `download` runs only for nodes not cached at their current version.
+ * `download` runs only for nodes not cached at their current version. `name`
+ * is the cache key: the control file's name, or `controlReadKey(name, folder)`
+ * for a series folder's file.
  */
 export async function readControlNodes(
   name: string,

@@ -1,5 +1,5 @@
-import type { VolumeMetadata } from '$lib/types';
-import { db } from '$lib/catalog/db';
+import type { VolumeMetadata } from '#lib/types/index.js';
+import { db } from '#lib/catalog/db.js';
 import { BlobReader, BlobWriter, TextReader, ZipWriter } from '@zip.js/zip.js';
 import { compressVolume } from './compress-volume';
 import { buildPrimaryMokuroMetadata, type MokuroMetadata } from './mokuro-metadata';
@@ -10,8 +10,8 @@ import {
   loadVolumeLayerFiles,
   loadVolumeSidecars
 } from './volume-sidecars';
-import { SERIES_FILE_NAME, stringifySeriesFile } from '$lib/metadata/series-file';
-import { isVolumeInstalled } from '$lib/catalog/volume-state';
+import { SERIES_FILE_NAME, stringifySeriesFile } from '#lib/metadata/series-file.js';
+import { isVolumeInstalled } from '#lib/catalog/volume-state.js';
 import { showSnackbar } from './snackbar';
 
 export interface ExportSidecarOptions {

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import Settings from '$lib/components/Settings/Settings.svelte';
+  import Settings from '#lib/components/Settings/Settings.svelte';
   import { UserSettingsSolid } from 'flowbite-svelte-icons';
 
   interface Props {

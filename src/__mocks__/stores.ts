@@ -137,7 +137,7 @@ export function createMiscSettingsMock() {
  *
  * Usage:
  * ```typescript
- * vi.mock('$lib/settings/settings', () =>
+ * vi.mock('#lib/settings/settings.js', () =>
  *   createStoreMockFactory({
  *     profiles: mockWritable([]),
  *     currentProfile: mockWritable('default')

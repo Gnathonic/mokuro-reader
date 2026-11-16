@@ -1,12 +1,12 @@
 <script lang="ts">
-  import { scanFiles } from '$lib/upload';
-  import { importFiles } from '$lib/import';
-  import { showSnackbar } from '$lib/util/snackbar';
+  import { scanFiles } from '#lib/upload/index.js';
+  import { importFiles } from '#lib/import/index.js';
+  import { showSnackbar } from '#lib/util/snackbar.js';
   import {
     showImportPreparing,
     updateImportPreparing,
     closeImportPreparing
-  } from '$lib/util/modals';
+  } from '#lib/util/modals.js';
 
   let isDragging = $state(false);
   let dragCounter = 0; // Track enter/leave for nested elements

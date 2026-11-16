@@ -27,7 +27,7 @@ const { getActiveProvider } = vi.hoisted(() => ({ getActiveProvider: vi.fn() }))
 // `cloudFiles` is here because the FIRST `acquireCover` of a session starts the keys-only
 // cover key watch (`cover-resolver.ts`'s `ensureCoverKeyWatch`), which subscribes to this
 // listing. An empty one means the watch starts, finds nothing to query, and stays inert.
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: {
     getActiveProvider,
     cloudFiles: {
@@ -62,17 +62,20 @@ const { providerStatus, publishAccountScope } = vi.hoisted(() => {
     }
   };
 });
-vi.mock('$lib/util/sync', () => ({ providerManager: { status: providerStatus } }));
+vi.mock('#lib/util/sync/index.js', () => ({ providerManager: { status: providerStatus } }));
 
 // Fetching a cover that is NOT cached is `cover-service.ts`'s job; this file is about one
 // that already is.
-vi.mock('$lib/catalog/cover-service', () => ({
+vi.mock('#lib/catalog/cover-service.js', () => ({
   requestCover: vi.fn(),
   isCoverFetchTarget: () => false
 }));
-vi.mock('$lib/util/modals', () => ({ promptSeriesEditor: vi.fn(), promptConfirmation: vi.fn() }));
-vi.mock('$lib/catalog/series-delete', () => ({ promptSeriesRemoval: vi.fn() }));
-vi.mock('$lib/util/download-queue', () => ({
+vi.mock('#lib/util/modals.js', () => ({
+  promptSeriesEditor: vi.fn(),
+  promptConfirmation: vi.fn()
+}));
+vi.mock('#lib/catalog/series-delete.js', () => ({ promptSeriesRemoval: vi.fn() }));
+vi.mock('#lib/util/download-queue.js', () => ({
   downloadQueue: {
     subscribe: (fn: (v: unknown[]) => void) => {
       fn([]);
@@ -102,14 +105,17 @@ const { catalogVolumes, publishCatalogVolumes } = vi.hoisted(() => {
     }
   };
 });
-vi.mock('$lib/catalog', () => ({ volumes: catalogVolumes }));
+vi.mock('#lib/catalog/index.js', () => ({ volumes: catalogVolumes }));
 
 import PlaceholderThumbnail from '../PlaceholderThumbnail.svelte';
 import CatalogListItem from '../CatalogListItem.svelte';
-import type { VolumeMetadata } from '$lib/types';
-import { db } from '$lib/catalog/db';
-import { putCloudCovers, type CloudCover } from '$lib/catalog/cloud-covers';
-import { _heldCoverCountForTests, _resetCoverResolverForTests } from '$lib/catalog/cover-resolver';
+import type { VolumeMetadata } from '#lib/types/index.js';
+import { db } from '#lib/catalog/db.js';
+import { putCloudCovers, type CloudCover } from '#lib/catalog/cloud-covers.js';
+import {
+  _heldCoverCountForTests,
+  _resetCoverResolverForTests
+} from '#lib/catalog/cover-resolver.js';
 
 const SCOPE = 'webdav:https://host/dav|nathan';
 const CLOUD_PATH = 'Dr Stone/Volume 01.cbz';

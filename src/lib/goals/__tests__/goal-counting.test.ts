@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('$app/environment', () => ({ browser: true }));
-vi.mock('$lib/catalog/db', () => ({
+vi.mock('$app/env', () => ({ browser: true }));
+vi.mock('#lib/catalog/db.js', () => ({
   db: { volumes: { get: vi.fn().mockResolvedValue(undefined), bulkGet: vi.fn(async () => []) } }
 }));
 
-import { VolumeData } from '$lib/settings/volume-data';
+import { VolumeData } from '#lib/settings/volume-data.js';
 import { isCompletedInPeriod, partialProgressInPeriod } from '../goal-counting';
 import { mergeSnapshotEntries, type GoalSnapshotEntry } from '../goals-file';
 
@@ -135,8 +135,9 @@ describe('partial credit is MONOTONE in pages read', () => {
       progress: to,
       completed: to >= pageCount - 1,
       completedAt: '2025-06-01T00:00:00.000Z',
+      // 20 s a page: read, not flipped through (`hasFreshPassSince`).
       recentPageTurns: Array.from({ length: to - from + 1 }, (_, i) => [
-        feb + i * 1000,
+        feb + i * 20_000,
         from + i,
         (from + i) * 10
       ]) as [number, number, number][]

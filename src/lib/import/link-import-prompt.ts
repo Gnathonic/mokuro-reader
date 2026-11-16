@@ -8,9 +8,9 @@
  * may change a series that is already in the library.
  */
 
-import type { ConfirmationDetails } from '$lib/util/modals';
-import { describeLinkTarget, linkTargetWarnings, type LinkTarget } from '$lib/util/link-safety';
-import { sanitizeTitleSegment } from '$lib/util/sanitize-title';
+import type { ConfirmationDetails } from '#lib/util/modals.js';
+import { describeLinkTarget, linkTargetWarnings, type LinkTarget } from '#lib/util/link-safety.js';
+import { sanitizeTitleSegment } from '#lib/util/sanitize-title.js';
 import type { HtmlDownloadRequest } from './html-download-provider';
 import { protectedSeriesKey } from './series-file-import';
 
