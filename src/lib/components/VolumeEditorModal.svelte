@@ -23,7 +23,8 @@
     removeCredits,
     type SheetVolume
   } from '#lib/reading-history/mark-read-flow.js';
-  import { creditPages, currentPassCredits, formatMinutes } from '#lib/reading-history/credit.js';
+  import { creditPages, formatMinutes } from '#lib/reading-history/credit.js';
+  import { editorSave, editorStats } from '#lib/reading-history/editor-stats.js';
   import { showSnackbar } from '#lib/util/index.js';
   import { sanitizeRenameTitle } from '#lib/util/sanitize-title.js';
   import { ProviderError } from '#lib/util/sync/provider-interface.js';
@@ -31,14 +32,7 @@
   import type { VolumeMetadata } from '#lib/types/index.js';
   import { get } from 'svelte/store';
   import { volumesWithTrash } from '#lib/settings/volume-data.js';
-  import {
-    figuresFor,
-    minutesAfterReset,
-    passFiguresFor,
-    readingStats,
-    readingStatsReady,
-    resetEndsPass
-  } from '#lib/reading-history/stats-store.js';
+  import { readingStats, readingStatsReady } from '#lib/reading-history/stats-store.js';
   import { isVolumeFinished } from '#lib/util/volume-helpers.js';
   import VolumeEditorCoverPicker from './VolumeEditorCoverPicker.svelte';
   import {
@@ -274,21 +268,15 @@
    * either way the save records the difference from the NEW figure.
    */
   function loadFigures(initial: boolean) {
-    const stats = get(readingStats);
-    const record = get(volumesWithTrash)[volumeUuid];
-    const figures = figuresFor(stats, volumeUuid, record);
+    const shown = editorStats(get(readingStats), volumeUuid, get(volumesWithTrash)[volumeUuid]);
     const userTyped = !initial && timeReadInMinutes !== loadedMinutes;
-    loadedMinutes = figures.minutes;
+    loadedMinutes = shown.minutes;
     if (!userTyped) {
-      timeReadInMinutes = figures.minutes;
+      timeReadInMinutes = shown.minutes;
       updateTimeFromMinutes(timeReadInMinutes);
     }
-    charsRead = passFiguresFor(stats, volumeUuid, record).chars;
-    const credits = currentPassCredits(stats, volumeUuid, record);
-    const ms = credits.reduce((n, c) => n + c.ms, 0);
-    const chars = credits.reduce((n, c) => n + c.chars, 0);
-    const pages = credits.reduce((n, c) => n + c.pages.length, 0);
-    counted = ms > 0 || chars > 0 ? { ms, chars, pages } : null;
+    charsRead = shown.passChars;
+    counted = shown.counted;
   }
 
   async function refreshAfterCredit() {
@@ -473,20 +461,22 @@
       // away what the pass's credits count, time included, so the time edit
       // starts from the time AFTER it (`minutesAfterReset`): from the figure
       // shown it would take the credits' time off twice.
-      const stats = get(readingStats);
-      const record = get(volumesWithTrash)[volumeUuid];
-      const reset = resetChars && resetEndsPass(stats, volumeUuid, record);
-      const timeFrom = reset ? minutesAfterReset(stats, volumeUuid, record) : loadedMinutes;
+      const save = editorSave(get(readingStats), volumeUuid, get(volumesWithTrash)[volumeUuid], {
+        shownMinutes: loadedMinutes,
+        toMinutes: timeReadInMinutes,
+        resetAll: resetChars
+      });
 
       // Update localStorage stats
       updateVolumeStats(volumeUuid, {
         progress,
         chars: positionChars,
-        timeRead: { from: timeFrom, to: timeReadInMinutes },
+        timeRead: save.timeRead,
         // Reset All un-reads too: the card's check follows the stored flag
         // (`isVolumeFinished`), so page 0 alone would leave it showing read.
         ...(resetChars && { completed: false }),
-        ...(reset && { reset: true }),
+        ...(save.reset && { reset: true }),
+        ...(save.retract.length > 0 && { retract: save.retract }),
         ...(completedAt && { completedAt }),
         series_uuid: finalSeriesUuid,
         series_title: finalSeriesTitle,

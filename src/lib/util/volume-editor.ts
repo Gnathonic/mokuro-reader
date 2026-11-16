@@ -246,6 +246,8 @@ export function updateVolumeStats(
      * the whole volume's — the difference was never reading.
      */
     reset?: boolean;
+    /** Credits to retract, `[device, seq]` (Reset All takes what was counted when marked read). */
+    retract?: Array<[device: string, seq: number]>;
     completed?: boolean;
     /**
      * When the current pass was finished, as the user corrected it (#304). An
@@ -322,6 +324,9 @@ export function updateVolumeStats(
     });
   }
   if (updates.reset) void recordEvent({ kind: 'reset', volume: volumeUuid });
+  for (const target of updates.retract ?? []) {
+    void recordEvent({ kind: 'retract', volume: volumeUuid, target });
+  }
 }
 
 /** A stored completion date as the editor's `<input type="date">` value (local day). */
