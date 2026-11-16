@@ -49,6 +49,7 @@ import { BUNKO_MARKER_NAME } from '#lib/util/sync/syncable-file.js';
 import { bunkoSupportsHistory } from '#lib/util/sync/providers/webdav/bunko-version.js';
 import { POSITIONS_FILE_NAME } from '#lib/positions/positions-file.js';
 import { parseSeriesQueueBlock, type SeriesQueueBlock } from './series-queue';
+import { noteSidecarRule } from '#lib/util/sync/sidecar-rule.js';
 
 /** Files a marker may say Bunko compiles. */
 export const COMPILED_METADATA_FILES = ['series.json', 'catalog.json'] as const;
@@ -94,6 +95,8 @@ export function parseBunkoMarker(json: unknown): BunkoMarker | null {
   if (typeof id !== 'string' || !id) return null;
   const ttl = json.ttl_s;
   const epoch = json.epoch;
+  // Informational only: logged when newer than ours, never a gate.
+  noteSidecarRule('marker', json.sidecar_rule);
   return {
     version: 1,
     instance_id: id,

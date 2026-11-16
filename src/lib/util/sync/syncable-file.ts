@@ -231,7 +231,7 @@ export function isBestEffortMetadataPath(path: string): boolean {
 export const LAYER_ID_RE = /^[a-z0-9-]{1,32}$/;
 
 /** The sidecar names rule this reader implements (`sidecar-names.json`'s `rule`). */
-export const SIDECAR_RULE = 2;
+export { SIDECAR_RULE } from './sidecar-rule';
 
 export type MokuroSidecarClass =
   | { kind: 'primary'; stem: string; gz: boolean }
@@ -247,6 +247,31 @@ function stripFolded(name: string, suffix: string): { raw: string; fold: string 
   if (!foldName(name).endsWith(suffix)) return null;
   const cut = splitAtDots(name, suffix.split('.').length - 1);
   return cut && { raw: cut.raw, fold: cut.fold };
+}
+
+/**
+ * `name` (a basename or a whole path) without the first of `suffixes`
+ * (lowercase, dot included: `.cbz`, `.mokuro.gz`) its FOLD ends with, cut at
+ * the same dot as the fold (R2): `Vol 1.CBZ`, `Vol 1.cb\u{200B}z` are `Vol 1`.
+ * `raw` is spelled as in `name`, `fold` is its fold; null when no suffix fits.
+ */
+export function stripFoldedSuffix(
+  name: string,
+  suffixes: readonly string[]
+): { raw: string; fold: string; suffix: string } | null {
+  const folded = foldName(name);
+  for (const suffix of suffixes) {
+    if (!folded.endsWith(suffix)) continue;
+    const cut = splitAtDots(name, suffix.split('.').length - 1);
+    if (cut) return { raw: cut.raw, fold: cut.fold, suffix };
+  }
+  return null;
+}
+
+/** Is `name` (a basename or a path) a `.mokuro` or `.mokuro.gz` by its fold (R2)? */
+export function isMokuroFile(name: string): boolean {
+  const folded = foldName(name);
+  return folded.endsWith('.mokuro') || folded.endsWith('.mokuro.gz');
 }
 
 /** `(raw base, folded base, gz)` of a `.mokuro[.gz]` name (R2: on the fold). */

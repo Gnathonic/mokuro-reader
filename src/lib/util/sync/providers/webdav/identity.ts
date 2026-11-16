@@ -20,6 +20,7 @@ import type {
   CuratedVolume,
   SeriesMetadataPermissions
 } from '../../provider-interface';
+import { noteSidecarRule } from '../../sidecar-rule';
 
 export interface ServerPermissions {
   canWriteProgress: boolean;
@@ -182,6 +183,8 @@ function interpretResponse(
     // terminate the search, or it masks a working /login/api/me at the origin
     // root. Only a parsed-JSON 200 is terminal.
     if (!jsonParsed) return null;
+    // Informational only: logged when newer than ours, never a gate.
+    noteSidecarRule('login-me', record?.sidecar_rule);
     if (authenticated === true) {
       const permissions = normalizePermissions(record?.permissions);
       if (permissions) {
