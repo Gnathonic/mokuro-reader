@@ -228,15 +228,18 @@ export function updateVolumeStats(
     chars?: number;
     /**
      * Time read, in minutes: `from` is what the stats showed when the editor
-     * opened (history + baseline), `to` what the user entered. The difference
-     * is recorded as an `adjust` event; the retired minute counter is never
-     * written.
+     * opened (history + baseline) — with `reset`, what they will show once
+     * the reset is applied (`minutesAfterReset`) — `to` what the user
+     * entered. The difference is recorded as an `adjust` event; the retired
+     * minute counter is never written.
      */
     timeRead?: { from: number; to: number };
     /**
      * "Reset All": the current pass's characters go to zero, and its pages
      * may be read again — recorded as a `reset` event, which the stats apply
-     * on every device (#224). A page edit is NOT a characters edit: the
+     * on every device (#224). Only when the pass counts something: a reset
+     * is a format-2 event, and a build that reads format 1 only skips the
+     * whole device-month it lands in. A page edit is NOT a characters edit: the
      * record's `chars` is the position's count, and a mark-as-read set it to
      * the whole volume's — the difference was never reading.
      */

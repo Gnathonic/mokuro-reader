@@ -33,6 +33,7 @@
   import { volumesWithTrash } from '#lib/settings/volume-data.js';
   import {
     figuresFor,
+    minutesAfterReset,
     passFiguresFor,
     readingStats,
     readingStatsReady
@@ -120,8 +121,13 @@
 
   /** "Count pages read elsewhere…" counts pages not read here up to this page. */
   let elsewhereUpTo = $derived(finished ? pageCount : Math.max(0, Math.min(progress, pageCount)));
+  /**
+   * Not while a Reset All waits for Save: the reset ends the pass, so a credit
+   * recorded now would count nothing — and the pages it lists are this pass's.
+   */
   let canCountElsewhere = $derived(
-    !!sheetVolume &&
+    !resetChars &&
+      !!sheetVolume &&
       elsewhereUpTo > 0 &&
       creditPages(sheetVolume.notRead, sheetVolume.pageChars, elsewhereUpTo).chars > 0
   );
@@ -457,16 +463,27 @@
         await updateVolumeInDb(volumeUuid, metadataUpdates);
       }
 
+      // Reset All: the pass's characters go to zero and its pages may be read
+      // again (a `reset` event: every device's stats apply it) — recorded only
+      // when the pass counts something, so a save of an unread volume writes
+      // no event a build without the kind would skip. The reset also takes
+      // away what the pass's credits count, time included, so the time edit
+      // starts from the time AFTER it (`minutesAfterReset`): from the figure
+      // shown it would take the credits' time off twice.
+      const stats = get(readingStats);
+      const record = get(volumesWithTrash)[volumeUuid];
+      const reset = resetChars && passFiguresFor(stats, volumeUuid, record).chars > 0;
+      const timeFrom = reset ? minutesAfterReset(stats, volumeUuid, record) : loadedMinutes;
+
       // Update localStorage stats
       updateVolumeStats(volumeUuid, {
         progress,
         chars: positionChars,
-        timeRead: { from: loadedMinutes, to: timeReadInMinutes },
+        timeRead: { from: timeFrom, to: timeReadInMinutes },
         // Reset All un-reads too: the card's check follows the stored flag
         // (`isVolumeFinished`), so page 0 alone would leave it showing read.
-        // The pass's characters go to zero and its pages may be read again (a
-        // `reset` event: every device's stats apply it).
-        ...(resetChars && { reset: true, completed: false }),
+        ...(resetChars && { completed: false }),
+        ...(reset && { reset: true }),
         ...(completedAt && { completedAt }),
         series_uuid: finalSeriesUuid,
         series_title: finalSeriesTitle,
@@ -805,7 +822,7 @@
 
           <!-- What "mark as read" counted for pages not read here (#224). -->
           <div class="mt-3 space-y-2 text-sm" data-testid="editor-credit">
-            {#if counted}
+            {#if counted && !resetChars}
               <div class="flex flex-wrap items-center justify-between gap-2">
                 <span class="text-gray-600 dark:text-gray-400">
                   Counted when marked read: {formatMinutes(counted.ms / 60_000)} · {counted.chars.toLocaleString()}

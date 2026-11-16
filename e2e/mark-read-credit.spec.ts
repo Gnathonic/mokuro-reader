@@ -597,3 +597,104 @@ test('Reset All, then the volume read again in the app: it counts again, up to t
   await expect(sheet(page)).toBeHidden();
   expect((await figures(page, VOL1)).chars).toBe(PAGES * CHARS);
 });
+
+/** Vol 1 read again here, every page, a minute each, from now on. */
+async function readAgain(page: Page) {
+  await page.evaluate(
+    async ({ VOL1, PAGES, CHARS, MIN }) => {
+      const { recordEvent } = await import('/src/lib/reading-history/record.ts');
+      const start = Date.now() + 1000;
+      for (let p = 1; p <= PAGES; p++) {
+        await recordEvent(
+          {
+            kind: 'page',
+            volume: VOL1,
+            first_page: p,
+            last_page: p,
+            page_chars: [CHARS],
+            chars_before: (p - 1) * CHARS,
+            dwell_ms: MIN,
+            layout: 'single',
+            orientation: 'portrait',
+            viewport: { w: 400, h: 800 }
+          },
+          start + p * MIN
+        );
+      }
+    },
+    { VOL1, PAGES, CHARS, MIN }
+  );
+}
+
+test('Reset All of a volume counted when marked read: the counted time leaves once, a re-read counts in full', async ({
+  browser
+}, testInfo) => {
+  const page = await device(browser);
+  await installSeries(page);
+  await expect.poll(async () => (await figures(page, VOL1)).chars).toBe(40 * CHARS);
+  await openSeries(page);
+
+  await cardMenu(page, VOL1, 'Mark as read');
+  await page.getByTestId('mark-read-count').click();
+  await expect
+    .poll(async () => await figures(page, VOL1))
+    .toMatchObject({ timeMs: 60 * MIN, credit: { timeMs: 20 * MIN, chars: 2000 } });
+
+  const chars = await editorChars(page, VOL1);
+  await expect(chars).toHaveText('6,000 / 6,000');
+  const credit = page.getByTestId('editor-credit');
+  await expect(credit).toContainText('Counted when marked read: 20 min · 2,000 characters');
+  await page.getByRole('button', { name: 'Reset All' }).click();
+  // The reset takes the credit with it: no longer shown as counted.
+  await expect(chars).toHaveText('0 / 6,000');
+  await expect(credit).not.toContainText('Counted when marked read');
+  await page.screenshot({
+    path: testInfo.outputPath('editor-reset-pending-credited.png'),
+    animations: 'disabled'
+  });
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect
+    .poll(async () => await figures(page, VOL1))
+    .toMatchObject({ chars: 0, timeMs: 0, credit: { timeMs: 0, chars: 0 }, completed: false });
+
+  // Read through again: an hour, all of it counted and measured.
+  await readAgain(page);
+  await expect.poll(async () => (await figures(page, VOL1)).chars).toBe(PAGES * CHARS);
+  expect(await figures(page, VOL1)).toMatchObject({
+    timeMs: PAGES * MIN,
+    credit: { timeMs: 0, chars: 0 }
+  });
+  expect(await measured(page, VOL1)).toEqual({ chars: PAGES * CHARS, timeMs: PAGES * MIN });
+});
+
+test('after Reset All, before Save, a finished volume offers no "Count pages read elsewhere…"', async ({
+  browser
+}, testInfo) => {
+  const page = await device(browser);
+  await installSeries(page);
+  await expect.poll(async () => (await figures(page, VOL1)).chars).toBe(40 * CHARS);
+  await openSeries(page);
+
+  // Marked read without counting: pages 41–60 are left to count.
+  await cardMenu(page, VOL1, 'Mark as read');
+  await page.getByTestId('mark-read-skip').click();
+  await expect.poll(async () => (await figures(page, VOL1)).completed).toBe(true);
+
+  await editorChars(page, VOL1);
+  const count = page.getByTestId('editor-count-elsewhere');
+  await expect(count).toBeVisible();
+  await page.getByRole('button', { name: 'Reset All' }).click();
+  await expect(count).toHaveCount(0);
+  // Paging forward again does not bring it back before the Save.
+  await page.locator('#progress').fill('60');
+  await expect(count).toHaveCount(0);
+  await page.screenshot({
+    path: testInfo.outputPath('editor-reset-pending-no-count.png'),
+    animations: 'disabled'
+  });
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect.poll(async () => (await figures(page, VOL1)).chars).toBe(0);
+  // Saved: the editor counts again from the new pass.
+  await editorChars(page, VOL1);
+  await expect(count).toBeVisible();
+});

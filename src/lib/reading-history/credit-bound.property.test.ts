@@ -14,12 +14,14 @@ import {
   creditsFor,
   figuresFor,
   measuredFigures,
+  minutesAfterReset,
   pagesNotReadHere,
   passFiguresFor,
   type BaselineSource,
   type ReadingStatsState
 } from './stats-store';
 import type { ReadingEvent } from './types';
+import type { LegacyStats } from '#lib/settings/volume-data.js';
 
 /*
  * A sweep over the states a volume's history can be in (#224): reading here
@@ -88,6 +90,8 @@ interface Case {
   record: BaselineSource;
   /** Every page view used today's page counts, and nothing counts without pages. */
   pageExact: boolean;
+  /** An unfrozen record (the old minute counter): the same snapshot, frozen now. */
+  frozenNow?: BaselineSource;
 }
 
 /** One random history, credits made the way the app makes them along the way. */
@@ -123,6 +127,20 @@ function build(r: Rng): Case {
   const steps = r.int(1, 16);
   /** The step the snapshot is frozen at (`steps` = after them all); −1 = none. */
   const freezeAt = r.chance(0.45) ? r.int(0, steps) : -1;
+  // Not frozen at all: a record on the old minute counter, its live count
+  // the snapshot (`before: Infinity`) the whole time.
+  let unfrozen: LegacyStats | null = null;
+  if (freezeAt === -1 && r.chance(0.4)) {
+    const position = cumulative(r.int(0, pages), pageChars);
+    record.archivedReads = archived;
+    record.timeReadInMinutes = r.int(1, 60);
+    record.chars = position;
+    unfrozen = {
+      time_ms: record.timeReadInMinutes * MIN,
+      chars: position + sum(archived.map((a) => a.chars)),
+      before: Infinity
+    };
+  }
   const freeze = () => {
     const position = cumulative(r.int(0, pages), pageChars);
     record.archivedReads = archived;
@@ -232,6 +250,15 @@ function build(r: Rng): Case {
     }
   }
   if (freezeAt === steps) freeze();
+  if (unfrozen) {
+    return {
+      pageChars,
+      events,
+      record,
+      pageExact: false,
+      frozenNow: { archivedReads: archived, legacyStats: { ...unfrozen, before: t + 1 } }
+    };
+  }
   return { pageChars, events, record, pageExact };
 }
 
@@ -239,7 +266,7 @@ function build(r: Rng): Case {
 const withoutCredits = (events: ReadingEvent[]) =>
   events.filter((e) => e.kind !== 'credit' && e.kind !== 'retract');
 
-function check({ pageChars, events, record, pageExact }: Case) {
+function check({ pageChars, events, record, pageExact, frozenNow }: Case) {
   const size = sum(pageChars);
   const state = stateOf(events);
   const bare = stateOf(withoutCredits(events));
@@ -262,10 +289,18 @@ function check({ pageChars, events, record, pageExact }: Case) {
   // So the lifetime figure is at most what reading alone counts, plus the credits.
   expect(figures.chars).toBeLessThanOrEqual(reference.chars + figures.credit.chars + 1e-6);
 
-  // What credits count matches the figures, and is never negative.
+  // What credits count matches the figures — characters AND time, one
+  // computation — and is never negative.
   expect(figures.credit.chars).toBeGreaterThanOrEqual(0);
   expect(figures.credit.timeMs).toBeGreaterThanOrEqual(-1e-6);
   expect(sum(credits.map((c) => c.chars))).toBeCloseTo(figures.credit.chars, 6);
+  expect(sum(credits.map((c) => c.ms))).toBeCloseTo(figures.credit.timeMs, 6);
+
+  // An unfrozen snapshot counts as freezing it now would: the freeze moves nothing.
+  if (frozenNow) {
+    expect(figuresFor(state, VOLUME, frozenNow)).toEqual(figures);
+    expect(creditsFor(state, VOLUME, frozenNow)).toEqual(credits);
+  }
 
   // Each pass: credits stop at the volume, less what it counts without them.
   for (let pass = 0; pass < totals.passes.length; pass++) {
@@ -282,6 +317,7 @@ function check({ pageChars, events, record, pageExact }: Case) {
     expect(counted.chars).toBeLessThanOrEqual(Math.max(size, countedWithout) + 1e-6);
     expect(counted.credit.chars).toBeLessThanOrEqual(Math.max(0, size - countedWithout) + 1e-6);
     expect(counted.credit.chars).toBeGreaterThanOrEqual(0);
+    expect(sum(here.map((c) => c.ms))).toBeCloseTo(counted.credit.timeMs, 6);
     // A pass Reset All ended counts nothing, credits and baseline included.
     if (totals.passes[pass].reset) {
       expect(counted.chars).toBe(0);
@@ -355,6 +391,42 @@ describe('credits never take a pass past its volume: a sweep over states (#224)'
         expect(pass).toBeLessThanOrEqual(Math.max(size, counted) + 1e-6);
       } catch (error) {
         throw new Error(`seed ${seed * 7919}: ${(error as Error).message}`, { cause: error });
+      }
+    }
+  });
+
+  it("and the editor's Reset All on top of any of them leaves no time, no characters, no credit", () => {
+    for (let seed = 1; seed <= 1000; seed++) {
+      const r = rng(seed * 104_729);
+      const { events, record: built, frozenNow } = build(r);
+      // The editor works on frozen records (a mark or the start freezes them).
+      const record = frozenNow ?? built;
+      const before = stateOf(events);
+      const from = minutesAfterReset(before, VOLUME, record);
+      const at = 10_000_000_000;
+      const after = stateOf([
+        ...events,
+        {
+          device: 'dev-c',
+          seq: 2_000_000 + seed,
+          t: at,
+          kind: 'adjust',
+          volume: VOLUME,
+          time_delta_ms: -from * MIN,
+          chars_delta: 0
+        },
+        { device: 'dev-c', seq: 2_000_001 + seed * 2, t: at + 1, kind: 'reset', volume: VOLUME }
+      ]);
+      try {
+        const figures = figuresFor(after, VOLUME, record);
+        // The time field said 0: what is left is under a minute (minutes are whole).
+        expect(figures.timeMs).toBeGreaterThanOrEqual(0);
+        expect(figures.timeMs).toBeLessThan(MIN);
+        const pass = passFiguresFor(after, VOLUME, record);
+        expect(pass.chars).toBe(0);
+        expect(pass.credit).toEqual({ timeMs: 0, chars: 0 });
+      } catch (error) {
+        throw new Error(`seed ${seed * 104_729}: ${(error as Error).message}`, { cause: error });
       }
     }
   });

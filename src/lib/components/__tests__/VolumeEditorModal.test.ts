@@ -15,6 +15,8 @@ const stats = vi.hoisted(() => {
     chars: 0,
     /** The current pass's characters (`passFiguresFor`); `null` = the same as `chars`. */
     passChars: null as number | null,
+    /** The time once a reset is applied (`minutesAfterReset`). */
+    afterReset: 60,
     figuresFor: vi.fn((state: { ready: boolean }) => ({
       minutes: state.ready ? 60 : 5,
       timeMs: 0,
@@ -33,6 +35,7 @@ vi.mock('#lib/reading-history/stats-store.js', async () => {
     readingStats: readingStats.store,
     readingStatsReady: stats.readingStatsReady,
     figuresFor: stats.figuresFor,
+    minutesAfterReset: vi.fn(() => stats.afterReset),
     passFiguresFor: vi.fn(() => ({
       pass: 0,
       chars: stats.passChars ?? stats.chars,
@@ -221,6 +224,7 @@ describe('VolumeEditorModal reading progress (#224)', () => {
   afterEach(() => {
     stats.chars = 0;
     stats.passChars = null;
+    stats.afterReset = 60;
     closeVolumeEditor();
     cleanup();
   });
@@ -276,6 +280,69 @@ describe('VolumeEditorModal reading progress (#224)', () => {
       timeRead: { from: 60, to: 0 }
     });
     expect('charsRead' in editor.updateVolumeStats.mock.calls[0][1]).toBe(false);
+  });
+
+  it("Reset All's time edit starts from the time after the reset: a credit's time leaves once", async () => {
+    // 60 min shown, 22 of them counted when marked read: the reset itself
+    // takes those 22 away (its pass keeps no credit).
+    stats.afterReset = 38;
+    const { getByText } = render(VolumeEditorModal);
+    promptVolumeEditor('vol-1');
+    await waitFor(() => expect(progressInput()).not.toBeNull());
+    await fireEvent.click(getByText('Reset All'));
+    await fireEvent.click(getByText('Save'));
+    await waitFor(() => expect(editor.updateVolumeStats).toHaveBeenCalled());
+    expect(editor.updateVolumeStats.mock.calls[0][1]).toMatchObject({
+      reset: true,
+      timeRead: { from: 38, to: 0 }
+    });
+  });
+
+  it('Reset All records no reset when the pass counts nothing', async () => {
+    stats.chars = 0;
+    stats.afterReset = 12;
+    const { getByText } = render(VolumeEditorModal);
+    promptVolumeEditor('vol-1');
+    await waitFor(() => expect(progressInput()).not.toBeNull());
+    await fireEvent.click(getByText('Reset All'));
+    await fireEvent.click(getByText('Save'));
+    await waitFor(() => expect(editor.updateVolumeStats).toHaveBeenCalled());
+    const update = editor.updateVolumeStats.mock.calls[0][1];
+    expect(update.reset).toBeUndefined();
+    // Nothing is reset, so nothing leaves with it: from the figure shown.
+    expect(update).toMatchObject({ progress: 0, completed: false, timeRead: { from: 60, to: 0 } });
+  });
+
+  it('after Reset All (before Save) a finished volume offers no counting, and shows no credit', async () => {
+    flow.notRead = [99, 100];
+    readingStats.store.set({
+      ready: true,
+      byVolume: new Map([
+        [
+          'vol-1',
+          {
+            pass: 0,
+            credits: [{ device: 'd', seq: 3, t: 0, pass: 0, ms: 38 * MIN, chars: 9412, pages: [1] }]
+          }
+        ]
+      ])
+    });
+    editor.getVolumeData.mockResolvedValue({
+      metadata: meta,
+      stats: new VolumeData({ progress: 100, chars: 5000, completed: true })
+    });
+    const { getByText } = render(VolumeEditorModal);
+    promptVolumeEditor('vol-1');
+    await waitFor(() =>
+      expect(document.querySelector('[data-testid="editor-count-elsewhere"]')).not.toBeNull()
+    );
+    expect(text('editor-credit')).toContain('Counted when marked read');
+    await fireEvent.click(getByText('Reset All'));
+    expect(document.querySelector('[data-testid="editor-count-elsewhere"]')).toBeNull();
+    expect(text('editor-credit')).not.toContain('Counted when marked read');
+    // Paging forward again does not bring it back before the Save.
+    await fireEvent.input(progressInput(), { target: { value: '100' } });
+    expect(document.querySelector('[data-testid="editor-count-elsewhere"]')).toBeNull();
   });
 
   it('Reset All un-reads a finished volume; a plain save leaves the flag alone', async () => {

@@ -325,8 +325,11 @@ So:
   the characters kept. Real reading is never cut, and a credit never counts a negative.
 - **Store.** A frozen baseline's share of one pass is its position part (the snapshot less reads
   archived before the freeze, each a pass of its own), in the pass the record was on when frozen.
-  It cuts that pass's credits the same way (`figuresFor`, `creditsFor`, `passFiguresFor`). An
-  unfrozen snapshot is set against every event already, credits included, so it is not cut twice.
+  It cuts that pass's credits the same way, computed once per credit (`baselineOf`) and read by
+  `figuresFor`, `creditsFor` and `passFiguresFor` alike. An unfrozen snapshot is explained and cut
+  as freezing it now would (views and edits, never a credit), and a mark freezes the record's
+  snapshot as it stood before it (`withFrozenBaselines`): the live count a mark has moved to the
+  whole volume would otherwise hold the mark's pages as old reading.
 - **The baseline never takes a credit back** (second review). A record merge can keep a snapshot
   frozen AFTER other devices' views, skims included. The first amendment let a credit's claim stop a
   page counting as skimmed everywhere — also in what explains the snapshot — so a credit on a page
@@ -344,7 +347,12 @@ So:
   no position offer — the record's page is the editor's) and takes it to zero characters, the
   baseline's share included; its credits claim nothing. The pages may be read or credited again, so
   reading the volume through after a reset shows N / N. (Recording minus the pass as an adjust left
-  every page read in the pass: a re-read counted nothing, and the editor stayed at 0 / N.)
+  every page read in the pass: a re-read counted nothing, and the editor stayed at 0 / N.) The
+  editor's time edit starts from the time after the reset (`minutesAfterReset`: the reset already
+  takes its credits' time, so an edit from the figure shown took it twice). It is recorded only
+  when the pass counts something (a format-2 event makes a format-1-only build skip the whole
+  device-month), and "Count pages read elsewhere…" is off while a Reset All waits for Save.
+  **Open owner question:** a new event kind (`reset`) versus another way to end a pass.
 - **Speed.** Unchanged by any of it: credits stay out of samples and the pace, and measured figures
   (figures less credit) equal the figures of the same history without credits; so does the baseline.
 - Pinned by `credit-bound.test.ts` (each state above through the real flow) and

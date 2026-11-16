@@ -10,7 +10,12 @@ vi.mock('#lib/catalog/db.js', () => ({
 }));
 
 import { get } from 'svelte/store';
-import { VolumeData, clearVolumes, volumesWithTrash } from '#lib/settings/volume-data.js';
+import {
+  VolumeData,
+  clearVolumes,
+  volumesWithTrash,
+  type LegacyStats
+} from '#lib/settings/volume-data.js';
 import { HistoryDexie } from './history-db';
 import { notifyEventsRecorded } from './record';
 import { _resetHistoryTurns, loadHistoryTurns } from './turns-store';
@@ -24,6 +29,7 @@ import {
   initReadingStats,
   creditsFor,
   measuredFigures,
+  minutesAfterReset,
   pagesNotReadHere,
   passFiguresFor,
   readingStats,
@@ -31,7 +37,8 @@ import {
   recentReadingSpeed,
   seriesReadingSpeed,
   seriesSpeed,
-  unexplainedBaseline
+  unexplainedBaseline,
+  withFrozenBaselines
 } from './stats-store';
 import type { ReadingEvent } from './types';
 
@@ -276,7 +283,7 @@ describe('credits (#224)', () => {
     });
   });
 
-  it('a credit in a later pass, or an unfrozen snapshot, is not cut', async () => {
+  it('a credit in a later pass is not cut', async () => {
     await record([restart('v1', 5), credit('v1', 10, [1, 2, 3, 4, 5, 6], SIX, 60 * MIN, 6000)]);
     const frozen = { legacyStats: { time_ms: 30 * MIN, chars: 6000, before: 1 } };
     expect(figuresFor(get(readingStats), 'v1', frozen)).toMatchObject({
@@ -284,13 +291,58 @@ describe('credits (#224)', () => {
       credit: { chars: 6000 }
     });
     expect(passFiguresFor(get(readingStats), 'v1', frozen).chars).toBe(6000);
-    // Unfrozen (a record on the old minute counter): credits explain it.
-    await record([credit('v2', 10, [1, 2, 3, 4, 5, 6], SIX, 60 * MIN, 6000)]);
+  });
+
+  it('an unfrozen snapshot counts as freezing it now would: a credit never moves its baseline', async () => {
+    // A record on the old minute counter (another device's), not frozen yet.
     const unfrozen = { timeReadInMinutes: 30, chars: 4000 };
-    expect(figuresFor(get(readingStats), 'v2', unfrozen)).toMatchObject({
+    await record([view('v2', 0, 1, 1000, 5 * MIN)]);
+    const before = figuresFor(get(readingStats), 'v2', unfrozen);
+    expect(before).toMatchObject({ chars: 4000, baseline: { timeMs: 25 * MIN, chars: 3000 } });
+    // Counted on a device that did not know the old reading: every other page.
+    await record([credit('v2', 10, [2, 3, 4, 5, 6], SIX.slice(1), 50 * MIN, 6000)]);
+    const stats = get(readingStats);
+    const figures = figuresFor(stats, 'v2', unfrozen);
+    expect(figures).toMatchObject({
       chars: 6000,
-      credit: { chars: 6000 }
+      baseline: before.baseline,
+      credit: { chars: 2000, timeMs: 20 * MIN }
     });
+    expect(measuredFigures(figures)).toEqual(measuredFigures(before));
+    // The freeze changes no figure, and no credit's share.
+    const frozen = { legacyStats: { time_ms: 30 * MIN, chars: 4000, before: Date.now() } };
+    expect(figuresFor(stats, 'v2', frozen)).toEqual(figures);
+    expect(creditsFor(stats, 'v2', frozen)).toEqual(creditsFor(stats, 'v2', unfrozen));
+    expect(passFiguresFor(stats, 'v2', frozen)).toEqual(passFiguresFor(stats, 'v2', unfrozen));
+  });
+
+  it('a figure, what a credit shows and what Remove takes back are one computation', async () => {
+    // Two credits at very different minutes per character; the baseline cuts
+    // the first one's pages only.
+    const legacyStats = { time_ms: 30 * MIN, chars: 2000, before: 1 };
+    await record([
+      credit('one', 10, [1, 2, 3], [1000, 1000, 1000], 90 * MIN, 6000),
+      credit('one', 20, [4, 5, 6], [1000, 1000, 1000], 3 * MIN, 6000)
+    ]);
+    const stats = get(readingStats);
+    const credits = creditsFor(stats, 'one', { legacyStats });
+    expect(credits.map((c) => [c.pages, c.chars, c.ms])).toEqual([
+      [[3], 1000, 30 * MIN],
+      [[4, 5, 6], 3000, 3 * MIN]
+    ]);
+    const shown = credits.reduce((n, c) => ({ ms: n.ms + c.ms, chars: n.chars + c.chars }), {
+      ms: 0,
+      chars: 0
+    });
+    expect(figuresFor(stats, 'one', { legacyStats }).credit).toEqual({
+      timeMs: shown.ms,
+      chars: shown.chars
+    });
+    expect(passFiguresFor(stats, 'one', { legacyStats }).credit).toEqual({
+      timeMs: shown.ms,
+      chars: shown.chars
+    });
+    expect(figuresFor(stats, 'one', { legacyStats }).timeMs).toBe(30 * MIN + shown.ms);
   });
 
   /**
@@ -369,6 +421,61 @@ describe('credits (#224)', () => {
     expect(passFiguresFor(stats, 'rs', { legacyStats }).chars).toBe(6000);
     expect(figuresFor(stats, 'rs', { legacyStats }).chars).toBe(6000);
     expect(pagesNotReadHere(stats, 'rs', SIX, { legacyStats })).toEqual([]);
+  });
+
+  /**
+   * The editor's Reset All save, as `updateVolumeStats` records it: the time
+   * field (0) less the time it starts from (`minutesAfterReset`) as an
+   * adjust, then the reset itself.
+   */
+  async function resetAll(volume: string, t: number, source?: { legacyStats: LegacyStats }) {
+    const from = minutesAfterReset(get(readingStats), volume, source);
+    await record([
+      {
+        device: 'dev-a',
+        seq: ++seq,
+        t,
+        kind: 'adjust',
+        volume,
+        time_delta_ms: (0 - from) * MIN,
+        chars_delta: 0
+      },
+      { device: 'dev-a', seq: ++seq, t: t + 1, kind: 'reset', volume }
+    ]);
+  }
+
+  it("Reset All takes a credit's time off once: reading again counts in full", async () => {
+    await record([
+      view('rt', 0, 1, 1000, 5 * MIN),
+      credit('rt', MIN, [2, 3], [1000, 1000], 5 * MIN, 3000)
+    ]);
+    expect(figuresFor(get(readingStats), 'rt')).toMatchObject({
+      timeMs: 10 * MIN,
+      credit: { timeMs: 5 * MIN }
+    });
+    await resetAll('rt', 10 * MIN);
+    let figures = figuresFor(get(readingStats), 'rt');
+    expect(figures).toMatchObject({ timeMs: 0, chars: 0, credit: { timeMs: 0, chars: 0 } });
+    // Read the volume again: 3 pages, 3 minutes, all of it counted.
+    await record([1, 2, 3].map((page) => view('rt', 20 * MIN + page * MIN, page, 1000, MIN)));
+    figures = figuresFor(get(readingStats), 'rt');
+    expect(figures).toMatchObject({ timeMs: 3 * MIN, chars: 3000 });
+    expect(measuredFigures(figures)).toEqual({ timeMs: 3 * MIN, chars: 3000 });
+  });
+
+  it('… also when the baseline had cut the credit', async () => {
+    const legacyStats = { time_ms: 30 * MIN, chars: 4000, before: 1 };
+    await record([credit('rc', 10, [1, 2, 3, 4, 5, 6], SIX, 60 * MIN, 6000)]);
+    expect(figuresFor(get(readingStats), 'rc', { legacyStats })).toMatchObject({
+      timeMs: 50 * MIN,
+      credit: { timeMs: 20 * MIN, chars: 2000 }
+    });
+    await resetAll('rc', 20, { legacyStats });
+    await record([view('rc', 100, 1, 1000, MIN)]);
+    expect(figuresFor(get(readingStats), 'rc', { legacyStats })).toMatchObject({
+      timeMs: MIN,
+      chars: 1000
+    });
   });
 });
 
@@ -512,6 +619,32 @@ describe('freezeLegacyBaselines', () => {
     });
     freezeLegacyBaselines();
     expect(get(volumesWithTrash).v.legacyStats).toMatchObject({ time_ms: 0, chars: 2100 });
+  });
+
+  it('a mark freezes the snapshot as it stood before it (#224)', () => {
+    setRecords({ old: { progress: 4, chars: 4000, timeReadInMinutes: 30 } });
+    const mark = (id: string) =>
+      volumesWithTrash.update((all) => ({
+        ...all,
+        [id]: new VolumeData({ ...all[id], progress: 6, chars: 6000, completed: true })
+      }));
+    expect(withFrozenBaselines(['old', 'new'], () => (mark('old'), mark('new'), 'done'), 5)).toBe(
+      'done'
+    );
+    // Not the mark's 6,000: that is the credit's to count.
+    expect(get(volumesWithTrash).old.legacyStats).toEqual({
+      time_ms: 30 * MIN,
+      chars: 4000,
+      before: 5
+    });
+    // No reading before the mark (this device's first pass): an empty snapshot.
+    expect(get(volumesWithTrash).new.legacyStats).toEqual({ time_ms: 0, chars: 0, before: 5 });
+    // A frozen record keeps its snapshot; after the first pass a record
+    // with no old minutes gets none.
+    freezeLegacyBaselines();
+    setRecords({ fresh: { progress: 1, chars: 100 } });
+    withFrozenBaselines(['fresh'], () => mark('fresh'));
+    expect(get(volumesWithTrash).fresh.legacyStats).toBeUndefined();
   });
 });
 

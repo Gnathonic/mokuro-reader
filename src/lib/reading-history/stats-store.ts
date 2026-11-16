@@ -221,20 +221,21 @@ function snapshotOf(
  * counter's reading that history does not explain (a skim counts as
  * explained — it was in the old lifetime count, and it is not re-read).
  *
- * A frozen snapshot is explained by the reading and edits from before its
- * freeze only (the engine's timeline: never a credit, #224). An unfrozen one
- * (`before: Infinity`) is the record's LIVE count, which a mark as read has
- * already moved to the whole volume: everything explains it, credits too.
+ * It is explained by the reading and edits from before its freeze only (the
+ * engine's timeline: never a credit, #224). An unfrozen snapshot (`before:
+ * Infinity`) is explained exactly as freezing it now would: by every view
+ * and edit so far, never a credit — so the freeze changes no figure, and a
+ * credit never moves the baseline in the meantime. (This device freezes a
+ * record before it marks it with a credit, `freezeLegacyBaseline`: a live
+ * count a mark already moved to the whole volume would cut the credit.)
  */
 function unexplained(
   snapshot: LegacyStats,
   totals: VolumeTotals | undefined
 ): { timeMs: number; chars: number } {
-  const explained = !totals
-    ? { timeMs: 0, readChars: 0, skippedChars: 0 }
-    : Number.isFinite(snapshot.before)
-      ? totalsBefore(totals, snapshot.before)
-      : totals;
+  const explained = totals
+    ? totalsBefore(totals, snapshot.before)
+    : { timeMs: 0, readChars: 0, skippedChars: 0 };
   return {
     timeMs: Math.max(0, snapshot.time_ms - explained.timeMs),
     chars: Math.max(0, snapshot.chars - explained.readChars - explained.skippedChars)
@@ -257,6 +258,16 @@ export function unexplainedBaseline(
 const NO_BASELINE = { timeMs: 0, chars: 0 };
 const NO_CUT = { chars: 0, ms: 0 };
 
+/** A volume's baseline and what it does to the volume's credits (`baselineOf`). */
+interface Baseline {
+  baseline: { timeMs: number; chars: number };
+  lump: { pass: number; chars: number } | null;
+  /** What the credits of the lump's pass give up: the sum over `credits`. */
+  cut: { chars: number; ms: number };
+  /** Every live credit with what it counts once cut (the engine's when nothing is). */
+  credits: CreditTotals[];
+}
+
 /**
  * A volume's baseline, and how it meets the volume's credits (#224).
  *
@@ -266,34 +277,36 @@ const NO_CUT = { chars: 0, ms: 0 };
  * the freeze, each a pass of its own (`convertLegacyRecord` made them
  * restarts) — in the pass the record was on when it was frozen (`lump`).
  * A credit in that pass gives up what would take the pass past the
- * volume's characters with the lump in it (`cut`; `creditsFor` takes it off
- * the lowest pages the pass's credits hold, as the engine does). A pass a
+ * volume's characters with the lump in it (`cut`, off the lowest pages the
+ * pass's credits hold, as the engine does). A pass a
  * "Reset All" ended keeps none of the lump.
  *
- * Credits never explain a frozen snapshot (the engine's timeline leaves them
- * out), so its baseline is the same with or without them and what they count
- * is never measured reading. An unfrozen snapshot (`before: Infinity`, the
- * record's live count) is set against every event, credits included — a
- * credit already explains it, so nothing is cut.
+ * Credits never explain the snapshot, frozen or not (the engine's timeline
+ * leaves them out), so its baseline is the same with or without them and
+ * what they count is never measured reading.
+ *
+ * The cut is computed here ONCE, per credit (`credits`): each keeps the
+ * pages `coverFirstPages` leaves it and its time in proportion to the
+ * characters it keeps. `cut` is their sum, so the figures (`figuresFor`,
+ * `passFiguresFor`) and what a credit shows or Remove takes back
+ * (`creditsFor`) are the same computation.
  */
 function baselineOf(
   totals: VolumeTotals | undefined,
   record: BaselineSource | undefined
-): {
-  baseline: { timeMs: number; chars: number };
-  lump: { pass: number; chars: number } | null;
-  cut: { chars: number; ms: number };
-} {
+): Baseline {
+  const engine = totals?.credits ?? [];
   const snapshot = snapshotOf(record, !baselinesFrozen);
-  if (!snapshot) return { baseline: NO_BASELINE, lump: null, cut: NO_CUT };
+  if (!snapshot) return { baseline: NO_BASELINE, lump: null, cut: NO_CUT, credits: engine };
   const baseline = unexplained(snapshot, totals);
-  if (baseline.chars <= 0) return { baseline, lump: null, cut: NO_CUT };
+  const none = { baseline, lump: null, cut: NO_CUT, credits: engine };
+  if (baseline.chars <= 0) return none;
   let archived = 0;
   for (const read of record?.archivedReads ?? []) {
     if ((read.at ?? -Infinity) < snapshot.before) archived += read.chars;
   }
   const chars = Math.min(baseline.chars, Math.max(0, snapshot.chars - archived));
-  if (chars <= 0) return { baseline, lump: null, cut: NO_CUT };
+  if (chars <= 0) return none;
   let pass = 0;
   const passes = totals?.passes ?? [];
   for (let p = 1; p < passes.length; p++) if (passes[p].start < snapshot.before) pass = p;
@@ -303,19 +316,35 @@ function baselineOf(
     return {
       baseline: { timeMs: baseline.timeMs, chars: baseline.chars - chars },
       lump: { pass, chars: 0 },
-      cut: NO_CUT
+      cut: NO_CUT,
+      credits: engine
     };
   }
   const lump = { pass, chars };
-  // Unfrozen: the credits already explain it (`unexplained`), nothing to cut.
-  if (!Number.isFinite(snapshot.before) || !inPass || inPass.creditChars <= 0) {
-    return { baseline, lump, cut: NO_CUT };
-  }
+  const uncut = { baseline, lump, cut: NO_CUT, credits: engine };
+  if (!inPass || inPass.creditChars <= 0) return uncut;
   const over = inPass.chars + chars - (inPass.volumeChars ?? Infinity);
   const cutChars = Math.min(inPass.creditChars, Math.max(0, over));
-  if (cutChars <= 0) return { baseline, lump, cut: NO_CUT };
-  const ms = inPass.creditChars > 0 ? (inPass.creditMs * cutChars) / inPass.creditChars : 0;
-  return { baseline, lump, cut: { chars: cutChars, ms } };
+  if (cutChars <= 0) return uncut;
+  // Reading from the start: the cut covers the lowest pages the pass's credits hold.
+  const here = engine.flatMap((credit, i) => (credit.pass === pass ? [i] : []));
+  const kept = coverFirstPages(
+    here.map((i) => {
+      const { pages, pageChars } = engine[i];
+      return pages.map((page, j): [number, number] => [page, pageChars[j] ?? 0]);
+    }),
+    cutChars
+  );
+  const credits = [...engine];
+  const cut = { chars: 0, ms: 0 };
+  here.forEach((i, k) => {
+    const credit = engine[i];
+    const ms = credit.chars > 0 ? (credit.ms * kept[k].chars) / credit.chars : credit.ms;
+    cut.chars += credit.chars - kept[k].chars;
+    cut.ms += credit.ms - ms;
+    credits[i] = { ...credit, ms, ...kept[k] };
+  });
+  return { baseline, lump, cut, credits };
 }
 
 /**
@@ -346,6 +375,29 @@ export function figuresFor(
       chars: (totals?.creditChars ?? 0) - cut.chars
     }
   };
+}
+
+/**
+ * The minutes the volume editor's "Reset All" records its time edit from:
+ * the volume's time as the stats will count it once the reset is applied.
+ * A reset's pass keeps no credit, so the time its credits count now
+ * (`creditsFor`, after the baseline's cut) leaves with the reset itself —
+ * an edit from the figure shown would take it off a second time.
+ */
+export function minutesAfterReset(
+  stats: ReadingStatsState,
+  volume: string,
+  record?: BaselineSource
+): number {
+  const totals = stats.byVolume.get(volume);
+  const pass = totals?.pass ?? 0;
+  const { baseline, cut, credits } = baselineOf(totals, record);
+  let creditMs = 0;
+  for (const credit of credits) if (credit.pass === pass) creditMs += credit.ms;
+  const timeMs = (totals?.timeMs ?? 0) - cut.ms + baseline.timeMs - creditMs;
+  // Whole milliseconds: a credit's time scaled by its characters is
+  // fractional, and 659,999.99… ms must be the 11 minutes it is.
+  return Math.floor(Math.max(0, Math.round(timeMs)) / 60_000);
 }
 
 /** The current pass of a volume: what it counts, and of that what credits count. */
@@ -402,26 +454,7 @@ export function creditsFor(
 ): CreditTotals[] {
   const totals = stats.byVolume.get(volume);
   if (!totals || totals.credits.length === 0) return [];
-  const { lump, cut } = baselineOf(totals, record);
-  if (!lump || cut.chars <= 0) return totals.credits;
-  const here = totals.credits.flatMap((credit, i) => (credit.pass === lump.pass ? [i] : []));
-  const kept = coverFirstPages(
-    here.map((i) => {
-      const { pages, pageChars } = totals.credits[i];
-      return pages.map((page, j): [number, number] => [page, pageChars[j] ?? 0]);
-    }),
-    cut.chars
-  );
-  const credits = [...totals.credits];
-  here.forEach((i, k) => {
-    const credit = credits[i];
-    credits[i] = {
-      ...credit,
-      ms: credit.chars > 0 ? (credit.ms * kept[k].chars) / credit.chars : credit.ms,
-      ...kept[k]
-    };
-  });
-  return credits;
+  return baselineOf(totals, record).credits;
 }
 
 /**
@@ -582,6 +615,45 @@ export function freezeLegacyBaselines(now: number = Date.now()): number {
   baselinesFrozen = true;
   writeFlag('done');
   return changed;
+}
+
+/**
+ * Run `change` (a mark as read) with the pre-history snapshots of `volumes`
+ * frozen as they stood BEFORE it (#224). An unfrozen snapshot is the
+ * record's live count, and a mark moves that to the whole volume: frozen
+ * after it, the snapshot would hold the mark's pages as old reading and
+ * the mark's credit would be cut to nothing — its characters measured as
+ * "Before history". A record that has no snapshot yet but would get one at
+ * this device's first pass (`snapshotOf`) gets an empty one, which records
+ * that it was frozen. Not a user action: no new stamp.
+ */
+export function withFrozenBaselines<T>(
+  volumes: Iterable<string>,
+  change: () => T,
+  now: number = Date.now()
+): T {
+  const firstPass = !baselinesFrozen;
+  const records = get(volumesWithTrash);
+  const snapshots = new Map<string, LegacyStats>();
+  for (const id of volumes) {
+    const record = records[id];
+    if (record?.legacyStats || record?.deletedOn) continue;
+    const snapshot = snapshotOf(record, firstPass);
+    if (snapshot) snapshots.set(id, { ...snapshot, before: now });
+    else if (firstPass) snapshots.set(id, { time_ms: 0, chars: 0, before: now });
+  }
+  const result = change();
+  if (snapshots.size > 0) {
+    volumesWithTrash.update((all) => {
+      const next = { ...all };
+      for (const [id, legacyStats] of snapshots) {
+        const record = next[id];
+        if (record && !record.legacyStats) next[id] = new VolumeData({ ...record, legacyStats });
+      }
+      return next;
+    });
+  }
+  return result;
 }
 
 function readFlag(): string | null {

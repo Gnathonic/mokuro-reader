@@ -47,7 +47,12 @@ import {
   setTrackingStates,
   markReadPolicy
 } from '#lib/settings/tracking-data.js';
-import { clearVolumes, updateProgress, volumesWithTrash } from '#lib/settings/volume-data.js';
+import {
+  VolumeData,
+  clearVolumes,
+  updateProgress,
+  volumesWithTrash
+} from '#lib/settings/volume-data.js';
 import { historyDb } from './history-db';
 import { recordEvent } from './record';
 import {
@@ -55,6 +60,7 @@ import {
   figuresFor,
   flushReadingStats,
   initReadingStats,
+  measuredFigures,
   readingStats
 } from './stats-store';
 import { _resetHistoryTurns, getVolumeEvents, loadHistoryTurns } from './turns-store';
@@ -192,6 +198,31 @@ describe('markRead: one volume (#224)', () => {
     expect(get(readingStats).recent).toEqual(before.recent);
     expect(get(readingStats).pace).toBe(before.pace);
     expect(lastSnackbar().message).toBe('Marked Vol 1 as read · counted 600 characters, 3 min');
+  });
+
+  it("freezes the record's old reading as it stood before the mark: the credit stays a credit", async () => {
+    // Four pages read before history (another device's minute counter, not
+    // frozen here yet), then counted when marked read.
+    setMarkReadPolicy('count');
+    updateProgress('a', 4, 400);
+    volumesWithTrash.update((all) => ({
+      ...all,
+      a: new VolumeData({ ...all.a, timeReadInMinutes: 8 })
+    }));
+    await markRead(volume('a', 'Vol 1'));
+    await settle();
+    const record = get(volumesWithTrash).a;
+    expect(record).toMatchObject({
+      completed: true,
+      legacyStats: { time_ms: 8 * MIN, chars: 400 }
+    });
+    const figures = figuresFor(get(readingStats), 'a', record);
+    expect(figures).toMatchObject({
+      chars: 1000,
+      baseline: { chars: 400 },
+      credit: { chars: 600, timeMs: 3 * MIN }
+    });
+    expect(measuredFigures(figures)).toEqual({ timeMs: 8 * MIN, chars: 400 });
   });
 
   it('×, Escape or the backdrop write nothing', async () => {

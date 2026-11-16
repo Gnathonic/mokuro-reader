@@ -1907,15 +1907,24 @@ never saw read (spec `2026-11-07-mark-as-read-credit-design.md`;
   the credit's characters would come back as measured "Before history"
   reading — past the budget, into speed, and out of reach of Remove. So the
   baseline, and every measured figure, is the same with or without credits.
-  (An UNFROZEN snapshot is the record's live count, which a mark has already
-  moved: there, as before, everything explains it, credits too.)
+  An UNFROZEN snapshot (`before: Infinity`) is explained and cut exactly as
+  freezing it now would, so the freeze changes no figure; and a mark freezes
+  the record's snapshot as it stood BEFORE it (`withFrozenBaselines`, the
+  mark-read flow) — the live count a mark moved to the whole volume would
+  otherwise hold the mark's pages as old reading and cut the credit to
+  nothing. The cut is computed once, per credit (`baselineOf`): the figures,
+  the editor's "Counted when marked read" and Remove all read it.
 - **Reset All is a `reset` event**, not a characters adjust: it ends its pass
   (a pass for the stats only — no archive, no position offer, unlike
   `restart`) and takes that pass to zero, the baseline's share included; its
   credits claim nothing. Pages may then be read or credited again. (An adjust
   of minus the pass left every page "read in this pass": reading the volume
   again counted nothing, and the editor sat at 0 / N for good.) Time is the
-  editor's own adjust, as before.
+  editor's own adjust, made from the time AFTER the reset
+  (`minutesAfterReset`: the reset already takes its credits' time). Recorded
+  only when the pass counts something — a format-2 event in a month makes
+  format-1-only builds skip that whole device-month. "Count pages read
+  elsewhere…" is off while a Reset All waits for Save.
 - A `credit`, `retract` or `reset` makes its month segment format 2; every other
   segment stays format 1 byte for byte. Because every other device refuses
   a whole device-month over one bad row, forever, `appendEvent` refuses a

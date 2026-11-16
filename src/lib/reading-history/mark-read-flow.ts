@@ -32,7 +32,8 @@ import {
   flushReadingStats,
   pagesNotReadHere,
   readingStats,
-  readingStatsReady
+  readingStatsReady,
+  withFrozenBaselines
 } from './stats-store';
 import { getVolumeEvents } from './turns-store';
 
@@ -167,9 +168,15 @@ function countedText(chars: number, ms: number): string {
   return `counted ${number(chars)} characters, ${time}`;
 }
 
-/** Mark, credit, and offer one Undo for the batch. */
+/**
+ * Mark, credit, and offer one Undo for the batch. Each record's pre-history
+ * snapshot is frozen as it stood before the mark (`withFrozenBaselines`).
+ */
 function commit(items: MarkReadItem[], message: string): void {
-  const action = markVolumesRead(items);
+  const action = withFrozenBaselines(
+    items.map((item) => item.volume),
+    () => markVolumesRead(items)
+  );
   showSnackbar(message, UNDO_MS, { label: 'Undo', onClick: () => void action.undo() }, () =>
     action.release()
   );
@@ -316,7 +323,9 @@ export async function countReadElsewhere(volume: VolumeMetadata, upTo: number): 
   const ms = (answer.typedMinutes ?? estimateMinutes(chars, speed) ?? 0) * 60_000;
   const credit = creditItem(v, answer.upTo, ms);
   if (!credit) return false;
-  const stored = await recordEvent({ kind: 'credit', volume: v.uuid, ...credit });
+  const stored = await withFrozenBaselines([v.uuid], () =>
+    recordEvent({ kind: 'credit', volume: v.uuid, ...credit })
+  );
   // No snackbar: the editor's own dialog would cover it. The editor shows the
   // counted line with its Remove, which is this action's undo.
   await settledStats();
