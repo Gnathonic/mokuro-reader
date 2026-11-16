@@ -36,6 +36,7 @@
   import { PointerGestureTracker, zoomGestureConfig } from '#lib/reader/input/pointer-tracker.js';
   import { TapDiscriminator } from '#lib/reader/input/tap.js';
   import type { MotionGate } from '#lib/reader/input/motion-gate.js';
+  import { DeferredPlacement } from '#lib/reader/input/deferred-placement.js';
   import { PageWindow, seedPageWindow } from '#lib/reader/page-window.js';
   import { onMount, onDestroy, tick } from 'svelte';
 
@@ -177,27 +178,36 @@
     onSettled: handleZoomSettled
   });
 
+  /** The opening placement, one frame after mount (see onMount). */
+  const opening = new DeferredPlacement();
+
   /**
    * Interrupt choke points — see MotionGate for the contract. Notable here:
    * beforeNav resyncs the scroller because its state only updates via async
    * scroll events; without sync() the next scrollBy would animate from a
    * stale position and undo the zoom's final correction. It also clears
    * navIsKeyboard: a nav that interrupted a zoom realigns, so the next
-   * scroll event must not be misread as keyboard-driven.
+   * scroll event must not be misread as keyboard-driven. Every intent first
+   * runs a still-pending opening placement, so input that beats the strip's
+   * first frame acts on the placed view instead of being undone by it.
    */
   const motion: MotionGate = {
     beforeZoom() {
+      opening.flush();
       scroller?.stop();
       tracker.cancelPan();
     },
     beforeManualPan() {
+      opening.flush();
       if (zoomController.isActive) zoomController.finishNow();
       scroller?.stop();
     },
     beforeAnimatedScroll() {
+      opening.flush();
       if (zoomController.isActive) zoomController.finishNow();
     },
     beforeNav() {
+      opening.flush();
       if (!zoomController.isActive) return;
       zoomController.finishNow('nav');
       scroller?.sync();
@@ -675,7 +685,7 @@
     }
     outerDiv?.addEventListener('wheel', handleWheel, { passive: false });
     tracker.attach();
-    requestAnimationFrame(() => {
+    opening.schedule(() => {
       applyAlignment(1);
       // Use navigateToPage for pair centering on landscape mount — in place:
       // opening a volume or rotating into this reader is not a page turn
@@ -689,6 +699,7 @@
   });
 
   onDestroy(() => {
+    opening.cancel();
     scroller?.destroy();
     zoomController.destroy();
     pageWindow.detach();

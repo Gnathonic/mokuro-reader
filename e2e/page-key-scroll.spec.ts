@@ -181,6 +181,50 @@ async function edgesOf(page: Page, i: number) {
   };
 }
 
+/**
+ * Switch to continuous mode and press Page Down in the SAME task the strip
+ * mounts in: after its DOM and `onMount`, before the browser's next frame.
+ * A MutationObserver callback is a microtask, so it runs ahead of any
+ * animation frame the mount scheduled — the window in which a deferred
+ * opening placement used to land after, and undo, the key's scroll.
+ */
+async function switchToContinuousPressingAtMount(page: Page) {
+  await page.evaluate(async () => {
+    const { updateSetting } = await import('/src/lib/settings/index.ts');
+    const pressed = new Promise<void>((resolve) => {
+      const observer = new MutationObserver(() => {
+        if (!document.querySelector('.scrollbar-hide')) return;
+        observer.disconnect();
+        document.body.dispatchEvent(
+          new KeyboardEvent('keydown', {
+            key: 'PageDown',
+            code: 'PageDown',
+            bubbles: true,
+            cancelable: true
+          })
+        );
+        resolve();
+      });
+      observer.observe(document.body, { childList: true, subtree: true });
+    });
+    updateSetting('continuousScroll' as never, true as never);
+    await pressed;
+  });
+}
+
+/** Resolve after `n` animation frames have run. */
+function afterFrames(page: Page, n: number) {
+  return page.evaluate(
+    (n) =>
+      new Promise<void>((resolve) => {
+        const step = (left: number) =>
+          left === 0 ? resolve() : requestAnimationFrame(() => step(left - 1));
+        step(n);
+      }),
+    n
+  );
+}
+
 /** Paged mode: every shown page's index and top edge, in page order. */
 function pagedSpread(page: Page) {
   return page.evaluate(() => {
@@ -307,6 +351,56 @@ test.describe('Page keys scroll tall pages before turning (#283)', () => {
     await page.keyboard.press('PageDown');
     expect((await stripState(page)).scrollTop - start).toBe(STEP);
     await setSetting(page, 'disableAnimations', false);
+  });
+
+  test('continuous vertical: a Page Down pressed as the strip mounts, before its first frame, still scrolls', async ({
+    page
+  }) => {
+    await seedVolume(page, TALL, {
+      continuousScroll: false,
+      singlePageView: 'single',
+      scrollMode: 'vertical',
+      continuousZoomDefault: 'zoomFillScreen',
+      pageDividers: false,
+      disableAnimations: true,
+      pageKeysScrollFirst: true
+    });
+    await openReader(page);
+    await expect.poll(() => pagedState(page)).toEqual({ index: 0, top: 0 });
+
+    await switchToContinuousPressingAtMount(page);
+    // The strip opens on page 0's top and the key moves on from THERE: one
+    // step down the page, kept after the strip's first frames.
+    await expect.poll(async () => (await edgesOf(page, 0)).top).toBe(-STEP);
+    await afterFrames(page, 3);
+    expect((await edgesOf(page, 0)).top).toBe(-STEP);
+  });
+
+  test('continuous horizontal: a Page Down pressed as the strip mounts, before its first frame, still scrolls', async ({
+    page
+  }) => {
+    // The geometry of the original-size horizontal test below: the cover
+    // opens centred with 760 px hidden below, and Page Down shows its bottom.
+    await seedVolume(
+      page,
+      { width: 800, height: 2600 },
+      {
+        continuousScroll: false,
+        singlePageView: 'single',
+        scrollMode: 'horizontal',
+        continuousZoomDefault: 'zoomOriginal',
+        pageDividers: false,
+        pageKeysScrollFirst: true
+      }
+    );
+    await openReader(page);
+    await expect.poll(() => pagedState(page)).not.toBeNull();
+
+    await switchToContinuousPressingAtMount(page);
+    await expect.poll(async () => (await edgesOf(page, 0)).bottom).toBe(0);
+    await afterFrames(page, 3);
+    expect((await edgesOf(page, 0)).bottom).toBe(0);
+    expect([0, 1]).toContain((await stripState(page)).progress);
   });
 
   test('continuous vertical: scrolls a screenful while the page continues, then lands on the next page top', async ({
