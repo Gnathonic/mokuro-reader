@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
-vi.mock('$app/environment', () => ({ browser: false }));
-vi.mock('$lib/catalog/db', () => ({ db: {} }));
+vi.mock('$app/env', () => ({ browser: false }));
+vi.mock('#lib/catalog/db.js', () => ({ db: {} }));
 
 import {
   creditPages,
@@ -15,7 +15,7 @@ import {
 import { countVolume, prepareVolume, DEFAULT_K, type VolumeTotals } from './stats-engine';
 import type { ReadingStatsState } from './stats-store';
 import type { ReadingEvent } from './types';
-import type { ReadingSpeedResult } from '$lib/util/reading-speed';
+import type { ReadingSpeedResult } from '#lib/util/reading-speed.js';
 
 const MIN = 60_000;
 

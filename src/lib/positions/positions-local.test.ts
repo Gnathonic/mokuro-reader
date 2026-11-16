@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
 
-vi.mock('$app/environment', () => ({ browser: true }));
-vi.mock('$lib/catalog/db', () => ({
+vi.mock('$app/env', () => ({ browser: true }));
+vi.mock('#lib/catalog/db.js', () => ({
   db: { volumes: { get: vi.fn().mockResolvedValue(undefined), bulkGet: vi.fn(async () => []) } }
 }));
 
@@ -11,7 +11,7 @@ import {
   deleteVolume,
   updateProgress,
   volumesWithTrash
-} from '$lib/settings/volume-data';
+} from '#lib/settings/volume-data.js';
 import {
   _resetPositionTracking,
   changedVolumes,

@@ -1,20 +1,20 @@
 <script lang="ts">
   import { Button, Modal, Input, Spinner } from 'flowbite-svelte';
   import { onDestroy } from 'svelte';
-  import { showSnackbar } from '$lib/util';
+  import { showSnackbar } from '#lib/util/index.js';
   import {
     anilistProvider,
     parseAniListIdInput,
     toSeriesMetadataPatch
-  } from '$lib/metadata/providers/anilist';
-  import { createLinkSearch, describeSearchError } from '$lib/metadata/link-search';
-  import { getSeriesMetadataForTitle, updateSeriesMetadata } from '$lib/metadata/store';
-  import { splitFolderTag } from '$lib/metadata/folder-tag';
+  } from '#lib/metadata/providers/anilist.js';
+  import { createLinkSearch, describeSearchError } from '#lib/metadata/link-search.js';
+  import { getSeriesMetadataForTitle, updateSeriesMetadata } from '#lib/metadata/store.js';
+  import { splitFolderTag } from '#lib/metadata/folder-tag.js';
   import {
     activeMetadataPermissions,
     canEditSeriesMetadata
-  } from '$lib/util/sync/metadata-permissions';
-  import type { MetadataSearchResult } from '$lib/metadata/provider-interface';
+  } from '#lib/util/sync/metadata-permissions.js';
+  import type { MetadataSearchResult } from '#lib/metadata/provider-interface.js';
 
   let { open = $bindable(false), seriesTitle }: { open?: boolean; seriesTitle: string } = $props();
 

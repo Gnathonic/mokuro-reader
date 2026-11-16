@@ -1,13 +1,13 @@
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 import { get, writable } from 'svelte/store';
 import {
   FUTURE_TOLERANCE_MS,
   isRecord,
   normalizeUpdatedAt,
   sanitizeTracking
-} from '$lib/metadata/sanitize';
-import { normalizeSeriesKey } from '$lib/metadata/series-key';
-import type { SeriesTracking } from '$lib/metadata/types';
+} from '#lib/metadata/sanitize.js';
+import { normalizeSeriesKey } from '#lib/metadata/series-key.js';
+import type { SeriesTracking } from '#lib/metadata/types.js';
 
 /**
  * Series-level READING STATE: how many times a series has been read, whether

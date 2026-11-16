@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import type { Page } from '$lib/types';
+import type { Page } from '#lib/types/index.js';
 import EditToolbar from '../EditToolbar.svelte';
-import { EditSession } from '$lib/reader/edit/edit-session.svelte';
+import { EditSession } from '#lib/reader/edit/edit-session.svelte.js';
 
 afterEach(cleanup);
 

@@ -15,7 +15,7 @@ import {
   type Fixture,
   type Seed
 } from './contract';
-import { basicAuthHeader } from '$lib/util/base64';
+import { basicAuthHeader } from '#lib/util/base64.js';
 
 /** A file test over a fake checkout holding `files` under `<root>/interop/contract/`. */
 function holding(root: string, files: string[]) {
@@ -110,6 +110,36 @@ describe('the contract helper', () => {
       http: 'Wed, 28 Oct 2026 12:34:56 GMT',
       s: Math.floor(now / 1000),
       millis: now
+    });
+  });
+
+  it('moves a queue file’s times by one offset, so a clock stays a clock', () => {
+    const now = Date.parse('2026-10-28T12:34:56.789Z');
+    const s = Math.floor(now / 1000);
+    expect(
+      rebase(
+        {
+          clock: [
+            [946684800, 946684800],
+            [946771200, 946771200]
+          ],
+          running: [0, 'r', 946684680, 946685400],
+          // Far from the sentinel: a size, a count, a year away — never moved.
+          size: 210,
+          rev: 1,
+          far: 946684800 + 400 * 86_400
+        },
+        now
+      )
+    ).toEqual({
+      clock: [
+        [s, s],
+        [s + 86_400, s + 86_400]
+      ],
+      running: [0, 'r', s - 120, s + 600],
+      size: 210,
+      rev: 1,
+      far: 946684800 + 400 * 86_400
     });
   });
 

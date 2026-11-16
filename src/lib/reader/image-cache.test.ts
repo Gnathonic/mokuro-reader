@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Page } from '$lib/types';
+import type { Page } from '#lib/types/index.js';
 import { ImageCache } from './image-cache';
 import { BLOB_URL_GRACE_MS } from './blob-urls';
 

@@ -1,20 +1,20 @@
 import { get, writable, type Readable } from 'svelte/store';
-import { db } from '$lib/catalog/db';
-import { volumes as catalogVolumes } from '$lib/catalog';
-import { isVolumeInstalled } from '$lib/catalog/volume-state';
-import { sortVolumes } from '$lib/catalog/sort-volumes';
-import { personalizedReadingSpeed } from '$lib/settings/reading-speed';
-import { markReadPolicy, setMarkReadPolicy } from '$lib/settings/tracking-data';
+import { db } from '#lib/catalog/db.js';
+import { volumes as catalogVolumes } from '#lib/catalog/index.js';
+import { isVolumeInstalled } from '#lib/catalog/volume-state.js';
+import { sortVolumes } from '#lib/catalog/sort-volumes.js';
+import { personalizedReadingSpeed } from '#lib/settings/reading-speed.js';
+import { markReadPolicy, setMarkReadPolicy } from '#lib/settings/tracking-data.js';
 import {
   markVolumeUnread,
   markVolumesRead,
   volumesWithTrash,
   type MarkReadItem,
   type RetractableCredit
-} from '$lib/settings/volume-data';
-import type { VolumeMetadata } from '$lib/types';
-import { showSnackbar } from '$lib/util/snackbar';
-import { isVolumeFinished } from '$lib/util/volume-helpers';
+} from '#lib/settings/volume-data.js';
+import type { VolumeMetadata } from '#lib/types/index.js';
+import { showSnackbar } from '#lib/util/snackbar.js';
+import { isVolumeFinished } from '#lib/util/volume-helpers.js';
 import {
   creditPages,
   creditSpeed,

@@ -98,3 +98,32 @@ export function titleCasedLayerId(layerId: string): string {
     .map((w) => w[0].toUpperCase() + w.slice(1))
     .join(' ');
 }
+
+/**
+ * The OCR upgrade's copy of a newer cloud main beside an EDITED primary
+ * (`cloud-ocr-upgrade.ts`), and the fixed name it had before layers were
+ * named by their maker.
+ */
+export const UPDATED_OCR_LAYER_ID = 'updated-ocr';
+export const UPDATED_OCR_LAYER_NAME = 'Updated OCR';
+
+/**
+ * v1.10.0's "Previous OCR" keepsakes of a replaced primary (`previous-ocr`,
+ * `previous-ocr-<n>`) and the names it gave them. Shared by their one-time
+ * cleanup (`layer-store.ts`) and the naming (`ocr-label.ts`), which counts
+ * such a name as the reader's, not the user's.
+ */
+export const PREVIOUS_OCR_ID_RE = /^previous-ocr(?:-\d+)?$/;
+export const PREVIOUS_OCR_NAME_RE = /^Previous OCR(?: \(\d+\))?$/;
+
+/**
+ * `pre-upgrade`, `previous-ocr` and their `-<n>` siblings: a volume's earlier
+ * main sidecar kept beside the one that replaced it (an older bunko's
+ * `<Volume>.pre-upgrade.mokuro`; reader v1.10.0's "Previous OCR"). Their id
+ * says why they exist, not who made them, so they are named by their maker.
+ */
+const SET_ASIDE_RE = /^(?:pre-upgrade|previous-ocr)(?:-\d+)?$/;
+
+export function isSetAsideLayerId(layerId: string): boolean {
+  return SET_ASIDE_RE.test(layerId);
+}

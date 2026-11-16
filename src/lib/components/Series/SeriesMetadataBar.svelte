@@ -8,17 +8,17 @@
    */
   import { Badge } from 'flowbite-svelte';
   import { ArrowUpRightFromSquareOutline } from 'flowbite-svelte-icons';
-  import { seriesMetadataMap } from '$lib/metadata/store';
-  import { normalizeSeriesKey } from '$lib/metadata/series-key';
-  import { resolveDisplayBase } from '$lib/metadata/display-title';
-  import { getLinkTargets } from '$lib/metadata/link-targets';
-  import { computeLocalPassState } from '$lib/metadata/progress-tracker';
-  import { resolveTrackingUnit } from '$lib/metadata/tracking-unit';
-  import { anilistConnected } from '$lib/metadata/anilist-auth';
-  import { catalogSettings, preferredTitleLanguage } from '$lib/settings/settings';
-  import { volumes as volumesData } from '$lib/settings/volume-data';
-  import { readingStateFor, seriesReadingState } from '$lib/settings/series-data';
-  import type { VolumeMetadata } from '$lib/types';
+  import { seriesMetadataMap } from '#lib/metadata/store.js';
+  import { normalizeSeriesKey } from '#lib/metadata/series-key.js';
+  import { resolveDisplayBase } from '#lib/metadata/display-title.js';
+  import { getLinkTargets } from '#lib/metadata/link-targets.js';
+  import { computeLocalPassState } from '#lib/metadata/progress-tracker.js';
+  import { resolveTrackingUnit } from '#lib/metadata/tracking-unit.js';
+  import { anilistConnected } from '#lib/metadata/anilist-auth.js';
+  import { catalogSettings, preferredTitleLanguage } from '#lib/settings/settings.js';
+  import { volumes as volumesData } from '#lib/settings/volume-data.js';
+  import { readingStateFor, seriesReadingState } from '#lib/settings/series-data.js';
+  import type { VolumeMetadata } from '#lib/types/index.js';
 
   let { seriesTitle, volumes }: { seriesTitle: string; volumes: VolumeMetadata[] } = $props();
 

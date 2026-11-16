@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
 
-vi.mock('$app/environment', () => ({ browser: true }));
+vi.mock('$app/env', () => ({ browser: true }));
 
 import { updateVolumeStats } from './volume-editor';
-import { VolumeData, volumesWithTrash } from '$lib/settings/volume-data';
+import { VolumeData, volumesWithTrash } from '#lib/settings/volume-data.js';
 
 const OLD = '2026-01-01T00:00:00.000Z';
 

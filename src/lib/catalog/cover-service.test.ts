@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import 'fake-indexeddb/auto';
 import { readable } from 'svelte/store';
-import type { VolumeMetadata } from '$lib/types';
-import type { CloudFileMetadata } from '$lib/util/sync/provider-interface';
+import type { VolumeMetadata } from '#lib/types/index.js';
+import type { CloudFileMetadata } from '#lib/util/sync/provider-interface.js';
 import type { CloudThumbnailResult } from './cloud-thumbnails';
 
 /**
@@ -15,9 +15,9 @@ import type { CloudThumbnailResult } from './cloud-thumbnails';
  * only `pullMokuroEntry` (the network call) is replaced.
  */
 
-vi.mock('$lib/catalog/db', async () => {
+vi.mock('#lib/catalog/db.js', async () => {
   const { CatalogDexieV3 } =
-    await vi.importActual<typeof import('$lib/catalog/db-v3')>('$lib/catalog/db-v3');
+    await vi.importActual<typeof import('#lib/catalog/db-v3.js')>('#lib/catalog/db-v3.js');
   return { db: new CatalogDexieV3('mokuro_v3_cover_service_test') };
 });
 
@@ -29,7 +29,7 @@ let status = {
     { isReadOnly?: boolean; serverCompilesMetadata?: boolean } | null
   >
 };
-vi.mock('$lib/util/sync/provider-manager', () => ({
+vi.mock('#lib/util/sync/provider-manager.js', () => ({
   providerManager: {
     get status() {
       return readable(status);
@@ -37,7 +37,7 @@ vi.mock('$lib/util/sync/provider-manager', () => ({
   }
 }));
 
-vi.mock('$lib/catalog/cover-install', () => ({
+vi.mock('#lib/catalog/cover-install.js', () => ({
   installCoversForSeries: vi.fn(async () => 0)
 }));
 
@@ -46,7 +46,7 @@ const { getActiveProvider, resolveCloudFolderTitle, getCloudVolumesBySeries } = 
   resolveCloudFolderTitle: vi.fn((t: string) => t),
   getCloudVolumesBySeries: vi.fn((_t: string) => [] as unknown[])
 }));
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: {
     getActiveProvider: (...a: Parameters<typeof getActiveProvider>) => getActiveProvider(...a),
     resolveCloudFolderTitle: (...a: Parameters<typeof resolveCloudFolderTitle>) =>
@@ -59,7 +59,7 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
 const { fetchCloudThumbnailMock } = vi.hoisted(() => ({
   fetchCloudThumbnailMock: vi.fn(async (_v: unknown) => null as CloudThumbnailResult | null)
 }));
-vi.mock('$lib/catalog/cloud-thumbnails', () => ({
+vi.mock('#lib/catalog/cloud-thumbnails.js', () => ({
   fetchCloudThumbnail: (...a: Parameters<typeof fetchCloudThumbnailMock>) =>
     fetchCloudThumbnailMock(...a),
   getCachedCloudThumbnail: vi.fn(() => undefined)
@@ -79,8 +79,8 @@ const { pullMokuroEntryMock } = vi.hoisted(() => ({
         | undefined
   )
 }));
-vi.mock('$lib/metadata/sidecar-pull', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('$lib/metadata/sidecar-pull')>();
+vi.mock('#lib/metadata/sidecar-pull.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('#lib/metadata/sidecar-pull.js')>();
   return {
     ...actual,
     pullMokuroEntry: (...a: Parameters<typeof pullMokuroEntryMock>) => pullMokuroEntryMock(...a)
@@ -90,7 +90,7 @@ vi.mock('$lib/metadata/sidecar-pull', async (importOriginal) => {
 const { scheduleSeriesFileWriteMock } = vi.hoisted(() => ({
   scheduleSeriesFileWriteMock: vi.fn()
 }));
-vi.mock('$lib/metadata/series-file-sync', () => ({
+vi.mock('#lib/metadata/series-file-sync.js', () => ({
   scheduleSeriesFileWrite: (...a: Parameters<typeof scheduleSeriesFileWriteMock>) =>
     scheduleSeriesFileWriteMock(...a)
 }));
@@ -104,8 +104,8 @@ vi.mock('$lib/metadata/series-file-sync', () => ({
 // `cloud_covers` write to; individual tests override it to exercise the
 // no-scope-drop path.
 const { putCloudCoversMock } = vi.hoisted(() => ({ putCloudCoversMock: vi.fn() }));
-vi.mock('$lib/catalog/cloud-covers', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('$lib/catalog/cloud-covers')>();
+vi.mock('#lib/catalog/cloud-covers.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('#lib/catalog/cloud-covers.js')>();
   return {
     ...actual,
     putCloudCovers: (...a: Parameters<typeof actual.putCloudCovers>) => {
@@ -120,8 +120,8 @@ vi.mock('$lib/catalog/cloud-covers', async (importOriginal) => {
 // inspect the rows it writes — but every call is counted, so a burst that
 // costs one `volumes` mutation can be told apart from one that costs N.
 const { materializeMock } = vi.hoisted(() => ({ materializeMock: vi.fn() }));
-vi.mock('$lib/catalog/materialize', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('$lib/catalog/materialize')>();
+vi.mock('#lib/catalog/materialize.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('#lib/catalog/materialize.js')>();
   return {
     ...actual,
     materializeSeriesVolumes: (...a: Parameters<typeof actual.materializeSeriesVolumes>) => {
@@ -154,11 +154,11 @@ const readingHistory = vi.hoisted(() => {
     }
   };
 });
-vi.mock('$lib/settings/volume-data', () => ({
+vi.mock('#lib/settings/volume-data.js', () => ({
   volumes: readingHistory.store
 }));
 
-import { db } from '$lib/catalog/db';
+import { db } from '#lib/catalog/db.js';
 import { _resetCoverPersistForTests } from './cover-persist';
 import { _getCloudCoversForTests, putCloudCovers } from './cloud-covers';
 import { acquireCover } from './cover-resolver';
@@ -543,7 +543,7 @@ describe('decision tree case 4: a bare placeholder with no mokuro sidecar (image
 
     // Deterministic uuid: the SAME convention `buildNoMetadataEntry` in
     // series-backfill.ts uses for a whole-series sweep.
-    const { generateDeterministicUUID } = await import('$lib/util/series-extraction');
+    const { generateDeterministicUUID } = await import('#lib/util/series-extraction.js');
     const expectedUuid = generateDeterministicUUID('One Piece/Volume 02');
 
     const persisted = await waitForCachedCover(expectedUuid, 'One Piece/Volume 02.cbz');
@@ -570,7 +570,7 @@ describe('read-only providers: local materialization is never skipped, only the 
 
     requestCover(barePlaceholder('bare-3', { volume_title: 'Volume 03' }));
 
-    const { generateDeterministicUUID } = await import('$lib/util/series-extraction');
+    const { generateDeterministicUUID } = await import('#lib/util/series-extraction.js');
     const expectedUuid = generateDeterministicUUID('One Piece/Volume 03');
     const persisted = await waitForCachedCover(expectedUuid, 'One Piece/Volume 03.cbz');
 

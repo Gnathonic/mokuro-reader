@@ -9,8 +9,8 @@
  */
 
 import { get } from 'svelte/store';
-import { registerPositionListener, volumesWithTrash } from '$lib/settings/volume-data';
-import { stampMs } from '$lib/util/volume-helpers';
+import { registerPositionListener, volumesWithTrash } from '#lib/settings/volume-data.js';
+import { stampMs } from '#lib/util/volume-helpers.js';
 import type { PositionsMap } from './positions-file';
 
 const STORAGE_KEY = 'positions:changed';

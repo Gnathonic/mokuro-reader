@@ -12,7 +12,7 @@ import { saveVolume, volumeExists, removeVolumeFiles, deleteVolumeCompletely } f
 import type { ProcessedVolume, ProcessedMetadata, ProcessedPage } from '../types';
 
 // Mock the db module to use our test database
-vi.mock('$lib/catalog/db', () => ({
+vi.mock('#lib/catalog/db.js', () => ({
   db: {
     volumes: {
       add: vi.fn(),
@@ -44,7 +44,7 @@ vi.mock('$lib/catalog/db', () => ({
 // Layer rows are reached only through the layer store (two tables, one key);
 // with a hand-mocked `db` that module is the seam to stub.
 const deleteLayersOfVolume = vi.hoisted(() => vi.fn(async () => {}));
-vi.mock('$lib/catalog/layer-store', () => ({
+vi.mock('#lib/catalog/layer-store.js', () => ({
   deleteLayersOfVolume,
   layerTables: (mockDb: { volume_ocr_layers: unknown; volume_ocr_layer_pages: unknown }) => [
     mockDb.volume_ocr_layers,
@@ -53,7 +53,7 @@ vi.mock('$lib/catalog/layer-store', () => ({
 }));
 
 // Import the mocked db
-import { db } from '$lib/catalog/db';
+import { db } from '#lib/catalog/db.js';
 
 /**
  * Helper to create a processed volume
@@ -266,6 +266,23 @@ describe('saveVolume', () => {
     );
     const added = (db.volumes.add as any).mock.calls[0][0];
     expect(added.ocr_provenance).toEqual([p]);
+    // ...and the main's maker, which names the primary.
+    expect(added.ocr_maker).toMatchObject({ engine: 'hayai-nova' });
+  });
+
+  it('records a main without a block as mokuro-made, and none for an EDITED main', async () => {
+    await saveVolume(createProcessedVolume());
+    const added = (db.volumes.add as any).mock.calls[0][0];
+    expect(added.ocr_maker).toEqual(
+      added.mokuro_version ? { mokuro_version: added.mokuro_version } : {}
+    );
+    const edited = { edited: { by: 'mokuro-reader' }, digest: `v1:${'d'.repeat(64)}` };
+    await saveVolume(
+      createProcessedVolume({
+        metadata: { ...createProcessedVolume().metadata, ocrProvenance: edited as never }
+      })
+    );
+    expect((db.volumes.add as any).mock.calls[1][0]).not.toHaveProperty('ocr_maker');
   });
 
   it('a reinstall from a file without a block clears ocr_provenance', async () => {

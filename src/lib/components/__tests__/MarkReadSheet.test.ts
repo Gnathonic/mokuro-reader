@@ -17,10 +17,10 @@ const sheet = vi.hoisted(() => {
     }
   };
 });
-vi.mock('$lib/reading-history/mark-read-flow', () => ({ markReadSheet: sheet }));
+vi.mock('#lib/reading-history/mark-read-flow.js', () => ({ markReadSheet: sheet }));
 
 import MarkReadSheet from '../MarkReadSheet.svelte';
-import type { SheetRequest, SheetVolume } from '$lib/reading-history/mark-read-flow';
+import type { SheetRequest, SheetVolume } from '#lib/reading-history/mark-read-flow.js';
 
 /** 180 pages of 100 characters; pages 139–180 were never read here. */
 const vol3: SheetVolume = {

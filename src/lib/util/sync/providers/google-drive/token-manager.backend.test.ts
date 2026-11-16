@@ -8,9 +8,9 @@
 import 'fake-indexeddb/auto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('$app/environment', () => ({ browser: true, dev: false, building: false }));
-vi.mock('$lib/util/snackbar', () => ({ showSnackbar: vi.fn() }));
-vi.mock('$lib/util/user-gesture', () => ({ onNextUserGesture: vi.fn(() => () => {}) }));
+vi.mock('$app/env', () => ({ browser: true, dev: false, building: false }));
+vi.mock('#lib/util/snackbar.js', () => ({ showSnackbar: vi.fn() }));
+vi.mock('#lib/util/user-gesture.js', () => ({ onNextUserGesture: vi.fn(() => () => {}) }));
 vi.mock('../../provider-manager', () => ({ providerManager: { updateStatus: vi.fn() } }));
 vi.mock('../../unified-cloud-manager', () => ({
   unifiedCloudManager: {
@@ -19,7 +19,7 @@ vi.mock('../../unified-cloud-manager', () => ({
   }
 }));
 
-import { checkProof, parseProof } from '$lib/server/gdrive-auth/pop';
+import { checkProof, parseProof } from '#lib/server/gdrive-auth/pop.js';
 
 const MIN = 60 * 1000;
 const KEYS = {
@@ -43,7 +43,7 @@ function persist(token: string, msLeft: number) {
 async function load() {
   vi.resetModules();
   const { tokenManager } = await import('./token-manager');
-  const { showSnackbar } = await import('$lib/util/snackbar');
+  const { showSnackbar } = await import('#lib/util/snackbar.js');
   const auth = await import('./auth-backend');
   const device = await import('./device-key');
   const { get } = await import('svelte/store');

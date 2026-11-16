@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { VolumeData } from '$lib/settings/volume-data';
-import type { GoalPeriod, GoalSnapshot } from '$lib/goals/types';
+import { VolumeData } from '#lib/settings/volume-data.js';
+import type { GoalPeriod, GoalSnapshot } from '#lib/goals/types.js';
 import {
   bucketVolumes,
   computeVolumeStats,

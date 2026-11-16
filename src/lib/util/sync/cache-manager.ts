@@ -3,7 +3,7 @@ import type { CloudCache } from './cloud-cache-interface';
 import type { CloudFileMetadata, ProviderType } from './provider-interface';
 import { clearRootFileMemo } from './root-file-memo';
 import { clearVolumeDataDeferred } from './reading-session';
-import { clearCloudPositions } from '$lib/positions/positions-cloud';
+import { clearCloudPositions } from '#lib/positions/positions-cloud.js';
 
 /**
  * Cache Manager

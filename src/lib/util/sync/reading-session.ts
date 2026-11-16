@@ -20,7 +20,7 @@
  * (`cacheManager`): a debt to one account is not owed to another.
  */
 
-import { openReader } from '$lib/positions/reader-open';
+import { openReader } from '#lib/positions/reader-open.js';
 
 export function readingSessionActive(): boolean {
   if (!openReader()) return false;

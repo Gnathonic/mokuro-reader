@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
  * is that file's alone — the cover is saved on this device either way.
  */
 
-vi.mock('$app/environment', () => ({ browser: true }));
+vi.mock('$app/env', () => ({ browser: true }));
 
 const { provider, uploadFile, volumes } = vi.hoisted(() => {
   const state = { status: {} as Record<string, unknown> };
@@ -30,8 +30,8 @@ const { provider, uploadFile, volumes } = vi.hoisted(() => {
   };
 });
 
-vi.mock('$lib/catalog/db', () => ({ db: { volumes } }));
-vi.mock('$lib/catalog/thumbnails', () => ({
+vi.mock('#lib/catalog/db.js', () => ({ db: { volumes } }));
+vi.mock('#lib/catalog/thumbnails.js', () => ({
   convertToWebP: vi.fn(async () => new Blob(['webp'], { type: 'image/webp' })),
   generateThumbnail: vi.fn(async () => ({
     file: new File(['thumb'], 'thumb.webp', { type: 'image/webp' }),
@@ -39,8 +39,8 @@ vi.mock('$lib/catalog/thumbnails', () => ({
     height: 10
   }))
 }));
-vi.mock('$lib/catalog/thumbnail-cache', () => ({ thumbnailCache: { invalidate: vi.fn() } }));
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/catalog/thumbnail-cache.js', () => ({ thumbnailCache: { invalidate: vi.fn() } }));
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: { getActiveProvider: () => provider, uploadFile }
 }));
 

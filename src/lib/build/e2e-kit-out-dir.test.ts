@@ -43,10 +43,7 @@ async function syncTsconfig(kitOptions: Record<string, unknown>) {
   const { write_tsconfig } = await load('sync/write_tsconfig/index.js');
   // The deprecated `typescript` option warns; that is expected here.
   vi.spyOn(console, 'warn').mockImplementation(() => {});
-  const config = process_config(
-    validate_config({ alias: { $lib: 'src/lib' }, ...kitOptions }),
-    root
-  );
+  const config = process_config(validate_config(kitOptions), root);
   write_tsconfig(config, root);
   const file = join(root, 'node_modules/$app/tsconfig.json');
   return { text: readFileSync(file, 'utf8') as string, mtime: statSync(file).mtimeMs as number };

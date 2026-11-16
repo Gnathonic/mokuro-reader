@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { dedupeBlocks } from './block-dedupe';
-import type { Block } from '$lib/types';
+import type { Block } from '#lib/types/index.js';
 
 // Real duplicate pair from Dr Stone 01 p28 (blocks 7 and 8): the detector
 // emitted the same balloon twice — once properly segmented into 4 lines,

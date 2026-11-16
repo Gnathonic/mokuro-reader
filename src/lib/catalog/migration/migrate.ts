@@ -1,11 +1,11 @@
 import Dexie from 'dexie';
-import type { Page, VolumeMetadata } from '$lib/types';
+import type { Page, VolumeMetadata } from '#lib/types/index.js';
 import { CatalogDexieV3 } from '../db-v3';
-import { countChars } from '$lib/util/count-chars';
+import { countChars } from '#lib/util/count-chars.js';
 import { deleteOldDatabase } from './detection';
 import type { MigrationProgressCallback } from './types';
 import { generateThumbnail, type ThumbnailResult } from '../thumbnails';
-import { naturalSort } from '$lib/util/natural-sort';
+import { naturalSort } from '#lib/util/natural-sort.js';
 
 /**
  * Get the first image file from a files record (sorted naturally).

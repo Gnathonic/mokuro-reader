@@ -1,5 +1,5 @@
-import type { ProviderType, UploadFileResult } from '$lib/util/sync/provider-interface';
-import type { UploadRetryInfo } from '$lib/util/sync/providers/webdav/webdav-upload';
+import type { ProviderType, UploadFileResult } from '#lib/util/sync/provider-interface.js';
+import type { UploadRetryInfo } from '#lib/util/sync/providers/webdav/webdav-upload.js';
 
 export type CloudCoreProviderType = ProviderType;
 

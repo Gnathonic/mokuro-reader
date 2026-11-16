@@ -7,7 +7,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RequestEvent } from '@sveltejs/kit';
 
 const env = vi.hoisted(() => ({}) as Record<string, string | undefined>);
-vi.mock('$env/dynamic/private', () => ({ env }));
+// Shaped like the real module: one export per variable src/env.ts declares,
+// `undefined` while unset (a module mock throws on any other name).
+vi.mock('$app/env/private', async () => {
+  const { variables } = await import('../../../../env');
+  for (const name of Object.keys(variables)) env[name] = undefined;
+  return env;
+});
+
+function unsetEnv() {
+  for (const key of Object.keys(env)) env[key] = undefined;
+}
 
 import * as session from '../../../../routes/api/gdrive/session/+server';
 import * as refresh from '../../../../routes/api/gdrive/refresh/+server';
@@ -28,7 +38,7 @@ describe.each(Object.entries(routes))('/api/gdrive/%s', (name, route) => {
   });
 
   it('answers 501 not_configured while the server env lacks the secrets', async () => {
-    for (const key of Object.keys(env)) delete env[key];
+    unsetEnv();
     const event = authEvent({ path: `/api/gdrive/${name}` }) as unknown as RequestEvent;
     const response = await route.POST(event as never);
     expect(response.status).toBe(501);
@@ -42,7 +52,7 @@ describe.each(Object.entries(routes))('/api/gdrive/%s', (name, route) => {
     const response = await route.POST(event as never);
     // Configured now: past the 501 (no cookie / no code → the route's own answer).
     expect(response.status).not.toBe(501);
-    for (const key of Object.keys(env)) delete env[key];
+    unsetEnv();
   });
 
   it('answers every other method with JSON 405, no-store', async () => {

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { Button, Modal, Label, Input, Select, Spinner } from 'flowbite-svelte';
-  import { volumeEditorModalStore, closeVolumeEditor } from '$lib/util/modals';
+  import { volumeEditorModalStore, closeVolumeEditor } from '#lib/util/modals.js';
   import {
     getAllSeriesOptions,
     generateNewSeriesUuid,
@@ -12,31 +12,33 @@
     resetVolumeCover,
     getVolumeData,
     calculateVolumeCharacterCount,
-    getNextVolumeUuidInSeries
-  } from '$lib/util/volume-editor';
+    getNextVolumeUuidInSeries,
+    completionDateInputValue,
+    completedAtFromDateInput
+  } from '#lib/util/volume-editor.js';
   import {
     countReadElsewhere,
     markReadSheetOpen,
     prepareSheetVolume,
     removeCredits,
     type SheetVolume
-  } from '$lib/reading-history/mark-read-flow';
-  import { creditPages, currentPassCredits, formatMinutes } from '$lib/reading-history/credit';
-  import { showSnackbar } from '$lib/util';
-  import { sanitizeRenameTitle } from '$lib/util/sanitize-title';
-  import { ProviderError } from '$lib/util/sync/provider-interface';
-  import { renameRefusalMessage } from '$lib/util/sync/account-capabilities';
-  import type { VolumeMetadata } from '$lib/types';
+  } from '#lib/reading-history/mark-read-flow.js';
+  import { creditPages, currentPassCredits, formatMinutes } from '#lib/reading-history/credit.js';
+  import { showSnackbar } from '#lib/util/index.js';
+  import { sanitizeRenameTitle } from '#lib/util/sanitize-title.js';
+  import { ProviderError } from '#lib/util/sync/provider-interface.js';
+  import { renameRefusalMessage } from '#lib/util/sync/account-capabilities.js';
+  import type { VolumeMetadata } from '#lib/types/index.js';
   import { get } from 'svelte/store';
-  import { volumesWithTrash } from '$lib/settings/volume-data';
-  import { figuresFor, readingStats, readingStatsReady } from '$lib/reading-history/stats-store';
-  import { isVolumeFinished } from '$lib/util/volume-helpers';
+  import { volumesWithTrash } from '#lib/settings/volume-data.js';
+  import { figuresFor, readingStats, readingStatsReady } from '#lib/reading-history/stats-store.js';
+  import { isVolumeFinished } from '#lib/util/volume-helpers.js';
   import VolumeEditorCoverPicker from './VolumeEditorCoverPicker.svelte';
   import {
     RASTER_FORMAT_NAMES,
     displayableCoverBlob,
     sniffRasterBlob
-  } from '$lib/util/raster-image';
+  } from '#lib/util/raster-image.js';
 
   let open = $state(false);
   let loading = $state(true);
@@ -57,6 +59,13 @@
   let timeReadInMinutes = $state(0);
   /** Time read as the stats showed it when the editor opened: a save records the difference. */
   let loadedMinutes = 0;
+
+  // Completion date (#304): shown for a finished or dated volume, edited as a local day.
+  let datable = $state(false);
+  let completedOn = $state('');
+  let loadedCompletedOn = '';
+  let loadedCompletedAt: string | undefined;
+  let today = $state('');
 
   // Time display as hh:mm
   let timeHours = $state(0);
@@ -209,6 +218,11 @@
       sheetVolume = await prepareSheetVolume(data.metadata);
       loadFigures(true);
 
+      loadedCompletedAt = data.stats.completedAt;
+      datable = data.stats.completed || !!loadedCompletedAt;
+      completedOn = loadedCompletedOn = completionDateInputValue(loadedCompletedAt);
+      today = completionDateInputValue(new Date().toISOString());
+
       isNewSeries = false;
       newSeriesName = '';
 
@@ -323,6 +337,16 @@
   async function handleSave() {
     if (!originalMetadata) return;
 
+    // A cleared field changes nothing ("Mark as unread" is the un-finish).
+    let completedAt: string | undefined;
+    if (datable && completedOn && completedOn !== loadedCompletedOn) {
+      completedAt = completedAtFromDateInput(completedOn, loadedCompletedAt) ?? undefined;
+      if (!completedAt) {
+        showSnackbar('Pick a finish date that is not in the future.');
+        return;
+      }
+    }
+
     saving = true;
     try {
       // Determine final series UUID and title
@@ -429,6 +453,7 @@
         // Reset All un-reads too: the card's check follows the stored flag
         // (`isVolumeFinished`), so page 0 alone would leave it showing read.
         ...(resetChars && { charsRead: { from: charsRead, to: 0 }, completed: false }),
+        ...(completedAt && { completedAt }),
         series_uuid: finalSeriesUuid,
         series_title: finalSeriesTitle,
         volume_title: volumeTitle
@@ -744,7 +769,27 @@
                 <span class="text-sm text-gray-500">m</span>
               </div>
             </div>
+
+            {#if datable}
+              <div>
+                <Label for="completed-on" class="mb-1">Finished On</Label>
+                <Input
+                  id="completed-on"
+                  type="date"
+                  bind:value={completedOn}
+                  max={today}
+                  required
+                  class="w-40"
+                />
+              </div>
+            {/if}
           </div>
+          {#if datable}
+            <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">
+              Goals count a volume in the period it was finished. Closed periods keep the totals
+              they closed with.
+            </p>
+          {/if}
 
           <!-- What "mark as read" counted for pages not read here (#224). -->
           <div class="mt-3 space-y-2 text-sm" data-testid="editor-credit">

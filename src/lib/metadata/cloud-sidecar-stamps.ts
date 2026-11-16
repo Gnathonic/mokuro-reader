@@ -1,7 +1,7 @@
-import type { CloudFileMetadata } from '$lib/util/sync/provider-interface';
+import type { CloudFileMetadata } from '#lib/util/sync/provider-interface.js';
 import { isArchiveSize, type CloudSidecarStamp } from './series-file';
 import { normalizeVolumeTitleKey } from './series-key';
-import { cbzStemsOf, classifyMokuroSidecar } from '$lib/util/sync/syncable-file';
+import { cbzStemsOf, classifyMokuroSidecar } from '#lib/util/sync/syncable-file.js';
 
 /**
  * The freshness half of `series-backfill.ts`: turning a cloud folder listing

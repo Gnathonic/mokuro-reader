@@ -1,6 +1,6 @@
 <script lang="ts">
   import { Button, Label, Select, Toggle } from 'flowbite-svelte';
-  import { DEFAULT_K } from '$lib/reading-history/stats-engine';
+  import { DEFAULT_K } from '#lib/reading-history/stats-engine.js';
   import {
     askOnLongPause,
     idleSettings,
@@ -11,7 +11,7 @@
     setMarkReadPolicy,
     trackingState,
     type MarkReadPolicy
-  } from '$lib/settings/tracking-data';
+  } from '#lib/settings/tracking-data.js';
 
   /**
    * The reading timer's cutoff and its long-pause prompt, as one group. Both

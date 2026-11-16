@@ -1,9 +1,9 @@
 import 'fake-indexeddb/auto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('$app/environment', () => ({ browser: true }));
+vi.mock('$app/env', () => ({ browser: true }));
 const ocrRows = vi.hoisted(() => new Map<string, { pages: unknown[] }>());
-vi.mock('$lib/catalog/db', () => ({
+vi.mock('#lib/catalog/db.js', () => ({
   db: {
     volumes: { get: vi.fn(async () => undefined), bulkGet: vi.fn(async () => []) },
     volume_ocr: { get: vi.fn(async (uuid: string) => ocrRows.get(uuid)) }
@@ -35,15 +35,19 @@ const stores = vi.hoisted(() => {
     })
   };
 });
-vi.mock('$lib/catalog', () => ({ volumes: stores.catalog }));
-vi.mock('$lib/settings/reading-speed', () => ({ personalizedReadingSpeed: stores.speed }));
+vi.mock('#lib/catalog/index.js', () => ({ volumes: stores.catalog }));
+vi.mock('#lib/settings/reading-speed.js', () => ({ personalizedReadingSpeed: stores.speed }));
 const snackbar = vi.hoisted(() => vi.fn());
-vi.mock('$lib/util/snackbar', () => ({ showSnackbar: snackbar }));
+vi.mock('#lib/util/snackbar.js', () => ({ showSnackbar: snackbar }));
 
 import { get } from 'svelte/store';
-import type { VolumeMetadata } from '$lib/types';
-import { setMarkReadPolicy, setTrackingStates, markReadPolicy } from '$lib/settings/tracking-data';
-import { clearVolumes, updateProgress, volumesWithTrash } from '$lib/settings/volume-data';
+import type { VolumeMetadata } from '#lib/types/index.js';
+import {
+  setMarkReadPolicy,
+  setTrackingStates,
+  markReadPolicy
+} from '#lib/settings/tracking-data.js';
+import { clearVolumes, updateProgress, volumesWithTrash } from '#lib/settings/volume-data.js';
 import { historyDb } from './history-db';
 import { recordEvent } from './record';
 import {

@@ -3,6 +3,7 @@ import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { get } from 'svelte/store';
 import {
   migrateProfiles,
+  profiles,
   grayscaleActive,
   imageFilter,
   pageFilter,
@@ -318,5 +319,27 @@ describe('notOnDeviceDisplay removal', () => {
     });
     expect('notOnDeviceDisplay' in out.Test.catalogSettings).toBe(false);
     expect(out.Test.catalogSettings.stackCount).toBe(2);
+  });
+});
+
+describe('page keys scroll tall pages first (#283)', () => {
+  it('defaults ON for a profile stored before the key existed', () => {
+    expect(migrateProfiles({ Test: {} as any }).Test.pageKeysScrollFirst).toBe(true);
+  });
+
+  it('keeps a stored OFF, and repairs a malformed value to ON', () => {
+    const out = migrateProfiles({
+      A: { pageKeysScrollFirst: false } as any,
+      B: { pageKeysScrollFirst: 'false' } as any
+    });
+    expect(out.A.pageKeysScrollFirst).toBe(false);
+    expect(out.B.pageKeysScrollFirst).toBe(true);
+  });
+
+  it('is ON in both built-in presets', () => {
+    // Built-ins are always merged in at load; the live store carries them.
+    const live = get(profiles);
+    expect(live.Mobile.pageKeysScrollFirst).toBe(true);
+    expect(live.Desktop.pageKeysScrollFirst).toBe(true);
   });
 });

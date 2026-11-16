@@ -1,15 +1,15 @@
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 import { get } from 'svelte/store';
-import { db } from '$lib/catalog/db';
-import { sortVolumes } from '$lib/catalog/sort-volumes';
-import { settings } from '$lib/settings/settings';
+import { db } from '#lib/catalog/db.js';
+import { sortVolumes } from '#lib/catalog/sort-volumes.js';
+import { settings } from '#lib/settings/settings.js';
 import {
   getSeriesReadingState,
   updateSeriesReadingState,
   type SeriesReadingState
-} from '$lib/settings/series-data';
-import { registerCompletionListener, volumes, type VolumeData } from '$lib/settings/volume-data';
-import type { VolumeMetadata } from '$lib/types';
+} from '#lib/settings/series-data.js';
+import { registerCompletionListener, volumes, type VolumeData } from '#lib/settings/volume-data.js';
+import type { VolumeMetadata } from '#lib/types/index.js';
 import { anilistConnected, getAniListToken, handleAniListUnauthorized } from './anilist-auth';
 import {
   planProgressPush,

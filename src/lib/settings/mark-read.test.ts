@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('$app/environment', () => ({ browser: true }));
+vi.mock('$app/env', () => ({ browser: true }));
 let nextSeq = 100;
-vi.mock('$lib/reading-history/record', () => ({
+vi.mock('#lib/reading-history/record.js', () => ({
   recordEvent: vi.fn((payload: Record<string, unknown>) =>
     Promise.resolve({ ...payload, device: 'dev-a', seq: ++nextSeq, t: Date.now() })
   ),
@@ -10,7 +10,7 @@ vi.mock('$lib/reading-history/record', () => ({
 }));
 
 import { get } from 'svelte/store';
-import { recordEvent } from '$lib/reading-history/record';
+import { recordEvent } from '#lib/reading-history/record.js';
 import {
   markVolumeUnread,
   markVolumesRead,

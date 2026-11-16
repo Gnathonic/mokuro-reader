@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-vi.mock('$app/environment', () => ({ browser: true }));
+vi.mock('$app/env', () => ({ browser: true }));
 
 import {
   getDriveQuota,
@@ -126,6 +126,17 @@ describe('graph-client', () => {
       } as Response);
       const item = await getItemByPath('TOKEN', 'mokuro-reader');
       expect(item).toEqual({ id: 'abc', name: 'thing' });
+    });
+
+    it('encodes each path segment on its own (a series folder control file)', async () => {
+      vi.mocked(fetch).mockResolvedValue({
+        ok: true,
+        json: async () => ({ id: 'q', name: '.mokuro-series-queue.json' })
+      } as Response);
+      await getItemByPath('TOKEN', 'mokuro-reader/Example Saga #2: 50%?/.mokuro-series-queue.json');
+      expect(String(vi.mocked(fetch).mock.calls[0][0])).toBe(
+        `${BASE}/me/drive/root:/mokuro-reader/Example%20Saga%20%232%3A%2050%25%3F/.mokuro-series-queue.json`
+      );
     });
 
     it('returns null on 404', async () => {

@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { markReadSheet, type SheetVolume } from '$lib/reading-history/mark-read-flow';
-  import { creditPages, estimateMinutes, formatMinutes } from '$lib/reading-history/credit';
+  import { markReadSheet, type SheetVolume } from '#lib/reading-history/mark-read-flow.js';
+  import { creditPages, estimateMinutes, formatMinutes } from '#lib/reading-history/credit.js';
 
   /**
    * The "Mark as read" sheet (#224): how many pages of a volume this app never

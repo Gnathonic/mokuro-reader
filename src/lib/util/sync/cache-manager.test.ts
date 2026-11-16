@@ -10,7 +10,7 @@ import {
   noteVolumeDataDeferred,
   volumeDataDeferred
 } from './reading-session';
-import { cloudPositionStamp, noteCloudPositions } from '$lib/positions/positions-cloud';
+import { cloudPositionStamp, noteCloudPositions } from '#lib/positions/positions-cloud.js';
 
 function fakeCache(): CloudCache<CloudFileMetadata> {
   return {

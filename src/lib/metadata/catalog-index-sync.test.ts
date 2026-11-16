@@ -1,20 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { CloudFileMetadata } from '$lib/util/sync/provider-interface';
+import type { CloudFileMetadata } from '#lib/util/sync/provider-interface.js';
 import type { CatalogIndexRecord } from './catalog-index';
 
 const getActiveProvider = vi.fn();
-vi.mock('$lib/util/sync/provider-manager', () => ({ providerManager: { getActiveProvider } }));
+vi.mock('#lib/util/sync/provider-manager.js', () => ({ providerManager: { getActiveProvider } }));
 // Nothing in this file touches the database: the store and the index accessors
 // are both mocked below. The facts pass is exercised against a REAL Dexie in
 // `catalog-index-sync.facts.test.ts` instead — mocking `db.transaction` here
 // once hid a transaction-nesting bug precisely because the body never ran.
-vi.mock('$lib/catalog/db', () => ({ db: {} }));
+vi.mock('#lib/catalog/db.js', () => ({ db: {} }));
 
 const getCatalogIndex = vi.fn(async (): Promise<CatalogIndexRecord | undefined> => undefined);
 const putCatalogIndex = vi.fn(async (_rec: Omit<CatalogIndexRecord, 'id'>) => {});
-vi.mock('$lib/metadata/catalog-index', async () => {
-  const actual = await vi.importActual<typeof import('$lib/metadata/catalog-index')>(
-    '$lib/metadata/catalog-index'
+vi.mock('#lib/metadata/catalog-index.js', async () => {
+  const actual = await vi.importActual<typeof import('#lib/metadata/catalog-index.js')>(
+    '#lib/metadata/catalog-index.js'
   );
   return {
     catalogNeedsRefresh: actual.catalogNeedsRefresh,
@@ -26,7 +26,7 @@ vi.mock('$lib/metadata/catalog-index', async () => {
 const upsertManyFromSeriesFiles = vi.fn(async (entries: { seriesTitle: string }[]) => {
   return entries.length;
 });
-vi.mock('$lib/metadata/store', () => ({
+vi.mock('#lib/metadata/store.js', () => ({
   upsertManyFromSeriesFiles: (entries: { seriesTitle: string }[]) =>
     upsertManyFromSeriesFiles(entries)
 }));

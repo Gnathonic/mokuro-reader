@@ -9,7 +9,7 @@ let progress: Record<string, { series_title?: string; deletedOn?: string }> = {}
  * the local rows look like by the time it does.
  */
 const enrichAllOrphanedVolumes = vi.fn(async () => {});
-vi.mock('$lib/settings', () => ({
+vi.mock('#lib/settings/index.js', () => ({
   get volumes() {
     return readable(progress);
   },
@@ -24,7 +24,7 @@ const uniqueKeysFor = vi.fn((index: string) => {
   if (index !== 'series_title') throw new Error(`unexpected index: ${index}`);
   return [...new Set(localRows.map((row) => row.series_title))];
 });
-vi.mock('$lib/catalog/db', () => ({
+vi.mock('#lib/catalog/db.js', () => ({
   db: {
     volumes: {
       orderBy: (index: string) => ({ uniqueKeys: async () => uniqueKeysFor(index) })
@@ -34,19 +34,19 @@ vi.mock('$lib/catalog/db', () => ({
 
 let indexes: Array<{ series_key: string }> = [];
 const listSeriesIndexes = vi.fn(async () => indexes);
-vi.mock('$lib/metadata/series-index', () => ({
+vi.mock('#lib/metadata/series-index.js', () => ({
   listSeriesIndexes: () => listSeriesIndexes()
 }));
 
 const openSeries = vi.fn(async (_title: string) => {});
-vi.mock('$lib/metadata/series-open', () => ({ openSeries: (t: string) => openSeries(t) }));
+vi.mock('#lib/metadata/series-open.js', () => ({ openSeries: (t: string) => openSeries(t) }));
 
 // Phase 1 has its own suite (`history-rows.test.ts`); here it is stubbed so
 // these cases stay about phase 2's planning, EXCEPT where a case asserts the
 // hand-off between the two.
 type SweepOptions = { readIndexes?: () => Promise<unknown[]> };
 const materializeHistoryRows = vi.fn(async (_options?: SweepOptions) => 0);
-vi.mock('$lib/metadata/history-rows', () => ({
+vi.mock('#lib/metadata/history-rows.js', () => ({
   materializeHistoryRows: (options?: SweepOptions) => materializeHistoryRows(options)
 }));
 
@@ -56,7 +56,7 @@ let activeProvider: { type: string } | null = { type: 'google-drive' };
 const getActiveProvider = vi.fn(() => activeProvider);
 // The series-index refresh `resolveSyncedProgress` awaits before sweeping.
 let indexRefresh: Promise<void> = Promise.resolve();
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: {
     getActiveProvider: () => getActiveProvider(),
     whenSeriesIndexesSettled: () => indexRefresh
@@ -64,7 +64,7 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
 }));
 
 let cacheLoaded = true;
-vi.mock('$lib/util/sync/cache-manager', () => ({
+vi.mock('#lib/util/sync/cache-manager.js', () => ({
   cacheManager: { getCache: () => ({ isLoaded: () => cacheLoaded }) }
 }));
 

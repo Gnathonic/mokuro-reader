@@ -19,9 +19,9 @@ import {
   type SeriesFileVolume
 } from './series-file';
 import { normalizeVolumeTitleKey } from './series-key';
-import { generateDeterministicUUID } from '$lib/util/series-extraction';
+import { generateDeterministicUUID } from '#lib/util/series-extraction.js';
 import { createEmptySeriesMetadata, type SeriesMetadata } from './types';
-import type { VolumeMetadata } from '$lib/types';
+import type { VolumeMetadata } from '#lib/types/index.js';
 
 function volume(partial: Partial<VolumeMetadata> = {}): VolumeMetadata {
   return {

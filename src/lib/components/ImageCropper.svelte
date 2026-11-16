@@ -46,7 +46,7 @@
     type ImageLayout,
     type Point,
     type QuarterTurn
-  } from '$lib/util/crop-geometry';
+  } from '#lib/util/crop-geometry.js';
 
   interface Props {
     src: string;

@@ -134,6 +134,28 @@ Wheel zoom has no release event, so a fine stream settles on an idle
 timeout (`WHEEL_ZOOM_SETTLE_MS`) — that settle is what clamps the paged
 camera into bounds and reports reading progress.
 
+### Page keys scroll a tall page before turning (#283)
+
+With the `pageKeysScrollFirst` profile setting on (the default), Page Down /
+Space / Page Up scroll content taller than the screen a screenful at a time
+(12.5% overlap) and turn only once its far edge is in view; a backward turn
+opens the previous page at its end. The horizontal strip applies it on both
+axes, in reading order: down a spread taller than the screen (original size,
+or a user zoom), then along one wider than the screen — back at its top for
+each new column — then the spread step; a turn onto an oversized spread opens
+it at its reading start and top (backward: end and bottom), never centred.
+Off reproduces the old always-turn paths exactly. Arrow keys, taps, swipes,
+edge zones and the wheel are untouched. The decision is the pure
+`pageKeyStep` (`src/lib/reader/page-key-step.ts`); every surface feeds it the
+view **at its scroll target** (`PagedCamera.verticalExtent`,
+`ScrollAnimator.restingTarget`), never the animated position — a held key's
+auto-repeat must chain from where the last step will land, or it re-scrolls
+a half-finished glide and stalls at the page's end. In the continuous
+vertical strip the key acts on the first page with content hidden in its
+direction (`stripPageKeyTarget`), never the page nearest the view centre:
+beside a short page that is the wrong page — a tall page's top filling the
+screen never scrolled, and a short page after a tall one was turned past.
+
 ### Swipe-to-flip is edge-gated (#186)
 
 A touch swipe flips the page only if no pannable content was hidden in the

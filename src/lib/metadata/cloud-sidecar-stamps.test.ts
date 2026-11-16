@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { CloudFileMetadata } from '$lib/util/sync/provider-interface';
+import type { CloudFileMetadata } from '#lib/util/sync/provider-interface.js';
 import {
   buildCloudSidecarStamps,
   groupSeriesSidecarFiles,

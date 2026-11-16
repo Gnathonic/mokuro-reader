@@ -1,4 +1,4 @@
-import type { PageTurn } from '$lib/settings/volume-data';
+import type { PageTurn } from '#lib/settings/volume-data.js';
 import { LEGACY_DEVICE_PREFIX } from './paths';
 import type { ReadingEvent } from './types';
 

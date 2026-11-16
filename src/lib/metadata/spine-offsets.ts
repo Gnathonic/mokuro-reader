@@ -1,4 +1,4 @@
-import type { VolumeMetadata } from '$lib/types';
+import type { VolumeMetadata } from '#lib/types/index.js';
 import { SPINE_OFFSET_LIMIT, VOLUME_OFFSET_LIMIT } from './sanitize';
 import { normalizeSeriesKey } from './series-key';
 import type { SeriesFile } from './series-file';

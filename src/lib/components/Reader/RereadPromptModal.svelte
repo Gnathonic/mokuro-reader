@@ -1,12 +1,12 @@
 <script lang="ts">
   import { Button, Modal } from 'flowbite-svelte';
-  import type { VolumeMetadata } from '$lib/types';
+  import type { VolumeMetadata } from '#lib/types/index.js';
   import {
     dismissRereadForSession,
     restartSeries,
     suppressRereadPrompt
-  } from '$lib/metadata/reread';
-  import { showSnackbar } from '$lib/util';
+  } from '#lib/metadata/reread.js';
+  import { showSnackbar } from '#lib/util/index.js';
 
   interface Props {
     open: boolean;

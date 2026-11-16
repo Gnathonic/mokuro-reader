@@ -47,11 +47,11 @@ const { catalogVolumes } = vi.hoisted(() => {
   }
   return { catalogVolumes: createStore<Record<string, unknown>>({}) };
 });
-vi.mock('$lib/catalog', () => ({ volumes: catalogVolumes }));
+vi.mock('#lib/catalog/index.js', () => ({ volumes: catalogVolumes }));
 
 /** The `volumes` table the sweep writes into and the enrichment reads back. */
 let rows = new Map<string, Record<string, unknown>>();
-vi.mock('$lib/catalog/db', () => ({
+vi.mock('#lib/catalog/db.js', () => ({
   db: {
     volumes: {
       get: async (uuid: string) => rows.get(uuid),
@@ -72,12 +72,12 @@ vi.mock('$lib/catalog/db', () => ({
  * that a row it writes is reflected on this page before the user can act.
  */
 const materializeHistoryRows = vi.fn(async () => 0);
-vi.mock('$lib/metadata/history-rows', () => ({
+vi.mock('#lib/metadata/history-rows.js', () => ({
   materializeHistoryRows: () => materializeHistoryRows()
 }));
-vi.mock('$lib/metadata/series-index', () => ({ listSeriesIndexes: async () => [] }));
-vi.mock('$lib/metadata/series-open', () => ({ openSeries: vi.fn(async () => {}) }));
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/metadata/series-index.js', () => ({ listSeriesIndexes: async () => [] }));
+vi.mock('#lib/metadata/series-open.js', () => ({ openSeries: vi.fn(async () => {}) }));
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: {
     getActiveProvider: () => ({ type: 'google-drive' }),
     cloudFiles: readable(new Map([['Dr Stone', [{}]]])),
@@ -85,7 +85,7 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
     whenSeriesIndexesSettled: () => Promise.resolve()
   }
 }));
-vi.mock('$lib/util/sync/cache-manager', () => ({
+vi.mock('#lib/util/sync/cache-manager.js', () => ({
   cacheManager: { getCache: () => ({ isLoaded: () => true }) }
 }));
 
@@ -96,9 +96,9 @@ vi.mock('chart.js/auto', () => ({
   }
 }));
 
-import ReadingSpeedView from '$lib/views/ReadingSpeedView.svelte';
-import { resolveSyncedProgress } from '$lib/metadata/hole-patch';
-import { VolumeData, volumes, volumesWithTrash } from '$lib/settings/volume-data';
+import ReadingSpeedView from '#lib/views/ReadingSpeedView.svelte';
+import { resolveSyncedProgress } from '#lib/metadata/hole-patch.js';
+import { VolumeData, volumes, volumesWithTrash } from '#lib/settings/volume-data.js';
 
 /**
  * A record that clears `processVolumeSpeedData`'s filters, so it is

@@ -164,9 +164,9 @@ async function handleAuthError(
   }
 
   // Check if auto re-auth is enabled
-  const { miscSettings } = await import('$lib/settings/misc');
+  const { miscSettings } = await import('#lib/settings/misc.js');
   const { get: getStore } = await import('svelte/store');
-  const { showSnackbar } = await import('$lib/util/snackbar');
+  const { showSnackbar } = await import('#lib/util/snackbar.js');
 
   const settings = getStore(miscSettings);
   console.log('🔍 Auto re-auth check:', {

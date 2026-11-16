@@ -1,4 +1,4 @@
-import type { VolumeFiles, VolumeMetadata, VolumeOCR } from '$lib/types';
+import type { VolumeFiles, VolumeMetadata, VolumeOCR } from '#lib/types/index.js';
 import { generateDeterministicUUID } from './series-extraction';
 
 function hasOcr(mokuroVersion?: string): boolean {

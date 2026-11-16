@@ -1,8 +1,8 @@
 import { get, writable, type Readable } from 'svelte/store';
-import { browser } from '$app/environment';
-import { idleSettings } from '$lib/settings/tracking-data';
-import { VolumeData, volumesWithTrash, type LegacyStats } from '$lib/settings/volume-data';
-import type { ReadingSpeedResult } from '$lib/util/reading-speed';
+import { browser } from '$app/env';
+import { idleSettings } from '#lib/settings/tracking-data.js';
+import { VolumeData, volumesWithTrash, type LegacyStats } from '#lib/settings/volume-data.js';
+import type { ReadingSpeedResult } from '#lib/util/reading-speed.js';
 import {
   DEFAULT_K,
   RECENT_WINDOW_MS,

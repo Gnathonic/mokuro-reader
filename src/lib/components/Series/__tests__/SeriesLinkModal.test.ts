@@ -25,13 +25,13 @@ const h = vi.hoisted(() => {
     })
   };
 });
-vi.mock('$lib/util/sync', () => ({ providerManager: { status: h.providerStatus } }));
+vi.mock('#lib/util/sync/index.js', () => ({ providerManager: { status: h.providerStatus } }));
 
 const getById = vi.fn();
 const search = vi.fn();
-vi.mock('$lib/metadata/providers/anilist', async () => {
-  const actual = await vi.importActual<typeof import('$lib/metadata/providers/anilist')>(
-    '$lib/metadata/providers/anilist'
+vi.mock('#lib/metadata/providers/anilist.js', async () => {
+  const actual = await vi.importActual<typeof import('#lib/metadata/providers/anilist.js')>(
+    '#lib/metadata/providers/anilist.js'
   );
   return {
     ...actual,
@@ -48,11 +48,11 @@ const updateSeriesMetadata = vi.fn();
 const getSeriesMetadataForTitle = vi.fn((..._args: unknown[]): Promise<unknown> =>
   Promise.resolve(undefined)
 );
-vi.mock('$lib/metadata/store', () => ({
+vi.mock('#lib/metadata/store.js', () => ({
   updateSeriesMetadata: (...args: unknown[]) => updateSeriesMetadata(...args),
   getSeriesMetadataForTitle: (...args: unknown[]) => getSeriesMetadataForTitle(...args)
 }));
-vi.mock('$lib/util', () => ({ showSnackbar: vi.fn() }));
+vi.mock('#lib/util/index.js', () => ({ showSnackbar: vi.fn() }));
 
 import SeriesLinkModal from '../SeriesLinkModal.svelte';
 

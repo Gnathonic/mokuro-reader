@@ -1,8 +1,8 @@
 import { liveQuery } from 'dexie';
 import { derived, readable, type Readable } from 'svelte/store';
-import { browser } from '$app/environment';
-import { deviceLabels, type DeviceLabel } from '$lib/settings/tracking-data';
-import { volumes } from '$lib/settings/volume-data';
+import { browser } from '$app/env';
+import { deviceLabels, type DeviceLabel } from '#lib/settings/tracking-data.js';
+import { volumes } from '#lib/settings/volume-data.js';
 import { labelDevices, resolveDevice, type DeviceView, type KnownDevice } from './devices';
 import type { HistoryDexie } from './history-db';
 import { isDeviceId } from './paths';

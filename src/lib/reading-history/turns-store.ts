@@ -1,5 +1,5 @@
 import { get, writable, type Readable } from 'svelte/store';
-import type { PageTurn } from '$lib/settings/volume-data';
+import type { PageTurn } from '#lib/settings/volume-data.js';
 import type { HistoryDexie } from './history-db';
 import { nativeCoverage, projectVolume } from './project-turns';
 import { onEventsRecorded } from './record';

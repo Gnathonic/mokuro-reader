@@ -10,16 +10,16 @@
     seriesEditorModalStore,
     closeSeriesEditor,
     confirmationPopupStore
-  } from '$lib/util/modals';
-  import { catalog } from '$lib/catalog';
-  import { seriesMetadataMap } from '$lib/metadata/store';
-  import { normalizeSeriesKey } from '$lib/metadata/series-key';
-  import { hasAnyAltTitle, resolveDisplayTitle } from '$lib/metadata/display-title';
-  import { preferredTitleLanguage } from '$lib/settings/settings';
-  import { nav, currentView } from '$lib/util/hash-router';
-  import { showSnackbar } from '$lib/util';
-  import type { Series } from '$lib/catalog/catalog';
-  import type { DisplayTitleLanguage, SeriesMetadata } from '$lib/metadata/types';
+  } from '#lib/util/modals.js';
+  import { catalog } from '#lib/catalog/index.js';
+  import { seriesMetadataMap } from '#lib/metadata/store.js';
+  import { normalizeSeriesKey } from '#lib/metadata/series-key.js';
+  import { hasAnyAltTitle, resolveDisplayTitle } from '#lib/metadata/display-title.js';
+  import { preferredTitleLanguage } from '#lib/settings/settings.js';
+  import { nav, currentView } from '#lib/util/hash-router.js';
+  import { showSnackbar } from '#lib/util/index.js';
+  import type { Series } from '#lib/catalog/catalog.js';
+  import type { DisplayTitleLanguage, SeriesMetadata } from '#lib/metadata/types.js';
   import SeriesRenameField from './SeriesRenameField.svelte';
   import SeriesLinkControls from './SeriesLinkControls.svelte';
   import SeriesTitlesEditor from './SeriesTitlesEditor.svelte';

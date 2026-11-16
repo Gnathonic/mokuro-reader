@@ -24,22 +24,23 @@ const fetchHandler = vi.hoisted(() => {
   return state;
 });
 
-vi.mock('$app/environment', () => ({ browser: true }));
-vi.mock('$lib/util/sync/core/cloud-provider-core-registry', () => ({
+vi.mock('$app/env', () => ({ browser: true }));
+vi.mock('#lib/util/sync/core/cloud-provider-core-registry.js', () => ({
   getCloudProviderCore: () => ({ uploadFile: vi.fn(), downloadFile: vi.fn() })
 }));
-vi.mock('$lib/util/sync/provider-manager', () => ({
+vi.mock('#lib/util/sync/provider-manager.js', () => ({
   providerManager: { updateStatus: vi.fn() }
 }));
-vi.mock('$lib/util/sync/cache-manager', () => ({
+vi.mock('#lib/util/sync/cache-manager.js', () => ({
   cacheManager: { registerCache: vi.fn() }
 }));
-vi.mock('$lib/util/sync/providers/webdav/webdav-cache', () => ({ webdavCache: {} }));
+vi.mock('#lib/util/sync/providers/webdav/webdav-cache.js', () => ({ webdavCache: {} }));
 
 import {
   describeContract,
   fixtureFetch,
   fixtureHeader,
+  hasContractFile,
   loadBunkoFixture,
   loadSeed,
   recordRequest,
@@ -47,26 +48,26 @@ import {
   type Fixture,
   type ReaderExpect
 } from './contract';
-import { fetchServerIdentity } from '$lib/util/sync/providers/webdav/identity';
+import { fetchServerIdentity } from '#lib/util/sync/providers/webdav/identity.js';
 import {
   requestBunkoToken,
   revokeBunkoToken,
   tokenLabel
-} from '$lib/util/sync/providers/webdav/bunko-token';
-import { loadVolumeManifest } from '$lib/import/deep-link-manifest';
-import { httpQueueSource, parseQueueFile } from '$lib/catalog/server-ocr-queue';
+} from '#lib/util/sync/providers/webdav/bunko-token.js';
+import { loadVolumeManifest } from '#lib/import/deep-link-manifest.js';
+import { httpQueueSource, parseQueueFile } from '#lib/catalog/server-ocr-queue.js';
 import {
   contentDigestOf,
   uploadFileWithClient
-} from '$lib/util/sync/providers/webdav/webdav-upload';
-import { webdavAuthorization } from '$lib/util/sync/core/providers/webdav-authorization';
-import { webdavCore } from '$lib/util/sync/core/providers/webdav-core';
-import { layerSidecarName } from '$lib/util/sync/syncable-file';
-import { historyMonthOf, historySegmentPath } from '$lib/reading-history/paths';
-import { buildLayerMokuroMetadata } from '$lib/util/mokuro-metadata';
-import { buildPageCharCounts } from '$lib/catalog/page-char-counts';
-import { EDIT_LAYER_ID } from '$lib/reader/edit/layer-names';
-import type { VolumeMetadata } from '$lib/types';
+} from '#lib/util/sync/providers/webdav/webdav-upload.js';
+import { webdavAuthorization } from '#lib/util/sync/core/providers/webdav-authorization.js';
+import { webdavCore } from '#lib/util/sync/core/providers/webdav-core.js';
+import { SERIES_QUEUE_FILE_NAME, layerSidecarName } from '#lib/util/sync/syncable-file.js';
+import { historyMonthOf, historySegmentPath } from '#lib/reading-history/paths.js';
+import { buildLayerMokuroMetadata } from '#lib/util/mokuro-metadata.js';
+import { buildPageCharCounts } from '#lib/catalog/page-char-counts.js';
+import { EDIT_LAYER_ID } from '#lib/reader/edit/layer-names.js';
+import type { VolumeMetadata } from '#lib/types/index.js';
 
 const SERVER = 'https://bunko.example';
 /** The bearer token the tests hold for `reader` (recorded as `bearer:reader`). */
@@ -255,7 +256,7 @@ async function signedIn(user = 'reader', me = 'login-me-basic') {
     fx(me)
   ]);
   fetchHandler.impl = answers.fetch;
-  const { WebDAVProvider } = await import('$lib/util/sync/providers/webdav/webdav-provider');
+  const { WebDAVProvider } = await import('#lib/util/sync/providers/webdav/webdav-provider.js');
   localStorage.clear();
   const provider = new WebDAVProvider() as any;
   await provider.whenReady();
@@ -282,6 +283,61 @@ describeContract('WebDAV reads through the provider', () => {
       'queue-get'
     );
   });
+
+  // Queue file v2 (§12.2): the series page's read of one series' virtual
+  // file, then its conditional one. The folder is addressed per segment.
+  const seriesQueueIt = hasContractFile('bunko/series-queue-http.json') ? it : it.skip;
+  seriesQueueIt(
+    'series-queue-get and series-queue-get-if-none-match: a series page’s read, then its conditional one',
+    async () => {
+      const provider = await signedIn();
+      const reads = fixtureFetch([fx('series-queue-http')]);
+      fetchHandler.impl = reads.fetch;
+      const first = await provider.readControlFile(SERIES_QUEUE_FILE_NAME, {
+        folder: 'Contract Series'
+      });
+      expect(first).not.toBeNull();
+      expect(first).not.toBe('not-modified');
+      record('series-queue-get', captured(reads.calls[0]), {
+        status: [200],
+        // What `parseSeriesQueueFile` and the trust rule read.
+        body_fields: [
+          'v',
+          'instance_id',
+          'rev',
+          'at',
+          'clock_at',
+          'rows.0.kind',
+          'rows.0.id',
+          'vols.*.0.0',
+          'vols.*.0.1',
+          'done',
+          'live.held_rows',
+          'live.clock',
+          'live.clock_at',
+          'live.batch_s'
+        ],
+        // A queued job's `w` is null when unpriced; no hold is null.
+        nullable_fields: ['vols.*.0.2', 'live.held'],
+        headers: ['etag']
+      });
+
+      const conditional = fixtureFetch([fx('series-queue-http-not-modified')]);
+      fetchHandler.impl = conditional.fetch;
+      expect(
+        await provider.readControlFile(SERIES_QUEUE_FILE_NAME, {
+          folder: 'Contract Series',
+          ifNoneMatch: first.etag
+        })
+      ).toBe('not-modified');
+      record(
+        'series-queue-get-if-none-match',
+        captured(conditional.calls[0]),
+        { status: [304], headers: ['etag'] },
+        'series-queue-get'
+      );
+    }
+  );
 
   it('options-library: the OPTIONS the write-permission fallback and the PUT probe send', async () => {
     const provider = await signedIn();

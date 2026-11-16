@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { Page } from '$lib/types';
+import type { Page } from '#lib/types/index.js';
 import { EditSession } from './edit-session.svelte';
 
 // The default original loader reads the PRIMARY row's snapshot out of Dexie;

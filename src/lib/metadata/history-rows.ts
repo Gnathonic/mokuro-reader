@@ -1,9 +1,9 @@
 import { get } from 'svelte/store';
-import { db } from '$lib/catalog/db';
-import { materializeSeriesVolumes } from '$lib/catalog/materialize';
-import { volumes as progressStore } from '$lib/settings/volume-data';
-import { hasReadingActivity, type ReadingHistoryEntry } from '$lib/settings/reading-activity';
-import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
+import { db } from '#lib/catalog/db.js';
+import { materializeSeriesVolumes } from '#lib/catalog/materialize.js';
+import { volumes as progressStore } from '#lib/settings/volume-data.js';
+import { hasReadingActivity, type ReadingHistoryEntry } from '#lib/settings/reading-activity.js';
+import { unifiedCloudManager } from '#lib/util/sync/unified-cloud-manager.js';
 import { listSeriesIndexes, type SeriesIndexRecord } from './series-index';
 import { normalizeSeriesKey } from './series-key';
 import type { SeriesFileVolume } from './series-file';

@@ -1,6 +1,6 @@
-import { buildPageCharCounts } from '$lib/catalog/page-char-counts';
-import type { RetractableCredit } from '$lib/settings/volume-data';
-import type { ReadingSpeedResult } from '$lib/util/reading-speed';
+import { buildPageCharCounts } from '#lib/catalog/page-char-counts.js';
+import type { RetractableCredit } from '#lib/settings/volume-data.js';
+import type { ReadingSpeedResult } from '#lib/util/reading-speed.js';
 import { seriesSpeed, type ReadingStatsState } from './stats-store';
 import type { CreditTotals } from './stats-engine';
 import type { ReadingEvent } from './types';
