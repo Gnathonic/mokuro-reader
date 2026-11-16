@@ -1,20 +1,20 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { enrichAllOrphanedVolumes } from '$lib/settings';
+  import { enrichAllOrphanedVolumes } from '#lib/settings/index.js';
   import { Button, Card, Spinner } from 'flowbite-svelte';
   import { BookSolid, SortOutline, CogOutline } from 'flowbite-svelte-icons';
-  import { volumes, VolumeData, progress } from '$lib/settings/volume-data';
-  import { lastReadTimes } from '$lib/reading-history/last-read';
+  import { volumes, VolumeData, progress } from '#lib/settings/volume-data.js';
+  import { lastReadTimes } from '#lib/reading-history/last-read.js';
   // Placeholders included: a volume read on another device and never downloaded
   // here has no catalog row, so the plain store gave it page_count 0 and the
   // tracker dropped it from every section.
-  import { volumesWithPlaceholders as catalogVolumes } from '$lib/catalog';
+  import { volumesWithPlaceholders as catalogVolumes } from '#lib/catalog/index.js';
   import {
     miscSettings,
     updateMiscSetting,
     type ProgressTrackerSorting,
     type CompletedVolumesViewMode
-  } from '$lib/settings';
+  } from '#lib/settings/index.js';
   import {
     volumeDeadlines,
     getCurrentPeriodStart,
@@ -27,10 +27,10 @@
     ensureCurrentYearTarget,
     getCurrentPeriodKey,
     setActiveGoalSelection
-  } from '$lib/goals';
-  import AnnualGoalProgress from '$lib/components/AnnualGoalProgress.svelte';
-  import VolumeCard from '$lib/components/VolumeCard.svelte';
-  import ProgressTargetSettingsModal from '$lib/components/ProgressTargetSettingsModal.svelte';
+  } from '#lib/goals/index.js';
+  import AnnualGoalProgress from '#lib/components/AnnualGoalProgress.svelte';
+  import VolumeCard from '#lib/components/VolumeCard.svelte';
+  import ProgressTargetSettingsModal from '#lib/components/ProgressTargetSettingsModal.svelte';
   import {
     bucketVolumes,
     computeVolumeStats,
@@ -40,7 +40,7 @@
     sortByAddedDate,
     sortByCompletionDate,
     sortEntries
-  } from '$lib/views/progress-tracker-helpers';
+  } from '#lib/views/progress-tracker-helpers.js';
 
   // The catalog store is `undefined` until its first read resolves. Collapsing
   // that into `{}` made every page count 0 for one coalesce window, which put

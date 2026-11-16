@@ -1,5 +1,3 @@
-import { INTEROP_BUILD } from '$lib/interop/hermetic';
-
 /**
  * The OCR text's web font (Noto Sans JP), registered through the FontFace API
  * instead of a `<link rel="stylesheet">`.
@@ -75,7 +73,7 @@ export function webFontsRegistered(): Promise<void> {
  * fetches nothing from a third party (`$lib/interop/hermetic`).
  */
 export function loadWebFonts(href = NOTO_SANS_JP_CSS): Promise<void> {
-  if (typeof document === 'undefined' || INTEROP_BUILD) return Promise.resolve();
+  if (typeof document === 'undefined' || __MOKURO_INTEROP__) return Promise.resolve();
   registration ??= register(href);
   return registration;
 }

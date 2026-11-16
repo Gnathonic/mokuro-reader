@@ -1,4 +1,4 @@
-import type { Page } from '$lib/types';
+import type { Page } from '#lib/types/index.js';
 
 /**
  * Pure page helpers for the OCR upgrade (`cloud-ocr-upgrade.ts`): what makes a

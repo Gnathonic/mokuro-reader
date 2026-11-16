@@ -7,25 +7,25 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
 
-vi.mock('$app/environment', () => ({ browser: true }));
+vi.mock('$app/env', () => ({ browser: true }));
 const writeCatalogFile = vi.fn(async () => 'written' as const);
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: { writeCatalogFile: () => writeCatalogFile() }
 }));
-vi.mock('$lib/metadata/series-file-sync', () => ({ ensureFreshCloudListing: async () => true }));
-vi.mock('$lib/metadata/store', () => ({ registerFactsChangeListener: () => () => {} }));
+vi.mock('#lib/metadata/series-file-sync.js', () => ({ ensureFreshCloudListing: async () => true }));
+vi.mock('#lib/metadata/store.js', () => ({ registerFactsChangeListener: () => () => {} }));
 
 import {
   ingestMarkerRead,
   resetCloudBunkoMarkersForTest,
   withCloudBunkoStatus
-} from '$lib/catalog/cloud-bunko-marker';
+} from '#lib/catalog/cloud-bunko-marker.js';
 import {
   CATALOG_FILE_WRITE_DEBOUNCE_MS,
   scheduleCatalogFileWrite
-} from '$lib/metadata/catalog-file-sync';
-import { hasWritableNonServerProvider } from '$lib/metadata/series-backfill';
-import { onCloudBunkoMarkerChange } from '$lib/catalog/cloud-bunko-marker';
+} from '#lib/metadata/catalog-file-sync.js';
+import { hasWritableNonServerProvider } from '#lib/metadata/series-backfill.js';
+import { onCloudBunkoMarkerChange } from '#lib/catalog/cloud-bunko-marker.js';
 import type { ProviderStatus, SyncProvider } from './provider-interface';
 import { providerManager } from './provider-manager';
 

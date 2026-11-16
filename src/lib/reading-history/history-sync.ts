@@ -1,11 +1,11 @@
 import { historySyncAllowed } from './history-capability';
 import Dexie from 'dexie';
-import { sourceStampChanged } from '$lib/metadata/series-index';
+import { sourceStampChanged } from '#lib/metadata/series-index.js';
 import type {
   CloudFileMetadata,
   SyncProvider,
   UploadFileResult
-} from '$lib/util/sync/provider-interface';
+} from '#lib/util/sync/provider-interface.js';
 import type { HistoryDexie } from './history-db';
 import {
   LEGACY_DEVICE_PREFIX,
@@ -129,8 +129,7 @@ export async function legacyCarriedBy(providerType: string, db: HistoryDexie): P
   const local = await legacyEvents(db).count();
   if (local === 0) return true;
   const mark = (await db.history_meta.get(`uploaded:${providerType}:legacy`))?.value as
-    | { count: number }
-    | undefined;
+    { count: number } | undefined;
   return (mark?.count ?? 0) >= local;
 }
 

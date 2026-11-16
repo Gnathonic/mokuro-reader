@@ -44,24 +44,16 @@ export function endedViewMs(
 }
 
 /**
- * Counted history plus the open view: its dwell up to the cap. Past the cap
- * an answer decides (`countedDwell`); unanswered, the timer stops at the cap
- * while the prompt asks — the view counts typical time only once it ends
- * unanswered (`endedViewMs`).
+ * Counted history plus the open view up to its cap: past the cap the timer
+ * stops, which is also what the view counts once it ends unanswered
+ * (`endedViewMs`). An answer splits the view, so the open one is never answered.
  */
 export function liveMinutes(
   countedMs: number,
   open: { since: number } | null,
   now: number,
-  cap: number,
-  typical: number = cap,
-  answer: PauseCount | null = null
+  cap: number
 ): number {
-  const dwell = open ? Math.max(0, now - open.since) : 0;
-  const live = !open
-    ? 0
-    : answer === null
-      ? Math.min(dwell, cap)
-      : countedDwell(dwell, cap, typical, answer);
+  const live = open ? Math.min(Math.max(0, now - open.since), cap) : 0;
   return Math.floor((countedMs + live) / 60_000);
 }

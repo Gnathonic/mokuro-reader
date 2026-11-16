@@ -22,7 +22,7 @@ export function graphErrorCode(body: unknown): string | undefined {
   const error = (parsed as { error?: Record<string, unknown> } | null)?.error;
   if (!error || typeof error !== 'object') return undefined;
   if (typeof error.code === 'string' && QUOTA_CODES.has(error.code)) return error.code;
-  for (let inner = error.innerError ?? error.innererror; inner && typeof inner === 'object'; ) {
+  for (let inner = error.innerError ?? error.innererror; inner && typeof inner === 'object';) {
     const node = inner as Record<string, unknown>;
     if (typeof node.code === 'string' && QUOTA_CODES.has(node.code)) return node.code;
     inner = node.innerError ?? node.innererror;

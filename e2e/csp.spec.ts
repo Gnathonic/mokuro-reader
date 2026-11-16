@@ -6,7 +6,15 @@ import { join } from 'node:path';
 import { inflateSync } from 'node:zlib';
 import { isAppViolation, type CspViolation } from '../src/lib/security/csp-violations';
 import { vercelHeadersFor } from './helpers/vercel-headers';
-import { writeSyntheticVolume, type SyntheticVolume } from './helpers/synthetic-volume';
+import { writeSyntheticVolume } from './helpers/synthetic-volume';
+import { importVolume } from './helpers/import-volume';
+import {
+  ankiCropFlow,
+  coverCropFlow,
+  enableAnkiCapture,
+  recordCanvasBlobs,
+  stubAnkiConnect
+} from './helpers/crop-flows';
 
 /**
  * The shell's Content-Security-Policy, per CSP_MODE, in a PRODUCTION build
@@ -218,44 +226,12 @@ async function boot(page: Page, origin: string) {
     .toBe('#/catalog');
 }
 
-async function importVolume(page: Page, volume: SyntheticVolume) {
-  // The navbar's upload icon (stats, progress tracker, settings, upload, cloud).
-  await page.locator('nav div.md\\:order-2 > button').nth(3).click();
-  const chooser = page.waitForEvent('filechooser');
-  await page.locator('dialog button', { hasText: 'choose files' }).click();
-  await (await chooser).setFiles([volume.mokuro, volume.cbz]);
-  await page.locator('dialog button', { hasText: /^\s*Import\s*$/ }).click();
-  // Saved = its image row exists. Read IndexedDB directly: a production build
-  // has no `/src/...` module to import.
-  await expect
-    .poll(
-      () =>
-        page.evaluate(
-          (uuid) =>
-            new Promise<boolean>((resolve) => {
-              const open = indexedDB.open('mokuro_v3');
-              open.onerror = () => resolve(false);
-              open.onsuccess = () => {
-                const db = open.result;
-                if (!db.objectStoreNames.contains('volume_files')) return resolve(false);
-                const get = db.transaction('volume_files').objectStore('volume_files').get(uuid);
-                get.onsuccess = () => resolve(get.result != null);
-                get.onerror = () => resolve(false);
-              };
-            }),
-          volume.volumeUuid
-        ),
-      { timeout: 60_000, message: 'the import never saved the volume' }
-    )
-    .toBe(true);
-}
-
 /** The colour of one screen pixel, from a 1×1 PNG screenshot (any filter type
  * reduces to the raw bytes for the first pixel of the first row). */
 async function pixel(page: Page, x: number, y: number): Promise<[number, number, number]> {
   const png = await page.screenshot({ clip: { x, y, width: 1, height: 1 } });
   const idat: Buffer[] = [];
-  for (let at = 8; at < png.length; ) {
+  for (let at = 8; at < png.length;) {
     const length = png.readUInt32BE(at);
     const type = png.toString('latin1', at + 4, at + 8);
     if (type === 'IDAT') idat.push(png.subarray(at + 8, at + 8 + length));
@@ -429,6 +405,37 @@ for (const mode of MODES) {
       expect(consoleLog.csp).toEqual([]);
     });
 
+    // cropperjs 2's elements style themselves from their shadow roots. Through
+    // constructed (adopted) stylesheets that is outside style-src altogether; a
+    // <style> in a shadow root (its fallback where those are missing) would need
+    // 'unsafe-inline'. The flows check the canvas got its styles that way.
+    test('the cover crop and the Anki crop: work, and no app violations', async ({
+      context,
+      page
+    }) => {
+      test.setTimeout(180_000);
+      const consoleLog = watchConsole(page);
+      await routeLikeVercel(context, origin);
+      await recordCanvasBlobs(page);
+      const anki = await stubAnkiConnect(page);
+      await boot(page, origin);
+      await enableAnkiCapture(page);
+      await boot(page, origin);
+      const volume = writeSyntheticVolume('CspCrop', 2, [0, 0, 128], {
+        width: 1200,
+        height: 900,
+        gradient: true
+      });
+      await importVolume(page, volume);
+
+      await coverCropFlow(page, volume);
+      await ankiCropFlow(page, volume, anki);
+
+      const appViolations = (await violations(page)).filter(isAppViolation);
+      expect(appViolations, JSON.stringify(appViolations, null, 2)).toEqual([]);
+      expect(consoleLog.csp).toEqual([]);
+    });
+
     test('the bare Google hosts stay closed to scripts, and the page records the attempt', async ({
       context,
       page
@@ -465,6 +472,20 @@ for (const mode of MODES) {
     test('the service worker registers under the policy', async ({ browser }) => {
       const context = await browser.newContext({ serviceWorkers: 'allow' });
       const page = await context.newPage();
+      // Every registration the page makes, with its options. A production
+      // build registers ONE classic worker (src/lib/util/sw-register.ts):
+      // SvelteKit 3's own registration is `{ type: 'module' }`, which a browser
+      // without module service workers rejects.
+      await page.addInitScript(() => {
+        const calls: unknown[] = [];
+        (window as unknown as { __e2eSwRegistrations: unknown[] }).__e2eSwRegistrations = calls;
+        const container = navigator.serviceWorker;
+        const register = container.register.bind(container);
+        container.register = (url, options) => {
+          calls.push({ url: String(url), options: options ?? null });
+          return register(url, options);
+        };
+      });
       const consoleLog = watchConsole(page);
       await boot(page, origin);
       const scope = await page.evaluate(async () => {
@@ -472,6 +493,15 @@ for (const mode of MODES) {
         return registration.scope;
       });
       expect(scope).toBe(`${origin}/`);
+      expect(
+        await page.evaluate(
+          () => (window as unknown as { __e2eSwRegistrations: unknown[] }).__e2eSwRegistrations
+        )
+      ).toEqual([{ url: '/service-worker.js', options: { type: 'classic' } }]);
+      // The classic worker installed: precached, active, controlling this origin.
+      await expect
+        .poll(() => page.evaluate(async () => (await navigator.serviceWorker.ready).active?.state))
+        .toBe('activated');
       expect((await violations(page)).filter(isAppViolation)).toEqual([]);
       expect(consoleLog.csp).toEqual([]);
       await context.close();
@@ -714,7 +744,7 @@ test.describe('CSP_MODE=enforce with the Drive auth backend', () => {
 
     const shell = await page.goto(`${origin}/#/cloud`);
     expect(shell?.headers()['content-security-policy']).toMatch(/script-src /);
-    const connect = page.getByRole('button', { name: /Stays signed in/ });
+    const connect = page.getByRole('button', { name: /Google Drive.*15GB free/ });
     await expect(connect).toBeVisible({ timeout: 30_000 });
     await connect.click();
 

@@ -1,4 +1,4 @@
-import { seriesKey } from '$lib/util/names/fold';
+import { seriesKey } from '#lib/util/names/fold.js';
 
 /**
  * The identity of a series for metadata purposes: the catalog's grouping key.

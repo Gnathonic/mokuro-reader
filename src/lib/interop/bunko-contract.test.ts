@@ -25,53 +25,75 @@ const fetchHandler = vi.hoisted(() => {
   return state;
 });
 
-vi.mock('$app/environment', () => ({ browser: true }));
-vi.mock('$lib/util/sync/core/cloud-provider-core-registry', () => ({
+vi.mock('$app/env', () => ({ browser: true }));
+vi.mock('#lib/util/sync/core/cloud-provider-core-registry.js', () => ({
   getCloudProviderCore: () => ({ uploadFile: vi.fn(), downloadFile: vi.fn() })
 }));
-vi.mock('$lib/util/sync/provider-manager', () => ({
+vi.mock('#lib/util/sync/provider-manager.js', () => ({
   providerManager: { updateStatus: vi.fn() }
 }));
-vi.mock('$lib/util/sync/cache-manager', () => ({
+vi.mock('#lib/util/sync/cache-manager.js', () => ({
   cacheManager: { registerCache: vi.fn() }
 }));
-vi.mock('$lib/util/sync/providers/webdav/webdav-cache', () => ({ webdavCache: {} }));
+vi.mock('#lib/util/sync/providers/webdav/webdav-cache.js', () => ({ webdavCache: {} }));
 
-import { QUEUE_SNAPSHOT } from '$lib/catalog/__fixtures__/mokuro-queue';
-import { MARKER_SNAPSHOT } from '$lib/catalog/__fixtures__/bunko-marker';
+import { QUEUE_SNAPSHOT, stripQueueParts } from '#lib/catalog/__fixtures__/mokuro-queue.js';
+import { describePendingOcr } from '#lib/catalog/server-ocr-pending.js';
+import { MARKER_SNAPSHOT } from '#lib/catalog/__fixtures__/bunko-marker.js';
+import {
+  SERIES_QUEUE_HTTP_SNAPSHOT,
+  SERIES_QUEUE_SHAPES_SNAPSHOT,
+  seriesQueueShapes
+} from '#lib/catalog/__fixtures__/series-queue.js';
+import {
+  parseSeriesQueueFile,
+  pickTrustedCopy,
+  seriesQueueSlice
+} from '#lib/catalog/series-queue.js';
 import {
   EPOCH_MS,
+  ETAG_SENTINEL,
   describeContract,
+  describeContractFile,
   fixtureFetch,
   fixtureHeader,
+  hasContract,
+  hasContractFile,
   loadBunkoFixture,
   loadSeed,
   type Fixture
 } from './contract';
-import { fetchServerIdentity } from '$lib/util/sync/providers/webdav/identity';
-import { bunkoSupportsHistory } from '$lib/util/sync/providers/webdav/bunko-version';
-import { requestBunkoToken, revokeBunkoToken } from '$lib/util/sync/providers/webdav/bunko-token';
-import { loadVolumeManifest, parseVolumeManifest } from '$lib/import/deep-link-manifest';
-import { parseQueueFile } from '$lib/catalog/server-ocr-queue';
+import { fetchServerIdentity } from '#lib/util/sync/providers/webdav/identity.js';
+import { bunkoSupportsHistory } from '#lib/util/sync/providers/webdav/bunko-version.js';
+import {
+  requestBunkoToken,
+  revokeBunkoToken
+} from '#lib/util/sync/providers/webdav/bunko-token.js';
+import { loadVolumeManifest, parseVolumeManifest } from '#lib/import/deep-link-manifest.js';
+import { parseQueueFile } from '#lib/catalog/server-ocr-queue.js';
 import {
   isMarkerFresh,
   parseBunkoMarker,
   type MarkerNodeRecord
-} from '$lib/catalog/cloud-bunko-marker';
-import { parseSeriesFileWithReport } from '$lib/metadata/series-file';
-import { parseCatalogFile } from '$lib/metadata/catalog-file';
+} from '#lib/catalog/cloud-bunko-marker.js';
+import { parseSeriesFileWithReport } from '#lib/metadata/series-file.js';
+import { parseCatalogFile } from '#lib/metadata/catalog-file.js';
 import {
   WebdavUploadError,
   readServerOcrHeaders,
   uploadFileWithClient
-} from '$lib/util/sync/providers/webdav/webdav-upload';
-import { classifyWriteError } from '$lib/util/sync/providers/webdav/webdav-errors';
-import { webdavCore } from '$lib/util/sync/core/providers/webdav-core';
-import { ProviderError } from '$lib/util/sync/provider-interface';
-import { canPublishCurated } from '$lib/util/sync/account-capabilities';
-import { layerSidecarName } from '$lib/util/sync/syncable-file';
-import { CURATED_LAYER_ID, EDIT_LAYER_ID } from '$lib/reader/edit/layer-names';
-import { parseHistoryPath } from '$lib/reading-history/paths';
+} from '#lib/util/sync/providers/webdav/webdav-upload.js';
+import { classifyWriteError } from '#lib/util/sync/providers/webdav/webdav-errors.js';
+import { webdavCore } from '#lib/util/sync/core/providers/webdav-core.js';
+import { ProviderError } from '#lib/util/sync/provider-interface.js';
+import { canPublishCurated } from '#lib/util/sync/account-capabilities.js';
+import {
+  SERIES_QUEUE_FILE_NAME,
+  isSyncableFile,
+  layerSidecarName
+} from '#lib/util/sync/syncable-file.js';
+import { CURATED_LAYER_ID, EDIT_LAYER_ID } from '#lib/reader/edit/layer-names.js';
+import { parseHistoryPath } from '#lib/reading-history/paths.js';
 
 const SERVER = 'https://bunko.example';
 const NOW = Date.parse('2026-10-28T12:00:00Z');
@@ -307,9 +329,31 @@ describeContract('the volume manifest as Bunko answers it', () => {
   });
 });
 
+/**
+ * Does this checkout's queue file name its jobs' parts (Bunko 0.8)? An older
+ * checkout's does not: the snapshot is compared without them and the parts
+ * test is skipped, with a warning, rather than failing on a field that
+ * Bunko simply did not have yet.
+ */
+function bunkoQueueHasParts(): boolean {
+  const body = loadBunkoFixture('queue-file-http', { now: EPOCH_MS }).body;
+  return (body?.volumes ?? []).some((v: { jobs?: unknown[] }) =>
+    (v.jobs ?? []).some((j) => !!j && typeof j === 'object' && 'parts' in j)
+  );
+}
+
 describeContract('the snapshots used without a Bunko checkout', () => {
   it('match Bunko’s fixtures', () => {
-    expect(QUEUE_SNAPSHOT).toEqual(loadBunkoFixture('queue-file-http', { now: EPOCH_MS }).body);
+    const served = loadBunkoFixture('queue-file-http', { now: EPOCH_MS }).body;
+    if (bunkoQueueHasParts()) {
+      expect(QUEUE_SNAPSHOT).toEqual(served);
+    } else {
+      console.warn(
+        "[contract] this Bunko checkout's queue file has no job `parts` (before Bunko 0.8's): " +
+          'comparing the snapshot without them'
+      );
+      expect(stripQueueParts(QUEUE_SNAPSHOT)).toEqual(served);
+    }
     expect(MARKER_SNAPSHOT).toEqual(loadBunkoFixture('marker-active', { now: EPOCH_MS }).body);
   });
 });
@@ -330,40 +374,126 @@ describeContract('the OCR queue file as Bunko writes it', () => {
         jobs: [expect.objectContaining({ kind: 'ocr', state: 'held', eta: null, progress: null })]
       }
     ]);
-    expect(file.done).toEqual([]);
-    expect(file.truncated).toBe(false);
   });
 
-  it('the cloud copy: done entries with their sidecars and layers', () => {
-    const file = parseQueueFile(fx('queue-file-cloud').body)!;
-    expect(file.instance_id).toBeTruthy();
-    expect(file.truncated).toBe(false);
-    expect(file.done).toEqual([
-      {
-        series: 'Contract Series',
-        volume: 'Volume 01',
-        at: new Date(NOW).toISOString().replace(/\.\d{3}Z$/, 'Z'),
-        ocr: 'Contract Series/Volume 01.mokuro',
-        layers: []
-      },
-      {
-        series: '日本語シリーズ',
-        volume: '第1巻',
-        at: expect.any(String),
-        ocr: '日本語シリーズ/第1巻.mokuro',
-        layers: [{ id: 'hayai', path: '日本語シリーズ/第1巻.hayai.mokuro' }]
-      }
-    ]);
-    expect(file.volumes).toHaveLength(1);
-  });
-
-  it('a truncated cloud copy says so', () => {
-    const file = parseQueueFile(fx('queue-file-cloud-truncated').body)!;
-    expect(file.truncated).toBe(true);
-    expect(file.volumes).toEqual([]);
-    expect(file.done).toHaveLength(2);
-  });
+  it.skipIf(!hasContract() || !bunkoQueueHasParts())(
+    "a job's parts name it as its finished file will be named",
+    () => {
+      const file = parseQueueFile(fx('queue-file-http').body)!;
+      const view = describePendingOcr({ jobs: file.volumes[0].jobs, held: file.held }, NOW)!;
+      expect(view.lines.map((l) => l.fullName)).toEqual(['Hayai Nova 2.5 · PP-OCR Manga 0.3']);
+      expect(view.lines[0].name).toBe('Hayai Nova');
+    }
+  );
 });
+
+describeContractFile(
+  'bunko/series-queue-http.json',
+  'the series queue file (queue file v2) as Bunko serves it',
+  () => {
+    it('the snapshots used without a checkout match Bunko’s fixtures', () => {
+      expect(SERIES_QUEUE_HTTP_SNAPSHOT).toEqual(
+        loadBunkoFixture('series-queue-http', { now: EPOCH_MS }).body
+      );
+      if (hasContractFile('bunko/series-queue-shapes.json')) {
+        expect(SERIES_QUEUE_SHAPES_SNAPSHOT).toEqual(
+          loadBunkoFixture('series-queue-shapes', { now: EPOCH_MS }).body
+        );
+      }
+    });
+
+    it('the virtual file: the volume without OCR waits, held for want of a processor', () => {
+      const f = fx('series-queue-http');
+      expect(f.status).toBe(200);
+      expect(fixtureHeader(f)('ETag')).toBe(ETAG_SENTINEL);
+      const file = parseSeriesQueueFile(f.body)!;
+      expect(file).not.toBeNull();
+      // Its live block makes it Bunko's own answer: trusted as is.
+      expect(pickTrustedCopy([file], { kind: 'live' })).toBe(file);
+      const status = seriesQueueSlice(file, file.live).get('volume 02');
+      const view = describePendingOcr(status, NOW)!;
+      expect(view.lines.map((l) => [l.fullName, l.short])).toEqual([
+        ['Hayai Nova 2.5 · PP-OCR Manga 0.3', 'held: no processor connected']
+      ]);
+    });
+
+    it('an existing series with nothing owed is 200 with no volumes, not a 404', () => {
+      const f = fx('series-queue-http-empty');
+      expect(f.status).toBe(200);
+      const file = parseSeriesQueueFile(f.body)!;
+      expect(file.vols.size).toBe(0);
+      expect(seriesQueueSlice(file, file.live).size).toBe(0);
+    });
+
+    it('asked with its ETag, Bunko answers 304', () => {
+      const f = fx('series-queue-http-not-modified');
+      expect(f.status).toBe(304);
+      expect(f.request.headers?.['if-none-match']).toBe(ETAG_SENTINEL);
+    });
+
+    it('the stored copy is the virtual body without `live`, trusted only under the holder', () => {
+      if (!hasContractFile('bunko/series-queue-stored.json')) return;
+      const stored = fx('series-queue-stored', EPOCH_MS);
+      expect(stored.request.file).toBe(`Contract Series/${SERIES_QUEUE_FILE_NAME}`);
+      // One renderer for both sinks: the stored body is the HTTP one minus `live`.
+      const { live, ...served } = fx('series-queue-http', EPOCH_MS).body;
+      expect(live).toBeTruthy();
+      expect(stored.body).toEqual(served);
+      expect('live' in stored.body).toBe(false);
+      const file = parseSeriesQueueFile(stored.body)!;
+      expect(file.live).toBeNull();
+      // No `live`: not Bunko's own virtual answer, so it counts only under a
+      // marker holder with that instance id, rendered under the marker's block.
+      expect(pickTrustedCopy([file], { kind: 'live' })).toBeNull();
+      const marker = parseBunkoMarker(fx('marker-active', EPOCH_MS).body)!;
+      expect(pickTrustedCopy([file], { kind: 'holder', instanceId: 'another' })).toBeNull();
+      const trusted = pickTrustedCopy([file], { kind: 'holder', instanceId: file.instance_id })!;
+      expect(trusted).toBe(file);
+      const view = describePendingOcr(
+        seriesQueueSlice(trusted, marker.series_queue).get('volume 02'),
+        NOW
+      )!;
+      expect(view.lines.map((l) => [l.fullName, l.short])).toEqual([
+        ['Hayai Nova 2.5 · PP-OCR Manga 0.3', 'held: no processor connected']
+      ]);
+    });
+
+    it('no client may write it: a PUT is 405 and names the methods that work', () => {
+      if (!hasContractFile('bunko/series-queue-put-refused.json')) return;
+      const f = fx('series-queue-put-refused');
+      expect(f.request.path).toBe(`/mokuro-reader/Contract%20Series/${SERIES_QUEUE_FILE_NAME}`);
+      expect(f.status).toBe(405);
+      const allow = fixtureHeader(f)('Allow')!
+        .split(',')
+        .map((m) => m.trim());
+      expect(allow).toContain('GET');
+      expect(allow).not.toContain('PUT');
+    });
+
+    it('a series listed through a cloud bridge leaves the stored copy out', () => {
+      if (!hasContractFile('bunko/propfind-series-depth1-cloud.json')) return;
+      const f = fx('propfind-series-depth1-cloud');
+      expect(f.request.headers?.depth).toBe('1');
+      expect(f.body_text).toContain('Volume%2002.cbz');
+      expect(f.body_text).not.toContain(SERIES_QUEUE_FILE_NAME);
+      // And the reader would never take it in a listing anyway.
+      expect(isSyncableFile(`Contract Series/${SERIES_QUEUE_FILE_NAME}`)).toBe(false);
+    });
+
+    it('every job shape the renderer writes reads, and renders', () => {
+      const file = parseSeriesQueueFile(seriesQueueShapes())!;
+      expect([...file.vols.values()].flat().map((j) => j.state)).toEqual(['r', 'q', 'q', 'c', 'q']);
+      const slice = seriesQueueSlice(file, file.live);
+      expect([...slice.values()].flatMap((v) => v.jobs.map((j) => j.state))).toEqual([
+        'running',
+        'queued',
+        'held',
+        'starting',
+        'queued'
+      ]);
+    });
+  }
+);
 
 describeContract('the lease marker as Bunko writes it', () => {
   const record = (body: unknown): MarkerNodeRecord => {
@@ -383,17 +513,31 @@ describeContract('the lease marker as Bunko writes it', () => {
       per_user_files: m.per_user_files,
       curated: m.curated,
       dedup: m.dedup,
+      series_queue: m.series_queue,
       changedAt: null
     };
   };
 
   it('an active marker: Bunko compiles the metadata files and runs the queue', () => {
-    const m = parseBunkoMarker(fx('marker-active').body)!;
+    const raw = fx('marker-active').body;
+    const m = parseBunkoMarker(raw)!;
     expect(m).not.toBeNull();
     expect(m.state).toBe('active');
     expect(m.compiles).toEqual(['series.json', 'catalog.json']);
     expect(m.ocr).toBe(true);
-    expect(m.queue).toBe('.mokuro-queue.json');
+    // Queue file v2: no root queue file is stored (`queue: null`); the
+    // library-wide state rides the `series_queue` block, naming the per-series
+    // file the reader reads.
+    expect(raw.queue).toBeNull();
+    expect(m.queue).toBe('');
+    expect(raw.series_queue).toMatchObject({ v: 2, file: SERIES_QUEUE_FILE_NAME });
+    expect(m.series_queue).toMatchObject({
+      held: { reason: 'no-processor' },
+      held_rows: [],
+      batch_s: expect.any(Number)
+    });
+    expect(m.series_queue!.clock).toHaveLength(2);
+    expect(m.series_queue!.clock_at).toBe(m.series_queue!.clock![0][1]);
     expect(m.ttl_s).toBeGreaterThan(0);
   });
 
@@ -637,7 +781,7 @@ describeContract('PROPFIND answers as Bunko gives them', () => {
     ]);
     calls = answers.calls;
     fetchHandler.impl = answers.fetch;
-    const { WebDAVProvider } = await import('$lib/util/sync/providers/webdav/webdav-provider');
+    const { WebDAVProvider } = await import('#lib/util/sync/providers/webdav/webdav-provider.js');
     provider = new WebDAVProvider();
     await provider.whenReady();
     await provider.login({ serverUrl: SERVER, username: 'reader', password: password('reader') });
@@ -684,9 +828,8 @@ describeContract('PROPFIND answers as Bunko gives them', () => {
     // The generic reading of that Allow agrees: the library folder is a
     // collection, and its Allow names a collection write method (DELETE or
     // MOVE; PUT and MKCOL only where the account may write, from 0.8).
-    const { allowHeaderPermitsCollectionWrite } = await import(
-      '$lib/util/sync/providers/webdav/webdav-provider'
-    );
+    const { allowHeaderPermitsCollectionWrite } =
+      await import('#lib/util/sync/providers/webdav/webdav-provider.js');
     expect(allowHeaderPermitsCollectionWrite(allow)).toBe(true);
     expect(await provider.checkWritePermissions(SERVER)).toBe(true);
     expect(answers.calls.map((c) => c.method)).toEqual(['PROPFIND', 'OPTIONS']);
@@ -751,7 +894,7 @@ describeContract('a registered account as Bunko reports it', () => {
       fx('login-token-issue'),
       fx('options-library')
     ]).fetch;
-    const { WebDAVProvider } = await import('$lib/util/sync/providers/webdav/webdav-provider');
+    const { WebDAVProvider } = await import('#lib/util/sync/providers/webdav/webdav-provider.js');
     provider = new WebDAVProvider();
     await provider.whenReady();
     await provider.login({
@@ -965,7 +1108,7 @@ describeContract('who may write is what `/login/api/me` says, never the WebDAV f
     localStorage.clear();
     const answers = fixtureFetch([...fallbackAnswers(), fx(meFixture)]);
     fetchHandler.impl = answers.fetch;
-    const { WebDAVProvider } = await import('$lib/util/sync/providers/webdav/webdav-provider');
+    const { WebDAVProvider } = await import('#lib/util/sync/providers/webdav/webdav-provider.js');
     const provider = new WebDAVProvider();
     await provider.whenReady();
     const login = provider.login(

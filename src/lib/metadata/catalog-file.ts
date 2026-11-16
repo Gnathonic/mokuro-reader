@@ -5,7 +5,7 @@ import {
   type SeriesFile
 } from './series-file';
 import { normalizeSeriesKey } from './series-key';
-import { foldName } from '$lib/util/names/fold';
+import { foldName } from '#lib/util/names/fold.js';
 import {
   ID_KEYS,
   TITLE_KEYS,

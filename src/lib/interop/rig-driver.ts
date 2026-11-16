@@ -9,81 +9,91 @@
  * implementation of it. What a method returns is plain JSON (it crosses
  * `page.evaluate`).
  *
- * Loaded only by `+layout.svelte` under `CLOUD_TEST_HOOKS` (Vitest, or a
- * `vite build --mode interop`), by dynamic import, so a production build drops
- * this module; `scripts/check-no-test-hooks.mjs` bans its names from the bundle.
+ * Loaded only by `+layout.svelte` under `__MOKURO_TEST_HOOKS__`
+ * (Vitest, or a `vite build --mode interop`), by dynamic import, so a
+ * production build drops this module; `scripts/check-no-test-hooks.mjs` bans its names from the bundle.
  */
 import { derived, get } from 'svelte/store';
-import { db } from '$lib/catalog/db';
-import { listLayerIds } from '$lib/catalog/layer-store';
+import { db } from '#lib/catalog/db.js';
+import { listLayerIds } from '#lib/catalog/layer-store.js';
 import {
   cloudFieldsForRemovedVolume,
   generatePlaceholders,
   indexCloudFilesByPath,
   indexCloudFilesByUuid
-} from '$lib/catalog/placeholders';
+} from '#lib/catalog/placeholders.js';
 import {
   describePendingOcr,
+  pendingStatusFor,
   queueKeyForVolume,
   serverOcrQueueStatus,
+  seriesQueueStore,
   watchedKeyStore
-} from '$lib/catalog/server-ocr-pending';
-import { isMetadataOnly, isVolumeInstalled } from '$lib/catalog/volume-state';
-import { cloudBunkoMergesDuplicates, cloudBunkoStatus } from '$lib/catalog/cloud-bunko-marker';
-import { deleteVolumeCompletely, importFiles } from '$lib/import';
-import { defaultNaming } from '$lib/import/image-only-review';
-import { decideCurrent, reviewSession } from '$lib/import/review-session';
-import { publishCuratedLayer, pullOwnEditLayerBeforeEdit } from '$lib/metadata/layer-sync';
-import { catalogFileWritePending, settleCatalogFileWrites } from '$lib/metadata/catalog-file-sync';
-import { seriesBackfillsPending, settleSeriesBackfills } from '$lib/metadata/series-backfill';
-import { seriesFileWritesPending, settleSeriesFileWrites } from '$lib/metadata/series-file-sync';
-import type { SeriesIndexRecord } from '$lib/metadata/series-index';
-import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
+} from '#lib/catalog/server-ocr-pending.js';
+import { isMetadataOnly, isVolumeInstalled } from '#lib/catalog/volume-state.js';
+import { cloudBunkoMergesDuplicates, cloudBunkoStatus } from '#lib/catalog/cloud-bunko-marker.js';
+import { deleteVolumeCompletely, importFiles } from '#lib/import/index.js';
+import { defaultNaming } from '#lib/import/image-only-review.js';
+import { decideCurrent, reviewSession } from '#lib/import/review-session.js';
+import { publishCuratedLayer, pullOwnEditLayerBeforeEdit } from '#lib/metadata/layer-sync.js';
+import {
+  catalogFileWritePending,
+  settleCatalogFileWrites
+} from '#lib/metadata/catalog-file-sync.js';
+import { seriesBackfillsPending, settleSeriesBackfills } from '#lib/metadata/series-backfill.js';
+import { seriesFileWritesPending, settleSeriesFileWrites } from '#lib/metadata/series-file-sync.js';
+import type { SeriesIndexRecord } from '#lib/metadata/series-index.js';
+import { normalizeSeriesKey, normalizeVolumeTitleKey } from '#lib/metadata/series-key.js';
 import {
   clampSpineOffset,
   flushSpineOffsetWrites,
   getSpineOffsets,
   sameSpineOffsets,
   scheduleSpineOffsetWrite
-} from '$lib/metadata/spine-offsets';
-import { historyDb } from '$lib/reading-history/history-db';
-import { HISTORY_FOLDER } from '$lib/reading-history/paths';
-import { historySyncAllowed } from '$lib/reading-history/history-sync';
-import { persistPageEdit } from '$lib/reader/edit/edit-persist';
-import { setBlockLines } from '$lib/reader/edit/edit-ops';
-import { forksOnEdit } from '$lib/reader/edit/layer-kind';
-import { EDIT_LAYER_ID } from '$lib/reader/edit/layer-names';
+} from '#lib/metadata/spine-offsets.js';
+import { historyDb } from '#lib/reading-history/history-db.js';
+import { HISTORY_FOLDER } from '#lib/reading-history/paths.js';
+import { historySyncAllowed } from '#lib/reading-history/history-sync.js';
+import { persistPageEdit } from '#lib/reader/edit/edit-persist.js';
+import { setBlockLines } from '#lib/reader/edit/edit-ops.js';
+import { forksOnEdit } from '#lib/reader/edit/layer-kind.js';
+import { EDIT_LAYER_ID } from '#lib/reader/edit/layer-names.js';
 import {
   forkIntoEditLayer,
   listLayers,
   loadLayerPages,
   persistLayerPageEdit
-} from '$lib/reader/edit/layers';
-import { recordPagedPageView } from '$lib/reader/paged-progress';
-import { runLayerAction } from '$lib/components/Reader/Layers/layer-actions';
+} from '#lib/reader/edit/layers.js';
+import { recordPagedPageView } from '#lib/reader/paged-progress.js';
+import { runLayerAction } from '#lib/components/Reader/Layers/layer-actions.js';
 import {
   deleteVolume as deleteVolumeStats,
   updateVolumeSetting,
   volumes as volumeDataStore
-} from '$lib/settings/volume-data';
-import type { Page, VolumeMetadata } from '$lib/types';
-import { backupQueue, backupQueueSettled } from '$lib/util/backup-queue';
-import { downloadQueue } from '$lib/util/download-queue';
-import { nav } from '$lib/util/hash-router';
-import { sanitizeRenameTitle } from '$lib/util/sanitize-title';
-import { waitFor } from '$lib/util/store-wait';
-import { generateDeterministicUUID } from '$lib/util/series-extraction';
-import { executeRenameSeries } from '$lib/util/series-rename';
-import { activeProviderStatus } from '$lib/util/sync/active-provider-status';
-import { canDeleteSeriesOnServer } from '$lib/util/sync/metadata-permissions';
-import type { ProviderStatus, ProviderType } from '$lib/util/sync/provider-interface';
-import { providerManager } from '$lib/util/sync/provider-manager';
+} from '#lib/settings/volume-data.js';
+import type { Page, VolumeMetadata } from '#lib/types/index.js';
+import { backupQueue, backupQueueSettled } from '#lib/util/backup-queue.js';
+import { downloadQueue } from '#lib/util/download-queue.js';
+import { nav } from '#lib/util/hash-router.js';
+import { sanitizeRenameTitle } from '#lib/util/sanitize-title.js';
+import { waitFor } from '#lib/util/store-wait.js';
+import { generateDeterministicUUID } from '#lib/util/series-extraction.js';
+import { executeRenameSeries } from '#lib/util/series-rename.js';
+import { activeProviderStatus } from '#lib/util/sync/active-provider-status.js';
+import { setFolderTestHandle } from '#lib/util/sync/cloud-test-hooks.js';
+import { canDeleteSeriesOnServer } from '#lib/util/sync/metadata-permissions.js';
+import type { ProviderStatus, ProviderType } from '#lib/util/sync/provider-interface.js';
+import { providerManager } from '#lib/util/sync/provider-manager.js';
 import {
   unifiedCloudManager,
   type CloudVolumeWithProvider
-} from '$lib/util/sync/unified-cloud-manager';
-import { uploadFailures } from '$lib/util/upload-failures';
-import { renameVolumeInCloud, updateVolumeInDb, updateVolumeStats } from '$lib/util/volume-editor';
+} from '#lib/util/sync/unified-cloud-manager.js';
+import { uploadFailures } from '#lib/util/upload-failures.js';
+import {
+  renameVolumeInCloud,
+  updateVolumeInDb,
+  updateVolumeStats
+} from '#lib/util/volume-editor.js';
 
 export const RIG_DRIVER_API_VERSION = 1;
 
@@ -105,6 +115,15 @@ export const RIG_DRIVER_API_VERSION = 1;
  *   locally (`util/sync/cloud-spelling-adoption.ts`).
  * - `dedup`: duplicate-folder merges, stepping aside for a Bunko holder that
  *   merges itself (`util/sync/folder-deduplicator.ts`, `cloudBunkoMergesDuplicates`).
+ * - `series-queue-v2`: the OCR queue read per series, only on the series page
+ *   and for watched volumes (`<Series>/.mokuro-series-queue.json`, bunko
+ *   `docs/design/queue-file-v2.md`; `catalog/series-queue-loop.ts`,
+ *   `series-queue-watch.ts`), no root queue file on a cloud library, and a
+ *   finished volume pulled by listing its one series (`refreshSeriesFolder`).
+ * - `local-folder`: `connectFolder`, the Local Folder provider signed in to a
+ *   folder on the rig's disk that the rig drops on the page, in place of the
+ *   picker (`setFolderTestHandle`); a Bunko that keeps its library in that
+ *   folder is seen as on Drive (`filesystem-provider.ts` `readControlFile`).
  */
 export const RIG_CAPABILITIES: readonly string[] = [
   'history',
@@ -113,7 +132,9 @@ export const RIG_CAPABILITIES: readonly string[] = [
   'edit-layers-curated',
   'provenance',
   'case-merge-rename',
-  'dedup'
+  'dedup',
+  'series-queue-v2',
+  'local-folder'
 ];
 
 export interface RigVolume {
@@ -152,6 +173,79 @@ async function connect(type: ProviderType, credentials?: Record<string, unknown>
   if (type !== 'webdav') providerManager.updateStatus();
   const synced = await sync();
   return { status: providerStatus(), sync: synced };
+}
+
+/** A dropped item's File System Access handle: Chromium-only, not in lib.dom. */
+type DroppedItem = DataTransferItem & {
+  getAsFileSystemHandle?: () => Promise<FileSystemHandle | null>;
+};
+
+/** How long `connectFolder` waits for the rig's drop. */
+const FOLDER_DROP_WAIT_MS = 30_000;
+
+/**
+ * The next folder dropped anywhere on the page, as a File System Access
+ * handle (`DataTransferItem.getAsFileSystemHandle`). The listeners are on the
+ * window, in the capture phase, from the moment this is called until the
+ * drop (or `waitMs`): the drop goes to nothing else, so the app's own import
+ * never sees it. A drop of anything but one folder rejects.
+ */
+function nextDroppedFolder(waitMs: number): Promise<FileSystemDirectoryHandle> {
+  return new Promise((resolve, reject) => {
+    const take = (e: DragEvent) => {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    };
+    const done = () => {
+      clearTimeout(timer);
+      window.removeEventListener('dragenter', take, true);
+      window.removeEventListener('dragover', take, true);
+      window.removeEventListener('drop', drop, true);
+    };
+    const drop = (e: DragEvent) => {
+      take(e);
+      done();
+      // Asked during the event: its data is gone once the event ends.
+      const items = [...(e.dataTransfer?.items ?? [])] as DroppedItem[];
+      const handle = items.length === 1 ? items[0].getAsFileSystemHandle?.() : undefined;
+      if (!handle) {
+        reject(new Error(`connectFolder: the drop held ${items.length} items, not one folder`));
+        return;
+      }
+      handle.then((h) => {
+        if (h?.kind === 'directory') resolve(h as FileSystemDirectoryHandle);
+        else
+          reject(new Error(`connectFolder: the drop held a ${h?.kind ?? 'nothing'}, not a folder`));
+      }, reject);
+    };
+    const timer = setTimeout(() => {
+      done();
+      reject(new Error(`connectFolder: no folder was dropped within ${waitMs} ms`));
+    }, waitMs);
+    window.addEventListener('dragenter', take, true);
+    window.addEventListener('dragover', take, true);
+    window.addEventListener('drop', drop, true);
+  });
+}
+
+/**
+ * The cloud screen's Local Folder connect, on the folder the rig drops on
+ * the page next (CDP `Input.dispatchDragEvent` with the folder's path): the
+ * provider opens it in place of the picker, which a rig cannot answer. The
+ * drop listener is in place once this returns, so the rig calls it, drops,
+ * then awaits it. The folder must already let this origin write to it (the
+ * rig's browser profile allows it; a user's would ask).
+ */
+function connectFolder(): Promise<Awaited<ReturnType<typeof connect>>> {
+  const dropped = nextDroppedFolder(FOLDER_DROP_WAIT_MS);
+  return (async () => {
+    setFolderTestHandle(await dropped);
+    try {
+      return await connect('filesystem');
+    } finally {
+      setFolderTestHandle(null);
+    }
+  })();
 }
 
 /** A sync as on app start or after a connect: the listing, then the progress round trip. */
@@ -466,7 +560,12 @@ async function pendingOcr(volumeId: string) {
   const volume = (await db.volumes.get(volumeId)) ?? (await cardVolume(volumeId));
   if (!volume) throw new Error(`No volume ${volumeId} on this device`);
   const key = queueKeyForVolume(volume, get(watchedKeyStore));
-  return plain(describePendingOcr(get(serverOcrQueueStatus)[key], Date.now()));
+  return plain(
+    describePendingOcr(
+      pendingStatusFor(key, get(seriesQueueStore), get(serverOcrQueueStatus)),
+      Date.now()
+    )
+  );
 }
 
 /** The reader's page turn (paged mode), against the volume's primary pages. */
@@ -702,6 +801,8 @@ export function createRigDriver() {
       connect('mega', { email: o.email, password: o.password }),
     connectDrive: () => connect('google-drive'),
     connectOneDrive: () => connect('onedrive'),
+    // Capability `local-folder` (not one of the v1 methods every reader has).
+    connectFolder,
     logout: () => providerManager.logout(),
     sync,
     library,

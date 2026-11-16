@@ -8,7 +8,7 @@ import {
   lineGridSpacing,
   pitchInput,
   type TextMeasurer
-} from '$lib/reader/line-coords-layout';
+} from '#lib/reader/line-coords-layout.js';
 import {
   ANGLE_DEAD_BAND,
   griddable,
@@ -18,7 +18,7 @@ import {
   quadAxes,
   type GridSpacing,
   type LinePitch
-} from '$lib/reader/line-grid';
+} from '#lib/reader/line-grid.js';
 
 export type Box = [number, number, number, number];
 

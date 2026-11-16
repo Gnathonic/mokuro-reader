@@ -1,6 +1,6 @@
 import type Dexie from 'dexie';
 import type { Transaction } from 'dexie';
-import { normalizeVolumeTitleKey } from '$lib/metadata/series-key';
+import { normalizeVolumeTitleKey } from '#lib/metadata/series-key.js';
 
 /**
  * THE schema for the `mokuro_v3` database — declared once, as data, because
@@ -29,9 +29,9 @@ import { normalizeVolumeTitleKey } from '$lib/metadata/series-key';
  *
  * This module deliberately imports nothing at runtime (`import type` is erased)
  * but the pure name fold the v5 upgrade re-stamps keys with
- * (`series-key.ts` → `$lib/util/names/fold`, no store, no DOM), so the Worker
+ * (`series-key.ts` → `#lib/util/names/fold`, no store, no DOM), so the Worker
  * can take the schema without dragging in the main-thread graph `db-v3.ts`
- * carries — `$app/environment`, the progress tracker, the thumbnail generator.
+ * carries — `$app/env`, the progress tracker, the thumbnail generator.
  */
 export const MOKURO_DB_NAME = 'mokuro_v3';
 

@@ -50,11 +50,11 @@ const { fakeCache } = vi.hoisted(() => {
     }
   };
 });
-vi.mock('$lib/catalog/thumbnail-cache', () => ({ thumbnailCache: fakeCache }));
+vi.mock('#lib/catalog/thumbnail-cache.js', () => ({ thumbnailCache: fakeCache }));
 
 import CompositeCanvas from '../CompositeCanvas.svelte';
 import CompositeCanvasCoversHost from './fixtures/CompositeCanvasCoversHost.svelte';
-import type { VolumeMetadata } from '$lib/types';
+import type { VolumeMetadata } from '#lib/types/index.js';
 
 let drawnBitmaps: unknown[] = [];
 

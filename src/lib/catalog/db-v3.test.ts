@@ -7,8 +7,8 @@ const generateThumbnail = vi.fn(async () => ({
   width: 210,
   height: 297
 }));
-vi.mock('$lib/catalog/thumbnails', () => ({ generateThumbnail: () => generateThumbnail() }));
-vi.mock('$lib/util/progress-tracker', () => ({
+vi.mock('#lib/catalog/thumbnails.js', () => ({ generateThumbnail: () => generateThumbnail() }));
+vi.mock('#lib/util/progress-tracker.js', () => ({
   progressTrackerStore: { addProcess: vi.fn(), updateProcess: vi.fn(), removeProcess: vi.fn() }
 }));
 

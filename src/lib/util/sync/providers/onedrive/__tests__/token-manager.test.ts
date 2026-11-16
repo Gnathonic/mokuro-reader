@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-vi.mock('$app/environment', () => ({ browser: true }));
+vi.mock('$app/env', () => ({ browser: true }));
 const updateStatus = vi.hoisted(() => vi.fn());
 vi.mock('../../../provider-manager', () => ({ providerManager: { updateStatus } }));
 
@@ -34,7 +34,11 @@ const fakeInstance = {
 };
 
 vi.mock('@azure/msal-browser', () => ({
-  PublicClientApplication: vi.fn(() => fakeInstance),
+  // A `function`, not an arrow: token-manager calls `new PublicClientApplication()`,
+  // and vitest 4+ refuses `new` on an arrow implementation.
+  PublicClientApplication: vi.fn(function () {
+    return fakeInstance;
+  }),
   BrowserAuthError: FakeBrowserAuthError,
   InteractionRequiredAuthError: FakeInteractionRequiredAuthError
 }));

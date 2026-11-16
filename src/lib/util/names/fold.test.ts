@@ -7,7 +7,7 @@
  * (`BUNKO_REPO`), that the vendored copies are Bunko's bytes.
  */
 import { describe, expect, it } from 'vitest';
-import fold from '$lib/interop/contract/fold.json';
+import fold from '#lib/interop/contract/fold.json';
 import {
   FOLD_UCD,
   FOLD_VERSION,
@@ -25,7 +25,7 @@ import {
   describeContractFile,
   sha256Stream,
   vendoredContractBytes
-} from '$lib/interop/contract';
+} from '#lib/interop/contract.js';
 
 const VENDORED_FILES = ['fold-table.json', 'fold.json', 'sidecar-names.json'];
 

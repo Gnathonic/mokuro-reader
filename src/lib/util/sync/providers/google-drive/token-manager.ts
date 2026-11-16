@@ -1,9 +1,9 @@
 import { writable } from 'svelte/store';
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 import { GOOGLE_DRIVE_CONFIG } from './constants';
-import { showSnackbar } from '$lib/util/snackbar';
-import { onNextUserGesture } from '$lib/util/user-gesture';
-import { CLOUD_TEST_HOOKS, cloudTestToken } from '../../cloud-test-hooks';
+import { showSnackbar } from '#lib/util/snackbar.js';
+import { onNextUserGesture } from '#lib/util/user-gesture.js';
+import { cloudTestToken } from '../../cloud-test-hooks';
 import { loadGisScript } from './google-scripts';
 import {
   backendAuthConfigured,
@@ -71,9 +71,7 @@ export interface LogoutAnswer {
 
 /** What renewing a token Drive refused came to. */
 export type TokenRenewal =
-  | { kind: 'renewed'; token: string }
-  | { kind: 'transient' }
-  | { kind: 'failed' };
+  { kind: 'renewed'; token: string } | { kind: 'transient' } | { kind: 'failed' };
 
 /**
  * The interop rig's stand-in for a GIS token client: a request answers with the
@@ -82,7 +80,7 @@ export type TokenRenewal =
  * returns, never inside it, so the manager's `isRefreshing` covers a re-auth in
  * flight: answered inside the call, every 401 of a burst asked again and the
  * later ones read as refusals of the token just granted. Reached only through a
- * `CLOUD_TEST_HOOKS` guard, so a production build drops it.
+ * `__MOKURO_TEST_HOOKS__` guard, so a production build drops it.
  *
  * It cannot mint, so a silent re-auth for the token the manager already holds
  * (the API just rejected it) hands that same string back ONCE: enough for a
@@ -423,7 +421,7 @@ class TokenManager {
   }
 
   async initTokenClient(): Promise<void> {
-    const injected = CLOUD_TEST_HOOKS ? cloudTestToken('google') : null;
+    const injected = __MOKURO_TEST_HOOKS__ ? cloudTestToken('google') : null;
     let tokenClient: any;
     if (injected) {
       this.injectedClient = new InjectedTokenClient(
@@ -572,7 +570,7 @@ class TokenManager {
 
     const currentToken = this.getCurrentToken();
     // An injected token is the simulator's: there is nothing at Google to revoke.
-    const injected = CLOUD_TEST_HOOKS ? cloudTestToken('google') : null;
+    const injected = __MOKURO_TEST_HOOKS__ ? cloudTestToken('google') : null;
     const backend = backendAuthConfigured();
     const everywhere = options.everywhere === true || (backend && logoutPending() === 'everywhere');
 

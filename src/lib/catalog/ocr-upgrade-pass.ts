@@ -1,18 +1,18 @@
-import { parseMokuroFile } from '$lib/import/processing';
-import type { SeriesFileVolume } from '$lib/metadata/series-file';
-import { getSeriesIndex } from '$lib/metadata/series-index';
-import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
-import { groupSeriesSidecarFiles } from '$lib/metadata/cloud-sidecar-stamps';
-import type { Page, VolumeMetadata } from '$lib/types';
-import { isVolumeOpen } from '$lib/util/hash-router';
-import { showSnackbar } from '$lib/util/snackbar';
-import { cacheManager } from '$lib/util/sync/cache-manager';
+import { parseMokuroFile } from '#lib/import/processing.js';
+import type { SeriesFileVolume } from '#lib/metadata/series-file.js';
+import { getSeriesIndex } from '#lib/metadata/series-index.js';
+import { normalizeSeriesKey, normalizeVolumeTitleKey } from '#lib/metadata/series-key.js';
+import { groupSeriesSidecarFiles } from '#lib/metadata/cloud-sidecar-stamps.js';
+import type { Page, VolumeMetadata } from '#lib/types/index.js';
+import { isVolumeOpen } from '#lib/util/hash-router.js';
+import { showSnackbar } from '#lib/util/snackbar.js';
+import { cacheManager } from '#lib/util/sync/cache-manager.js';
 import type {
   CloudFileMetadata,
   ProviderType,
   SyncProvider
-} from '$lib/util/sync/provider-interface';
-import { providerManager } from '$lib/util/sync/provider-manager';
+} from '#lib/util/sync/provider-interface.js';
+import { providerManager } from '#lib/util/sync/provider-manager.js';
 import {
   applyCloudPrimaryOcr,
   attestationOfListedFile,
@@ -49,6 +49,9 @@ import { isVolumeInstalled } from './volume-state';
  *   `updated-ocr` layer, the same OCR under other bytes only records the hash;
  * - ABSENT on the volume (installed before hashes existed) → the same
  *   download, as a one-time baseline: equal pages only record the hash.
+ *   A volume with no OCR at all (an image-only import a server OCRed) takes
+ *   it as its first OCR, written as the image-only queue writes it
+ *   (`applyCloudPrimaryOcr`).
  *
  * No entry with a hash (an older server, plain storage that never published
  * one) → no work and no download at all.
@@ -229,6 +232,7 @@ async function readSidecarBytes(
 ): Promise<{
   pages: Page[];
   version: string;
+  seriesUuid?: string;
   sha256: string;
   provenance?: OcrProvenance;
 } | null> {
@@ -242,6 +246,7 @@ async function readSidecarBytes(
   return {
     pages,
     version: typeof parsed.version === 'string' ? parsed.version : '',
+    ...(typeof parsed.seriesUuid === 'string' ? { seriesUuid: parsed.seriesUuid } : {}),
     sha256,
     ...(provenance ? { provenance } : {})
   };
@@ -292,6 +297,7 @@ async function runTask(
     provider: provider.type,
     pages: read.pages,
     version: read.version,
+    seriesUuid: read.seriesUuid,
     sha256: read.sha256,
     cloud: attestationOfListedFile(provider.type, sidecar),
     provenance: read.provenance
@@ -324,9 +330,10 @@ function noticeFor(result: OcrUpgradePassResult): string | null {
   if (result.upgraded > 0)
     parts.push(`Updated OCR for ${result.upgraded} ${plural(result.upgraded)}`);
   if (result.layered > 0) {
+    // The layer is named by what made the new OCR (`ocr-label.ts`), not by a
+    // fixed word, so the notice says where it went without naming it.
     parts.push(
-      `New OCR for ${result.layered} edited ${plural(result.layered)} added as the ` +
-        `"Updated OCR" layer`
+      `New OCR for ${result.layered} edited ${plural(result.layered)} added as an OCR layer`
     );
   }
   return parts.length > 0 ? parts.join('. ') : null;

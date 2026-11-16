@@ -8,7 +8,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import APP_HTML from '../../app.html?raw';
 import { hermeticShell } from './hermetic';
-import { GOOGLE_SCRIPT_URLS } from '$lib/util/sync/providers/google-drive/google-scripts';
+import { GOOGLE_SCRIPT_URLS } from '#lib/util/sync/providers/google-drive/google-scripts.js';
 
 /** What the rig answers (empty): the scripts `google-scripts.ts` injects. */
 const STUBBED_BY_THE_RIG: readonly string[] = GOOGLE_SCRIPT_URLS;
@@ -45,7 +45,7 @@ describe('hermeticShell', () => {
 
 describe('the server hook', () => {
   afterEach(() => {
-    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
     vi.resetModules();
   });
 
@@ -54,8 +54,7 @@ describe('the server hook', () => {
     const { handle } = await import('../../hooks.server');
     const resolve = vi.fn(async (_event: unknown, opts?: { transformPageChunk?: unknown }) => {
       const transform = opts?.transformPageChunk as
-        | ((input: { html: string; done: boolean }) => string)
-        | undefined;
+        ((input: { html: string; done: boolean }) => string) | undefined;
       return new Response(transform ? transform({ html: APP_HTML, done: true }) : APP_HTML);
     });
     const response = await handle({ event: {} as never, resolve: resolve as never });
@@ -67,7 +66,8 @@ describe('the server hook', () => {
   });
 
   it('serves the hermetic shell from an interop build', async () => {
-    vi.stubEnv('MODE', 'interop');
+    // What `vite build --mode interop` defines (vite.config.ts).
+    vi.stubGlobal('__MOKURO_INTEROP__', true);
     expect(await render()).toBe(hermeticShell(APP_HTML));
   });
 });

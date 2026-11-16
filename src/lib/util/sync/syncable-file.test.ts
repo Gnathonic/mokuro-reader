@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import vendored from '$lib/interop/contract/sidecar-names.json';
-import { compareCodePoints, foldName } from '$lib/util/names/fold';
+import vendored from '#lib/interop/contract/sidecar-names.json';
+import { compareCodePoints, foldName } from '#lib/util/names/fold.js';
 import {
   isBestEffortMetadataPath,
   isSyncableFile,
@@ -13,8 +13,10 @@ import {
   cbzStemsOf,
   QUEUE_FILE_NAME,
   BUNKO_MARKER_NAME,
+  SERIES_QUEUE_FILE_NAME,
   isBunkoControlFile,
   dedupKeepsEveryCopy,
+  isSeriesQueueFile,
   isReservedLayerSidecarPath,
   layerOwnerArchive,
   cbzStemOf,
@@ -174,7 +176,7 @@ describe('series-metadata.json stays retired', () => {
     'sanitizeCloudSeriesMetadata',
     'sanitizeTitlePreference',
     'sanitizeVolumeOffsets',
-    '$lib/metadata/merge'
+    '#lib/metadata/merge'
   ];
 
   /**
@@ -516,5 +518,38 @@ describe('isReservedLayerSidecarPath', () => {
     ]) {
       expect(isReservedLayerSidecarPath(path), path).toBe(false);
     }
+  });
+});
+
+describe('the series queue file (queue file v2)', () => {
+  it('is named .mokuro-series-queue.json', () => {
+    expect(SERIES_QUEUE_FILE_NAME).toBe('.mokuro-series-queue.json');
+  });
+
+  it('is never listed, in a series folder or anywhere else', () => {
+    expect(isSyncableFile(`Example Saga/${SERIES_QUEUE_FILE_NAME}`)).toBe(false);
+    expect(isSyncableFile(SERIES_QUEUE_FILE_NAME)).toBe(false);
+    expect(isSidecarFile(SERIES_QUEUE_FILE_NAME)).toBe(false);
+    expect(isRootConfigFile(SERIES_QUEUE_FILE_NAME)).toBe(false);
+  });
+
+  it('is no root control file, and the root names are unchanged', () => {
+    expect(isBunkoControlFile(SERIES_QUEUE_FILE_NAME)).toBe(false);
+    // A merge keeps every copy only of the root files; this one is Bunko's to merge.
+    expect(dedupKeepsEveryCopy(SERIES_QUEUE_FILE_NAME)).toBe(false);
+    expect(QUEUE_FILE_NAME).toBe('.mokuro-queue.json');
+    expect(BUNKO_MARKER_NAME).toBe('.mokuro-bunko.json');
+    expect(isBunkoControlFile(QUEUE_FILE_NAME)).toBe(true);
+    expect(isBunkoControlFile(BUNKO_MARKER_NAME)).toBe(true);
+  });
+
+  it('is recognised by its fold (R8), and series folders compare by foldName (R1)', () => {
+    expect(isSeriesQueueFile(SERIES_QUEUE_FILE_NAME)).toBe(true);
+    expect(isSeriesQueueFile('.MOKURO-SERIES-QUEUE.JSON')).toBe(true);
+    expect(isSeriesQueueFile('.mokuro-series-que\u200bue.json')).toBe(true);
+    expect(isSeriesQueueFile(QUEUE_FILE_NAME)).toBe(false);
+    expect(foldName('Example SAGA')).toBe(foldName('example saga'));
+    expect(foldName('Sa\u0301ga')).toBe(foldName('S\u00c1GA'));
+    expect(foldName('STRASSE')).toBe(foldName('Stra\u00dfe'));
   });
 });

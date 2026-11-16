@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import 'fake-indexeddb/auto';
 
-vi.mock('$lib/catalog/db', async () => {
+vi.mock('#lib/catalog/db.js', async () => {
   const { default: Dexie } = await import('dexie');
   const db = new Dexie('cloud-ocr-upgrade-test');
   db.version(1).stores({ volumes: 'volume_uuid', volume_ocr: 'volume_uuid' });
@@ -9,19 +9,19 @@ vi.mock('$lib/catalog/db', async () => {
 });
 
 const parseMokuroFile = vi.fn();
-vi.mock('$lib/import/processing', () => ({
+vi.mock('#lib/import/processing.js', () => ({
   parseMokuroFile: (...args: unknown[]) => parseMokuroFile(...args)
 }));
 
 const downloadFile = vi.fn();
 const getActiveProvider = vi.fn();
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: { getActiveProvider: () => getActiveProvider() }
 }));
 
-import { db } from '$lib/catalog/db';
+import { db } from '#lib/catalog/db.js';
 import { enqueueCloudOcrUpgrade, upgradeOcrFromSidecarBlob } from './cloud-ocr-upgrade';
-import type { VolumeMetadata } from '$lib/types';
+import type { VolumeMetadata } from '#lib/types/index.js';
 
 const imageOnlyVolume = {
   volume_uuid: 'vol-1',
@@ -212,12 +212,15 @@ describe('upgradeOcrFromSidecarBlob (a sidecar fetched outside any provider)', (
     await upgradeOcrFromSidecarBlob('vol-1', 'S/Volume 1.mokuro', new Blob(['{}']));
     let row = await (db as any).table('volumes').get('vol-1');
     expect(row.ocr_provenance).toEqual([{ engine, digest: await contentDigest(engine, pages) }]);
+    expect(row.ocr_maker).toEqual({ engine: 'hayai-nova', mokuro_version: '0.2.0' });
 
     await (db as any).table('volumes').put({ ...imageOnlyVolume, ocr_provenance: stale });
     parseMokuroFile.mockResolvedValue({ version: '0.2.0', seriesUuid: 'series-1', pages });
     await upgradeOcrFromSidecarBlob('vol-1', 'S/Volume 1.mokuro', new Blob(['{}']));
     row = await (db as any).table('volumes').get('vol-1');
     expect(row.ocr_provenance).toBeUndefined();
+    // No block: mokuro made the main now.
+    expect(row.ocr_maker).toEqual({ mokuro_version: '0.2.0' });
   });
 
   it('decompresses a .mokuro.gz by its name', async () => {

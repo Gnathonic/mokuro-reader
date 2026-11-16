@@ -1,10 +1,10 @@
-import { isMokuroCloudAttestation, isMokuroSha256 } from '$lib/catalog/mokuro-hash';
-import { sortVolumes } from '$lib/catalog/sort-volumes';
-import { isVolumeInstalled } from '$lib/catalog/volume-state';
-import type { VolumeMetadata } from '$lib/types';
-import { generateDeterministicUUID } from '$lib/util/series-extraction';
+import { isMokuroCloudAttestation, isMokuroSha256 } from '#lib/catalog/mokuro-hash.js';
+import { sortVolumes } from '#lib/catalog/sort-volumes.js';
+import { isVolumeInstalled } from '#lib/catalog/volume-state.js';
+import type { VolumeMetadata } from '#lib/types/index.js';
+import { generateDeterministicUUID } from '#lib/util/series-extraction.js';
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from './series-key';
-import { foldName } from '$lib/util/names/fold';
+import { foldName } from '#lib/util/names/fold.js';
 import {
   ID_KEYS,
   TITLE_KEYS,

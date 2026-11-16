@@ -1,10 +1,10 @@
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 import { derived, get, readable, writable, type Readable } from 'svelte/store';
-import { isMobilePlatform } from '$lib/util/platform';
+import { isMobilePlatform } from '#lib/util/platform.js';
 import { PRESETS, resolveTheme, type ResolvedTheme } from './theme';
-import { isDisplayTitleLanguage } from '$lib/metadata/sanitize';
-import type { DisplayTitleLanguage } from '$lib/metadata/types';
-import { clampPageAdjust, pageFilterCss, PAGE_ADJUST_DEFAULT } from '$lib/reader/page-filter';
+import { isDisplayTitleLanguage } from '#lib/metadata/sanitize.js';
+import type { DisplayTitleLanguage } from '#lib/metadata/types.js';
+import { clampPageAdjust, pageFilterCss, PAGE_ADJUST_DEFAULT } from '#lib/reader/page-filter.js';
 import {
   INK_STRENGTH_DEFAULT,
   PAPER_AGE_DEFAULT,
@@ -15,7 +15,7 @@ import {
   inkLayerVars,
   sanitizeInkColor,
   type InkColorSetting
-} from '$lib/reader/ink-color';
+} from '#lib/reader/ink-color.js';
 
 export type FontSize =
   | 'auto'
@@ -35,11 +35,7 @@ export type FontSize =
   | '60';
 
 export type ZoomModes =
-  | 'zoomFitToScreen'
-  | 'zoomFitToWidth'
-  | 'zoomFillScreen'
-  | 'zoomOriginal'
-  | 'keepZoom';
+  'zoomFitToScreen' | 'zoomFitToWidth' | 'zoomFillScreen' | 'zoomOriginal' | 'keepZoom';
 
 // Continuous scroll mode only supports the basic zoom modes (no keep zoom variants)
 export type ContinuousZoomMode = 'zoomFitToScreen' | 'zoomFillScreen' | 'zoomOriginal';
@@ -196,6 +192,11 @@ export type Settings = {
   /** Print effect paper age, 0 fresh … 100 old newsprint. Inked pages only. #256 */
   pagePaperAge: number;
   swapWheelBehavior: boolean;
+  /**
+   * Page Down / Space / Page Up scroll a page taller (or wider) than the screen
+   * a screenful at a time before turning it (#283). Off = always turn.
+   */
+  pageKeysScrollFirst: boolean;
   textBoxContextMenu: boolean;
   continuousScroll: boolean;
   singlePageView: PageViewMode;
@@ -348,6 +349,7 @@ const defaultSettings: Settings = {
   pagePaperTint: PAPER_TINT_DEFAULT,
   pagePaperAge: PAPER_AGE_DEFAULT,
   swapWheelBehavior: false,
+  pageKeysScrollFirst: true,
   textBoxContextMenu: true,
   continuousScroll: false,
   singlePageView: 'auto',
@@ -542,6 +544,13 @@ export function migrateProfiles(profiles: Profiles): Profiles {
     // silently disable the master switch.
     if (typeof migratedProfile.catalogSettings.pushProgressToAniList !== 'boolean') {
       migratedProfile.catalogSettings.pushProgressToAniList = true;
+    }
+
+    // Page keys scroll tall pages first (added 2026-11, #283): default ON — a
+    // profile stored before the key existed, or carrying a malformed value,
+    // reads ON (the spread above only fills a key that is absent).
+    if (typeof migratedProfile.pageKeysScrollFirst !== 'boolean') {
+      migratedProfile.pageKeysScrollFirst = true;
     }
 
     // Theme migration. The `...defaultSettings, ...profile` spread above already

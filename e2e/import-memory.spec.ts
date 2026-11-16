@@ -59,7 +59,7 @@ function rendererRss(userDataDir: string): number {
       .filter((p) => p.args.includes(userDataDir) && !p.args.includes('--type='))
       .map((p) => p.pid)
   );
-  for (let grew = true; grew; ) {
+  for (let grew = true; grew;) {
     grew = false;
     for (const p of procs) {
       if (!tree.has(p.pid) && tree.has(p.ppid)) {

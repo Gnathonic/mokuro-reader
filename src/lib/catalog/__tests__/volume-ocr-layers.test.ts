@@ -1,28 +1,28 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import 'fake-indexeddb/auto';
 
-vi.mock('$lib/catalog/thumbnails', () => ({ generateThumbnail: vi.fn() }));
-vi.mock('$lib/util/progress-tracker', () => ({
+vi.mock('#lib/catalog/thumbnails.js', () => ({ generateThumbnail: vi.fn() }));
+vi.mock('#lib/util/progress-tracker.js', () => ({
   progressTrackerStore: { addProcess: vi.fn(), updateProcess: vi.fn(), removeProcess: vi.fn() }
 }));
-vi.mock('$lib/catalog/db', async () => {
+vi.mock('#lib/catalog/db.js', async () => {
   const { CatalogDexieV3 } =
-    await vi.importActual<typeof import('$lib/catalog/db-v3')>('$lib/catalog/db-v3');
+    await vi.importActual<typeof import('#lib/catalog/db-v3.js')>('#lib/catalog/db-v3.js');
   return { db: new CatalogDexieV3('mokuro_v3_layers_schema_test') };
 });
 
 import Dexie from 'dexie';
-import { db } from '$lib/catalog/db';
-import { CatalogDexieV3 } from '$lib/catalog/db-v3';
-import { deleteVolumeCompletely, removeVolumeFiles } from '$lib/import/database';
-import { MOKURO_DB_SCHEMA } from '$lib/catalog/db-schema';
+import { db } from '#lib/catalog/db.js';
+import { CatalogDexieV3 } from '#lib/catalog/db-v3.js';
+import { deleteVolumeCompletely, removeVolumeFiles } from '#lib/import/database.js';
+import { MOKURO_DB_SCHEMA } from '#lib/catalog/db-schema.js';
 import {
   getLayerMeta,
   getLayerPages,
   getLayerWithPages,
   putLayerWithPages
-} from '$lib/catalog/layer-store';
-import type { Page } from '$lib/types';
+} from '#lib/catalog/layer-store.js';
+import type { Page } from '#lib/types/index.js';
 
 afterEach(async () => {
   await Promise.all([

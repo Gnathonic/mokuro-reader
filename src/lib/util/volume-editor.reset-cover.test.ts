@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
  * mismatch guess must not take it for a placeholder.
  */
 
-vi.mock('$app/environment', () => ({ browser: true }));
+vi.mock('$app/env', () => ({ browser: true }));
 
 const { volumes, volumeFiles, volumeOcr, generateThumbnail } = vi.hoisted(() => ({
   volumes: { get: vi.fn(), update: vi.fn(async () => 1) },
@@ -21,15 +21,15 @@ const { volumes, volumeFiles, volumeOcr, generateThumbnail } = vi.hoisted(() => 
   }))
 }));
 
-vi.mock('$lib/catalog/db', () => ({
+vi.mock('#lib/catalog/db.js', () => ({
   db: { volumes, volume_files: volumeFiles, volume_ocr: volumeOcr }
 }));
-vi.mock('$lib/catalog/thumbnails', () => ({
+vi.mock('#lib/catalog/thumbnails.js', () => ({
   convertToWebP: vi.fn(async () => new Blob(['webp'], { type: 'image/webp' })),
   generateThumbnail
 }));
-vi.mock('$lib/catalog/thumbnail-cache', () => ({ thumbnailCache: { invalidate: vi.fn() } }));
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/catalog/thumbnail-cache.js', () => ({ thumbnailCache: { invalidate: vi.fn() } }));
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: { getActiveProvider: () => null, uploadFile: vi.fn() }
 }));
 

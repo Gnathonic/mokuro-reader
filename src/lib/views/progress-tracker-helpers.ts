@@ -1,10 +1,10 @@
-import { VolumeData, calculatePagesReadInPeriod } from '$lib/settings/volume-data';
-import { normalizeSeriesKey } from '$lib/metadata/series-key';
-import { lastReadTime, type LastRead } from '$lib/reading-history/last-read';
-import { isCompletedInPeriod, isFinished } from '$lib/goals/goal-counting';
-import { calculatePeriodPageTargetTotal } from '$lib/goals/progress-targets';
-import type { GoalPeriod, GoalSnapshot } from '$lib/goals/types';
-import type { ProgressTargetMode, ProgressTrackerSorting } from '$lib/settings/misc';
+import { VolumeData, calculatePagesReadInPeriod } from '#lib/settings/volume-data.js';
+import { normalizeSeriesKey } from '#lib/metadata/series-key.js';
+import { lastReadTime, type LastRead } from '#lib/reading-history/last-read.js';
+import { isCompletedInPeriod, isFinished } from '#lib/goals/goal-counting.js';
+import { calculatePeriodPageTargetTotal } from '#lib/goals/progress-targets.js';
+import type { GoalPeriod, GoalSnapshot } from '#lib/goals/types.js';
+import type { ProgressTargetMode, ProgressTrackerSorting } from '#lib/settings/misc.js';
 
 export type TrackerEntryWithSortData = {
   volumeId: string;

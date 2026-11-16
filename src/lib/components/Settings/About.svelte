@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { READER_VERSION } from '$lib/consts';
-  import { toClipboard } from '$lib/util';
+  import { READER_VERSION } from '#lib/consts/index.js';
+  import { toClipboard } from '#lib/util/index.js';
   import { A, AccordionItem, Helper } from 'flowbite-svelte';
   import { DiscordSolid, GithubSolid } from 'flowbite-svelte-icons';
 </script>

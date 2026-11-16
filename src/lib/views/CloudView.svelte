@@ -1,34 +1,33 @@
 <script lang="ts">
-  import { miscSettings, updateMiscSetting } from '$lib/settings/misc';
+  import { miscSettings, updateMiscSetting } from '#lib/settings/misc.js';
 
-  import { promptConfirmation, showSnackbar, showWebDAVError } from '$lib/util';
-  import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
-  import { isVolumeInstalled } from '$lib/catalog/volume-state';
+  import { promptConfirmation, showSnackbar, showWebDAVError } from '#lib/util/index.js';
+  import { unifiedCloudManager } from '#lib/util/sync/unified-cloud-manager.js';
+  import { isVolumeInstalled } from '#lib/catalog/volume-state.js';
   import {
     ProviderError,
     type ProviderType,
     type StorageQuota
-  } from '$lib/util/sync/provider-interface';
-  import { backupQueue } from '$lib/util/backup-queue';
+  } from '#lib/util/sync/provider-interface.js';
+  import { backupQueue } from '#lib/util/backup-queue.js';
   import { Alert, Badge, Button, Modal, Radio, Toggle, Spinner } from 'flowbite-svelte';
   import { onMount } from 'svelte';
   import { GoogleSolid, InfoCircleSolid } from 'flowbite-svelte-icons';
-  import { catalog } from '$lib/catalog';
-  import type { VolumeMetadata } from '$lib/types';
+  import { catalog } from '#lib/catalog/index.js';
+  import type { VolumeMetadata } from '#lib/types/index.js';
 
   // Import multi-provider sync
   // Note: Provider instances are lazy-loaded via providerManager.getOrLoadProvider()
-  import { providerManager } from '$lib/util/sync';
-  import { queueVolumesFromCloudFiles } from '$lib/util/download-queue';
-  import { cacheManager } from '$lib/util/sync/cache-manager';
-  import { isFilesystemProviderSupported } from '$lib/util/sync/providers/filesystem/feature-detect';
-  import { PROVIDER_LABELS } from '$lib/util/sync/provider-display';
-  import { isLoginCancelled } from '$lib/util/sync/provider-interface';
-  import { reconcileMissingMetadataFiles } from '$lib/metadata/series-file-sync';
-  import { backendAuthEnabled } from '$lib/util/sync/providers/google-drive/auth-backend';
-  import DevicesSettings from '$lib/components/Devices/DevicesSettings.svelte';
-  import { parseCloudLinkPrefill, type CloudLinkPrefill } from '$lib/util/link-safety';
-  import { preloadGoogleScripts } from '$lib/util/sync/providers/google-drive/google-scripts';
+  import { providerManager } from '#lib/util/sync/index.js';
+  import { queueVolumesFromCloudFiles } from '#lib/util/download-queue.js';
+  import { cacheManager } from '#lib/util/sync/cache-manager.js';
+  import { isFilesystemProviderSupported } from '#lib/util/sync/providers/filesystem/feature-detect.js';
+  import { PROVIDER_LABELS } from '#lib/util/sync/provider-display.js';
+  import { isLoginCancelled } from '#lib/util/sync/provider-interface.js';
+  import { reconcileMissingMetadataFiles } from '#lib/metadata/series-file-sync.js';
+  import { backendAuthEnabled } from '#lib/util/sync/providers/google-drive/auth-backend.js';
+  import { parseCloudLinkPrefill, type CloudLinkPrefill } from '#lib/util/link-safety.js';
+  import { preloadGoogleScripts } from '#lib/util/sync/providers/google-drive/google-scripts.js';
 
   const CLOUD_ROOT_FOLDER = 'mokuro-reader';
 
@@ -100,45 +99,25 @@
   // Provider display names (shared module keeps all provider maps in sync)
   const providerNames: Record<ProviderType, string> = PROVIDER_LABELS;
 
-  // Provider info
+  // Provider info. Free tiers as of 2026-11.
   const providerInfo = {
     'google-drive': {
-      items: [
-        'Up to 15GB free storage',
-        'Seamless Google account integration',
-        'Back up from app, download on any device',
-        'Auto re-authentication support'
-      ]
+      items: ['15GB free (shared with Gmail)', 'Only sees files this app saves']
     },
     mega: {
-      items: [
-        '20GB free storage',
-        'End-to-end encryption',
-        'Persistent login (no re-authentication needed)'
-      ]
+      items: ['20GB free', 'End-to-end encrypted', 'Two-factor sign-in']
     },
     webdav: {
       items: [
-        'Compatible with Mokuro-Bunko, Nextcloud, ownCloud, and NAS devices',
-        'Persistent login (no re-authentication needed)',
-        'Self-hosted and private'
+        'Mokuro-Bunko, Nextcloud, a NAS, or any WebDAV server',
+        'Other servers need CORS enabled'
       ]
     },
     filesystem: {
-      items: [
-        'Reads and writes real files in a folder you pick',
-        'Works offline — no account needed',
-        'Best for bulk import/export on this device',
-        'Chromium browsers only (Chrome, Edge, etc.)'
-      ]
+      items: ['A folder on this device', 'Offline, no account', 'Chromium browsers only']
     },
     onedrive: {
-      items: [
-        'Free 5GB personal storage; 1TB+ for Microsoft 365 subscribers',
-        'Works with personal accounts (outlook.com) and work/school accounts',
-        'Persistent login (no re-authentication needed)',
-        'Encrypted in transit and at rest'
-      ]
+      items: ['5GB free (shared with Outlook)', 'Personal or work/school accounts']
     }
   };
 
@@ -752,11 +731,7 @@
               {/if}
               <div class="flex-1 text-left">
                 <div class="text-lg font-semibold">Google Drive</div>
-                <div class="text-sm text-gray-400">
-                  Up to 15GB free • {gdriveStaysSignedIn
-                    ? 'Stays signed in'
-                    : 'Automatic hourly re-auth'}
-                </div>
+                <div class="text-sm text-gray-400">15GB free</div>
               </div>
             </div>
           </button>
@@ -774,7 +749,7 @@
               <div class="flex h-8 w-8 items-center justify-center text-2xl">M</div>
               <div class="flex-1 text-left">
                 <div class="text-lg font-semibold">MEGA</div>
-                <div class="text-sm text-gray-400">20GB free • Persistent login</div>
+                <div class="text-sm text-gray-400">20GB free • End-to-end encrypted</div>
               </div>
             </div>
           </button>
@@ -839,9 +814,7 @@
                 <div class="flex h-8 w-8 items-center justify-center text-2xl">O</div>
                 <div class="flex-1 text-left">
                   <div class="text-lg font-semibold">OneDrive</div>
-                  <div class="text-sm text-gray-400">
-                    5GB free • Personal or work/school • Persistent login
-                  </div>
+                  <div class="text-sm text-gray-400">5GB free • Personal or work/school</div>
                 </div>
               </div>
             </button>
@@ -858,9 +831,7 @@
               <div class="flex h-8 w-8 items-center justify-center text-2xl">W</div>
               <div class="flex-1 text-left">
                 <div class="text-lg font-semibold">WebDAV</div>
-                <div class="text-sm text-gray-400">
-                  Mokuro-Bunko, Nextcloud, NAS • Persistent login
-                </div>
+                <div class="text-sm text-gray-400">Mokuro-Bunko, Nextcloud, NAS</div>
               </div>
             </div>
           </button>
@@ -993,8 +964,8 @@
               {/snippet}
               <div class="flex flex-col gap-2">
                 <span>
-                  <span class="font-medium">Permission needed:</span> Reconnect to grant the browser
-                  access to the folder you chose previously.
+                  <span class="font-medium">Permission needed:</span> Reconnect to grant the browser access
+                  to the folder you chose previously.
                 </span>
                 <Button
                   size="xs"
@@ -1015,8 +986,8 @@
               {/snippet}
               <div class="flex flex-col gap-2">
                 <span>
-                  <span class="font-medium">Session expired:</span> Silent refresh failed. Reconnect
-                  to continue syncing.
+                  <span class="font-medium">Session expired:</span> Silent refresh failed. Reconnect to
+                  continue syncing.
                 </span>
                 <Button
                   size="xs"
@@ -1220,9 +1191,6 @@
                 <p class="text-sm text-gray-500">Storage information unavailable</p>
               {/if}
             </div>
-
-            <!-- Devices: names, types and merges (renders nothing until 2 devices are known) -->
-            <DevicesSettings />
 
             <!-- Provider info box -->
             <div class="mt-4 rounded-lg bg-gray-800 p-4">

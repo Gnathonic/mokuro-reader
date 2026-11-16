@@ -3,20 +3,19 @@ import { gotoApp } from './helpers/app';
 import { WebDavStub } from './helpers/webdav-stub';
 
 /**
- * Long pauses (phase 3b) through the REAL reader, stats page and sync. The
- * page clock is Playwright's: time flows normally, and `fastForward` carries a
- * view past its cap the way a reader who walked away would.
+ * Long pauses (phase 3b) through the REAL reader, settings and sync. The page
+ * clock is Playwright's: time flows normally, and `fastForward` carries a view
+ * past its cap the way a reader who walked away would.
  *
- * - At the cap a prompt asks; "Still reading" counts the time in full and the
- *   timer runs on; away, it says how long the page has been open. An answer
- *   splits the view, so a later page turn loses nothing.
- * - Unanswered (a page turn), the pause counts typical time and waits on the
- *   reading-speed page, provisional, where it can be answered later.
- * - "Always do this" appears once three pauses are answered; the default then
- *   answers views that reach the cap, with no prompt.
- * - Without an override, "Still reading" widens `k`, and the rest of the view
- *   runs on the wider cap.
- * - Answers and the default sync; the latest answer wins on every device.
+ * - At the cap the timer stops and a prompt says so. Unanswered (a page turn,
+ *   a hidden tab, a pause click, leaving) or closed, the view counts up to its
+ *   cap. "Still reading" counts all of it and the timer runs on; two minutes
+ *   past the cap the copy says how long the page was open and offers Keep /
+ *   Count all / Count none. Every answer splits the view.
+ * - Under the automatic cutoff "Still reading" widens `k`, and the rest of the
+ *   view runs on the wider cap; the settings card shows the stretch and resets it.
+ * - "Don't ask again" turns the prompt off; that setting syncs, newest wins.
+ * - Answers sync; the latest answer wins on every device.
  */
 
 const STUB = 'http://stub.test';
@@ -154,31 +153,25 @@ async function figures(page: Page) {
   }, VOL);
 }
 
-/** The review list as the stats page sees it: every pause's answer, newest first. */
-async function review(page: Page) {
+async function askOf(page: Page) {
   return page.evaluate(async () => {
-    const stats = await import('/src/lib/reading-history/stats-store.ts');
-    const { pauseReview } = await import('/src/lib/reading-history/pause-review.ts');
-    stats.flushReadingStats();
-    let state:
-      | { pauses: Array<{ answer: string | null }>; unanswered: number; answered: number }
-      | undefined;
-    pauseReview.subscribe((s) => (state = s))();
-    return {
-      unanswered: state!.unanswered,
-      answered: state!.answered,
-      answers: state!.pauses.map((p) => p.answer)
-    };
+    const { askOnLongPause } = await import('/src/lib/settings/tracking-data.ts');
+    let value: boolean | null = null;
+    askOnLongPause.subscribe((v) => (value = v))();
+    return value;
   });
 }
 
-async function pauseDefaultOf(page: Page) {
-  return page.evaluate(async () => {
-    const { pauseDefault } = await import('/src/lib/settings/tracking-data.ts');
-    let value: string | null = null;
-    pauseDefault.subscribe((v) => (value = v))();
-    return value;
-  });
+/** The settings drawer with its Reader section open, from the catalog's navbar. */
+async function openTimerSettings(page: Page) {
+  await page.evaluate(() => (window.location.hash = '#/catalog'));
+  // The navbar's settings button carries no label; it follows Progress Tracker.
+  await page.locator('button[title="Progress Tracker"] + button').click();
+  const drawer = page.locator('#settings');
+  await expect(drawer).toBeVisible();
+  await drawer.getByRole('button', { name: 'Reader', exact: true }).click();
+  await expect(drawer.getByRole('heading', { name: 'Reading timer', exact: true })).toBeVisible();
+  return drawer;
 }
 
 async function livePauseOf(page: Page) {
@@ -190,115 +183,127 @@ async function livePauseOf(page: Page) {
   });
 }
 
-test('a long pause is asked about at its cap; unanswered it waits on the stats page', async ({
+/** The prompt's copy, without its buttons. */
+function copyOf(page: Page) {
+  return page.getByTestId('long-pause').locator('p');
+}
+
+/** A manual cutoff of `minutes`, set where the reader reads it from. */
+async function setCutoff(page: Page, minutes: number) {
+  await page.evaluate(async (minutes) => {
+    const { setIdleOverride } = await import('/src/lib/settings/tracking-data.ts');
+    setIdleOverride(minutes);
+  }, minutes);
+  await expect.poll(async () => (await statsState(page)).overrideMs).toBe(minutes * 60_000);
+}
+
+test('at the cap the timer stops and the prompt says so; each answer counts as it says', async ({
   browser
 }) => {
+  test.setTimeout(150_000);
   const page = await device(browser, { clock: true });
   await installVolume(page, 20);
   // A 1-minute manual cutoff: every view's cap, with or without a pace.
-  await page.evaluate(async () => {
-    const { setIdleOverride } = await import('/src/lib/settings/tracking-data.ts');
-    setIdleOverride(1);
-  });
-  await expect.poll(async () => (await statsState(page)).overrideMs).toBe(60_000);
+  await setCutoff(page, 1);
   await openReader(page);
   const timer = timerOf(page);
   const prompt = page.getByTestId('long-pause');
   await expect(prompt).toBeHidden();
+  const timeMs = async () => (await figures(page)).timeMs;
 
-  // Page 1 stays open past its cap: the prompt asks right then.
+  // Page 1 stays open past its cap: the timer stops, and the prompt says so.
   await page.clock.fastForward('01:05');
-  await expect(prompt).toContainText('Still reading?');
-  // "Always do this" is not offered before three answers.
-  await expect(prompt.getByRole('checkbox')).toHaveCount(0);
-  await prompt.getByRole('button', { name: /^Still reading/ }).click();
-  await expect(prompt).toBeHidden();
-  // The override is the cap, so nothing widens; the reader says where it is set.
-  await expect(page.getByText(/Manual cutoff is 1 min/)).toBeVisible();
-  // The view was split at the answer: the 65 s counted, the timer runs on.
-  await expect(timer).toContainText('Active');
-  await expect(timer).toContainText('Minutes read: 1', { timeout: 15000 });
-
-  // Away: the same page sits 10 more minutes. The prompt says how long.
-  await page.clock.fastForward('10:00');
-  await expect(prompt).toContainText('has been open');
-  await expect(prompt).toContainText(/\b10\s?m/);
-  await prompt.getByRole('button', { name: /^Don.t count/ }).click();
-  await expect(prompt).toBeHidden();
-  // The timer drops the uncounted minute it was holding at the cap: only the
-  // 65 s answered "Still reading" stand.
+  await expect(copyOf(page)).toHaveText('No page turn for 1 min, so the timer stopped.');
+  await expect(timer).toContainText('Idle');
   await expect(timer).toContainText(/Minutes read: 1\b/);
+  await expect(prompt.getByRole('button')).toHaveText(['✕', 'Still reading', 'Don’t ask again']);
+  await expect(prompt.getByRole('button', { name: 'Close', exact: true })).toBeVisible();
 
-  // Page 2 runs past its cap, and the reader turns on without answering.
-  await page.keyboard.press('ArrowLeft');
-  await page.clock.fastForward('01:30');
-  await expect(prompt).toContainText('Still reading?');
-  await page.keyboard.press('ArrowLeft');
+  // Close: the view counts up to the cap and the timer starts again from now.
+  await prompt.getByRole('button', { name: 'Close', exact: true }).click();
   await expect(prompt).toBeHidden();
+  await expect(timer).toContainText('Active');
+  await expect.poll(timeMs, { timeout: 15000 }).toBe(60_000);
 
-  // The unanswered pause waits on the reading-speed page, provisional.
-  await page.evaluate(() => (window.location.hash = '#/reading-speed'));
-  const card = page.getByTestId('long-pauses');
-  await expect(card).toContainText('Long pauses to review (1)', { timeout: 15000 });
-  await expect(card.getByTestId('long-pause-row')).toHaveCount(1);
-  await expect(card.getByTestId('long-pause-row')).toContainText('provisional');
-  await expect
-    .poll(async () => (await review(page)).answers, { timeout: 15000 })
-    .toEqual([null, 'none', 'full']);
-  // 65 s in full + 10 min not counted + page 2's 90 s as typical (the 1-min cap).
-  const before = (await figures(page)).timeMs;
-  expect(before).toBeGreaterThanOrEqual(125_000);
-  expect(before).toBeLessThan(150_000);
-
-  // Answered later: page 2 counts all of its 90 s.
-  await card
-    .getByTestId('long-pause-row')
-    .getByRole('button', { name: 'All', exact: true })
-    .click();
-  await expect(card).toContainText('Long pauses to review (0)');
-  await expect
-    .poll(async () => (await figures(page)).timeMs - before, { timeout: 15000 })
-    .toBeGreaterThanOrEqual(30_000);
-  expect((await figures(page)).timeMs - before).toBeLessThan(45_000);
-  await card.getByRole('button', { name: /Show answered/ }).click();
-  await expect(card.getByTestId('long-pause-row')).toHaveCount(3);
-  await expect(card.getByRole('button', { name: 'All', exact: true, pressed: true })).toHaveCount(
-    2
-  );
-  await expect(card.getByRole('button', { name: 'None', exact: true, pressed: true })).toHaveCount(
-    1
-  );
-
-  // Answers are history: a reload keeps all three.
-  await page.reload();
-  await expect(page.getByTestId('long-pauses')).toContainText('Long pauses to review (0)', {
-    timeout: 30000
-  });
-  await expect.poll(async () => (await review(page)).answered, { timeout: 15000 }).toBe(3);
-
-  // Three answers in: the next prompt offers to stop asking.
-  await openReader(page);
+  // "Still reading" counts the whole view and the timer goes on. Under a fixed
+  // cutoff nothing widens; the snackbar says where the cutoff is set.
   await page.clock.fastForward('01:05');
-  await expect(prompt).toContainText('Still reading?');
-  await prompt.getByRole('checkbox', { name: /Always do this/i }).check();
-  await prompt.getByRole('button', { name: /^Don.t count/ }).click();
+  await expect(copyOf(page)).toHaveText('No page turn for 1 min, so the timer stopped.');
+  await prompt.getByRole('button', { name: 'Still reading', exact: true }).click();
   await expect(prompt).toBeHidden();
-  expect(await pauseDefaultOf(page)).toBe('none');
+  await expect(
+    page.getByText(
+      'The timer stops after 1 min on every page. Change it in Settings → Reading timer.'
+    )
+  ).toBeVisible();
+  await expect(timer).toContainText('Active');
+  await expect.poll(timeMs, { timeout: 15000 }).toBeGreaterThanOrEqual(125_000);
+  expect(await timeMs()).toBeLessThan(135_000);
+  expect((await statsState(page)).k).toBe(3);
+  await expect(timer).toContainText(/Minutes read: 2\b/);
 
-  // With a standing default, a view past its cap is not asked about…
-  await page.clock.fastForward('01:05');
-  expect(await livePauseOf(page)).toBeNull();
+  // Away: two minutes past the cap the copy says how long the page was open.
+  await page.clock.fastForward('04:00');
+  await expect(copyOf(page)).toHaveText('This page was open 4 min. 1 min counted.');
+  await expect(prompt.getByRole('button')).toHaveText([
+    '✕',
+    'Keep 1 min',
+    'Count all 4 min',
+    'Count none',
+    'Don’t ask again'
+  ]);
+  // "Count none": none of the four minutes count.
+  const beforeNone = await timeMs();
+  await prompt.getByRole('button', { name: 'Count none', exact: true }).click();
   await expect(prompt).toBeHidden();
+  await expect(timer).toContainText('Active');
+  await expect(timer).toContainText(/Minutes read: 2\b/);
+  await page.waitForTimeout(300);
 
-  // …and the default is its answer once the view ends.
+  // Page 2, away: "Count all" counts every minute it was open. The turn ends
+  // page 1's short reopened view, recorded after the "Count none" one.
+  await page.keyboard.press('ArrowLeft');
+  await expect.poll(timeMs, { timeout: 15000 }).toBeGreaterThan(beforeNone);
+  const beforeAll = await timeMs();
+  expect(beforeAll).toBeLessThan(beforeNone + 2000);
+  await page.clock.fastForward('04:00');
+  await expect(copyOf(page)).toHaveText('This page was open 4 min. 1 min counted.');
+  await prompt.getByRole('button', { name: 'Count all 4 min', exact: true }).click();
+  await expect(prompt).toBeHidden();
+  await expect.poll(timeMs, { timeout: 15000 }).toBeGreaterThanOrEqual(beforeAll + 240_000);
+  expect(await timeMs()).toBeLessThan(beforeAll + 250_000);
+  await expect(timer).toContainText(/Minutes read: 6\b/);
+
+  // Page 3, away: "Keep" counts up to the cap.
+  await page.keyboard.press('ArrowLeft');
+  await expect.poll(timeMs).toBeGreaterThan(beforeAll + 240_000);
+  const beforeKeep = await timeMs();
+  await page.clock.fastForward('04:00');
+  await expect(copyOf(page)).toHaveText('This page was open 4 min. 1 min counted.');
+  await prompt.getByRole('button', { name: 'Keep 1 min', exact: true }).click();
+  await expect(prompt).toBeHidden();
+  await expect.poll(timeMs, { timeout: 15000 }).toBe(beforeKeep + 60_000);
+
+  // Page 4: the reader turns on without answering. The prompt goes, and the
+  // pause counts up to the cap — never the minutes past it.
+  await page.keyboard.press('ArrowLeft');
+  await expect.poll(timeMs).toBeGreaterThan(beforeKeep + 60_000);
+  const beforeTurn = await timeMs();
+  await page.clock.fastForward('03:00');
+  await expect(prompt).toBeVisible();
+  await page.keyboard.press('ArrowLeft');
+  await expect(prompt).toBeHidden();
+  await expect.poll(timeMs, { timeout: 15000 }).toBe(beforeTurn + 60_000);
+
+  // Answers are history: a reload counts the same.
+  const total = await timeMs();
   await page.evaluate(() => (window.location.hash = '#/catalog'));
-  await expect
-    .poll(async () => (await review(page)).answers, { timeout: 15000 })
-    .toEqual(['none', 'none', 'full', 'none', 'full']);
-  expect((await review(page)).unanswered).toBe(0);
+  await page.reload();
+  await expect.poll(timeMs, { timeout: 30000 }).toBeGreaterThanOrEqual(total);
+  expect(await timeMs()).toBeLessThan(total + 2000);
 });
 
-test('"Still reading" widens the cutoff, and the rest of the view runs on it', async ({
+test('"Still reading" widens the automatic cutoff; unanswered, a pause counts up to it', async ({
   browser
 }) => {
   const page = await device(browser, { clock: true });
@@ -327,44 +332,121 @@ test('"Still reading" widens the cutoff, and the rest of the view runs on it', a
 
   // 200 characters × 200 ms = 40 s expected; × k = 3 → a 2-minute cap.
   await page.clock.fastForward('02:01');
-  await expect(prompt).toContainText('Still reading?');
-  await prompt.getByRole('button', { name: /^Still reading/ }).click();
-  await expect(page.getByText(/Cutoff widened to ~\d+ min/)).toBeVisible();
-  // k fits this view with headroom: 121 s × 1.5 / 40 s = 4.5, up to a half step = 5.
+  await expect(copyOf(page)).toHaveText('No page turn for 2 min, so the timer stopped.');
+  await prompt.getByRole('button', { name: 'Still reading', exact: true }).click();
+  // k fits this view with headroom: 121 s × 1.5 / 40 s = 4.5, up to a half step = 5,
+  // so pages like this one now get 5 × 40 s = 200 s.
+  await expect(
+    page.getByText('Pages like this now get about 3 min before the timer stops.')
+  ).toBeVisible();
   await expect.poll(async () => (await statsState(page)).k, { timeout: 15000 }).toBe(5);
 
-  // The rest of the view runs on the wider cap (5 × 40 s = 200 s): no prompt at 125 s…
+  // The rest of the view runs on the wider cap: no prompt at 125 s…
   await page.clock.fastForward('02:05');
   expect(await livePauseOf(page)).toBeNull();
   await expect(prompt).toBeHidden();
   await expect(timerOf(page)).toContainText('Active');
-  // …and past it, the prompt asks again.
+  // …and past it, the prompt says so again.
   await page.clock.fastForward('01:20');
-  await expect(prompt).toContainText('Still reading?');
+  await expect(copyOf(page)).toHaveText('No page turn for 3 min, so the timer stopped.');
 
-  // Leaving with the prompt up leaves that pause to review.
+  // (200 s), not the typical time old builds counted (40 s, held at the 60 s floor).
+  // (200 s), not the 40 s a page like this typically takes.
   await page.evaluate(() => (window.location.hash = '#/catalog'));
+  await expect(prompt).toBeHidden();
   await expect
-    .poll(async () => (await review(page)).answers, { timeout: 15000 })
-    .toEqual([null, 'full']);
+    .poll(async () => (await figures(page)).timeMs, { timeout: 15000 })
+    .toBeGreaterThan(0);
   const volume = await figures(page);
-  // Page 1 credited once though the view was split; ~121 s in full + 60 s typical.
+  // Page 1 credited once though the view was split; ~121 s in full + the 200 s cap.
   expect(volume.chars).toBe(200);
-  expect(volume.timeMs).toBeGreaterThanOrEqual(181_000);
-  expect(volume.timeMs).toBeLessThan(200_000);
+  expect(volume.timeMs).toBeGreaterThanOrEqual(321_000);
+  expect(volume.timeMs).toBeLessThan(330_000);
+
+  // The settings say how far the answers stretched the automatic cutoff; Reset undoes it.
+  const settings = await openTimerSettings(page);
+  await expect(settings.getByLabel('Stop the timer after')).toHaveValue('auto');
+  const stretch = settings.getByText(
+    'Your “Still reading” answers made the automatic cutoff 1.7× longer.'
+  );
+  await expect(stretch).toBeVisible();
+  // The Reset beside that line (the drawer's own Reset resets every setting).
+  await stretch.locator('xpath=..').getByRole('button', { name: 'Reset', exact: true }).click();
+  await expect(stretch).toBeHidden();
+  await expect.poll(async () => (await statsState(page)).k, { timeout: 15000 }).toBe(3);
 });
 
-test('answers and the standing default sync; the latest answer wins', async ({ browser }) => {
+test('"Don’t ask again" turns the prompt off; the setting syncs, the latest wins', async ({
+  browser
+}) => {
+  test.setTimeout(150_000);
+  const stub = new WebDavStub();
+  const laptop = await device(browser, { stub, clock: true });
+  const phone = await device(browser, { stub });
+  await installVolume(laptop, 20);
+  await setCutoff(laptop, 1);
+  await openReader(laptop);
+  const timer = timerOf(laptop);
+  const prompt = laptop.getByTestId('long-pause');
+  const timeMs = async () => (await figures(laptop)).timeMs;
+
+  await laptop.clock.fastForward('01:05');
+  await expect(copyOf(laptop)).toHaveText('No page turn for 1 min, so the timer stopped.');
+  await prompt.getByRole('button', { name: 'Don’t ask again', exact: true }).click();
+  await expect(prompt).toBeHidden();
+  await expect(
+    laptop.getByText('The reader won’t ask again. Turn it back on in Settings → Reading timer.')
+  ).toBeVisible();
+  expect(await askOf(laptop)).toBe(false);
+  // It keeps the cutoff for this page, and the timer starts again from now.
+  await expect(timer).toContainText('Active');
+  await expect.poll(timeMs, { timeout: 15000 }).toBe(60_000);
+
+  // The next long pause is not asked about: the timer just stops at the cap…
+  await laptop.clock.fastForward('01:05');
+  await expect(timer).toContainText('Idle');
+  expect(await livePauseOf(laptop)).toBeNull();
+  await expect(prompt).toBeHidden();
+  // …and the pause counts up to it.
+  await laptop.keyboard.press('ArrowLeft');
+  await expect.poll(timeMs, { timeout: 15000 }).toBe(120_000);
+
+  // The setting shows off, with the cutoff the user chose.
+  const settings = await openTimerSettings(laptop);
+  const ask = settings.getByRole('checkbox', { name: 'Ask if I’m still reading' });
+  await expect(ask).not.toBeChecked();
+  await expect(settings.getByLabel('Stop the timer after')).toHaveValue('1');
+
+  // It reaches the phone with the next sync…
+  await sync(laptop);
+  await sync(phone);
+  await expect.poll(() => askOf(phone), { timeout: 15000 }).toBe(false);
+  const phoneSettings = await openTimerSettings(phone);
+  const phoneAsk = phoneSettings.getByRole('checkbox', { name: 'Ask if I’m still reading' });
+  await expect(phoneAsk).not.toBeChecked();
+  await expect(phoneSettings.getByLabel('Stop the timer after')).toHaveValue('1');
+
+  // …and turned back on there, that newer choice comes back to the laptop.
+  // The toggle's input is visually hidden: a user clicks its label.
+  await phoneSettings.getByText('Ask if I’m still reading', { exact: true }).click();
+  await expect(phoneAsk).toBeChecked();
+  expect(await askOf(phone)).toBe(true);
+  await sync(phone);
+  await sync(laptop);
+  await expect.poll(() => askOf(laptop), { timeout: 15000 }).toBe(true);
+  await expect(ask).toBeChecked();
+});
+
+test('answers sync between devices; the latest answer wins', async ({ browser }) => {
   const stub = new WebDavStub();
   const laptop = await device(browser, { stub });
   const phone = await device(browser, { stub });
 
-  // The laptop left a page open 10 minutes (no pace: a 5-minute cap), answered
-  // "don't count", and made "typical" its standing default.
+  // The laptop left a page open 10 minutes (no pace: a 5-minute cap) and
+  // answered "count none".
   const target = await laptop.evaluate(async (VOL) => {
     const { recordEvent, recordResolve } = await import('/src/lib/reading-history/record.ts');
     const { updateProgress } = await import('/src/lib/settings/volume-data.ts');
-    const { setPauseDefault } = await import('/src/lib/settings/tracking-data.ts');
     const event = await recordEvent({
       kind: 'page',
       volume: VOL,
@@ -380,7 +462,6 @@ test('answers and the standing default sync; the latest answer wins', async ({ b
     updateProgress(VOL, 1, 300);
     const target: [string, number] = [event!.device, event!.seq];
     await recordResolve(VOL, target, 'none');
-    setPauseDefault('typical');
     return target;
   }, VOL);
   await sync(laptop);
@@ -390,8 +471,6 @@ test('answers and the standing default sync; the latest answer wins', async ({ b
     .poll(async () => (await figures(phone)).timeMs, { timeout: 15000 })
     .toBe((await figures(laptop)).timeMs);
   expect(await figures(phone)).toMatchObject({ timeMs: 0, chars: 300 });
-  expect((await review(phone)).answers).toEqual(['none']);
-  expect(await pauseDefaultOf(phone)).toBe('typical');
 
   // Changed later on the laptop: every device takes the newer answer.
   await laptop.evaluate(
@@ -403,10 +482,8 @@ test('answers and the standing default sync; the latest answer wins', async ({ b
   );
   await sync(laptop);
   await sync(phone);
-  await expect
-    .poll(async () => (await review(phone)).answers, { timeout: 15000 })
-    .toEqual(['full']);
-  expect((await figures(phone)).timeMs).toBe(600_000);
+  await expect.poll(async () => (await figures(phone)).timeMs, { timeout: 15000 }).toBe(600_000);
+  expect((await figures(laptop)).timeMs).toBe(600_000);
 });
 
 test('the reader arms its pause timer on the real clock without error', async ({ browser }) => {
@@ -425,18 +502,14 @@ test('the reader arms its pause timer on the real clock without error', async ({
   expect(errors.filter((e) => /Illegal invocation|setTimeout|clearTimeout/i.test(e))).toEqual([]);
 });
 
-test('the prompt goes when the view ends without a page turn, and the pause waits to review', async ({
+test('the prompt goes when the view ends without a page turn, and the pause counts its cap', async ({
   browser
 }) => {
   const page = await device(browser, { clock: true });
   const OTHER = 'e2e-pause-volume-2';
   await installVolume(page, 20);
   await installVolume(page, 20, OTHER);
-  await page.evaluate(async () => {
-    const { setIdleOverride } = await import('/src/lib/settings/tracking-data.ts');
-    setIdleOverride(1);
-  });
-  await expect.poll(async () => (await statsState(page)).overrideMs).toBe(60_000);
+  await setCutoff(page, 1);
   await openReader(page);
   const timer = timerOf(page);
   const prompt = page.getByTestId('long-pause');
@@ -449,9 +522,9 @@ test('the prompt goes when the view ends without a page turn, and the pause wait
       document.dispatchEvent(new Event('visibilitychange'));
     }, hidden);
 
-  // A hidden tab ends the view: the prompt goes, the pause stays unanswered.
+  // A hidden tab ends the view: the prompt goes, unanswered.
   await page.clock.fastForward('01:05');
-  await expect(prompt).toContainText('Still reading?');
+  await expect(copyOf(page)).toHaveText('No page turn for 1 min, so the timer stopped.');
   await setHidden(true);
   await expect(prompt).toBeHidden();
   expect(await livePauseOf(page)).toBeNull();
@@ -460,7 +533,7 @@ test('the prompt goes when the view ends without a page turn, and the pause wait
 
   // So does the timer's pause click.
   await page.clock.fastForward('01:05');
-  await expect(prompt).toContainText('Still reading?');
+  await expect(prompt).toBeVisible();
   await timer.click();
   await expect(timer).toContainText('Paused');
   await expect(prompt).toBeHidden();
@@ -470,7 +543,7 @@ test('the prompt goes when the view ends without a page turn, and the pause wait
 
   // And leaving the reader: the next volume opens with no prompt carried over.
   await page.clock.fastForward('01:05');
-  await expect(prompt).toContainText('Still reading?');
+  await expect(prompt).toBeVisible();
   await page.evaluate(() => (window.location.hash = '#/catalog'));
   await expect(prompt).toBeHidden();
   expect(await livePauseOf(page)).toBeNull();
@@ -479,9 +552,6 @@ test('the prompt goes when the view ends without a page turn, and the pause wait
   await expect(prompt).toBeHidden();
   await page.evaluate(() => (window.location.hash = '#/catalog'));
 
-  // Each of the three is a provisional pause on the review list.
-  await expect
-    .poll(async () => (await review(page)).answers, { timeout: 15000 })
-    .toEqual([null, null, null]);
-  expect((await review(page)).unanswered).toBe(3);
+  // Each of the three pauses counts up to the 1-minute cap.
+  await expect.poll(async () => (await figures(page)).timeMs, { timeout: 15000 }).toBe(180_000);
 });

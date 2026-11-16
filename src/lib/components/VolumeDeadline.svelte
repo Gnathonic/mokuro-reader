@@ -1,5 +1,10 @@
 <script lang="ts">
-  import { volumeDeadlines, setVolumeDeadline, removeVolumeDeadline, dateUtils } from '$lib/goals';
+  import {
+    volumeDeadlines,
+    setVolumeDeadline,
+    removeVolumeDeadline,
+    dateUtils
+  } from '#lib/goals/index.js';
 
   interface Props {
     volumeId: string;

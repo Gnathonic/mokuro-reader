@@ -1,4 +1,4 @@
-import { db } from '$lib/catalog/db';
+import { db } from '#lib/catalog/db.js';
 import type { CatalogFile } from './catalog-file';
 import { normalizeSeriesKey } from './series-key';
 import { sourceStampChanged } from './series-index';

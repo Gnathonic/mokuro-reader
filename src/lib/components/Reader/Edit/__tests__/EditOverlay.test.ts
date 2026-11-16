@@ -1,17 +1,17 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import type { Page } from '$lib/types';
+import type { Page } from '#lib/types/index.js';
 
-vi.mock('$lib/settings', async () => {
+vi.mock('#lib/settings/index.js', async () => {
   const { writable } = await import('svelte/store');
   return { settings: writable({ fontSize: 'auto', boldFont: false }) };
 });
 
 import EditOverlay from '../EditOverlay.svelte';
-import { EditSession } from '$lib/reader/edit/edit-session.svelte';
-import { gestureTargetRole } from '$lib/reader/input/gesture-target';
-import { PointerGestureTracker } from '$lib/reader/input/pointer-tracker';
+import { EditSession } from '#lib/reader/edit/edit-session.svelte.js';
+import { gestureTargetRole } from '#lib/reader/input/gesture-target.js';
+import { PointerGestureTracker } from '#lib/reader/input/pointer-tracker.js';
 
 function page(): Page {
   return {

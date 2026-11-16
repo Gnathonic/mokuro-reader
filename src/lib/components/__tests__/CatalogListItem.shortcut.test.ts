@@ -7,12 +7,12 @@ const { promptSeriesEditor, promptSeriesRemoval } = vi.hoisted(() => ({
   promptSeriesEditor: vi.fn(),
   promptSeriesRemoval: vi.fn(async (_volumes: unknown[], _options?: unknown) => true)
 }));
-vi.mock('$lib/util/modals', () => ({ promptSeriesEditor, promptConfirmation: vi.fn() }));
-vi.mock('$lib/catalog/series-delete', () => ({ promptSeriesRemoval }));
+vi.mock('#lib/util/modals.js', () => ({ promptSeriesEditor, promptConfirmation: vi.fn() }));
+vi.mock('#lib/catalog/series-delete.js', () => ({ promptSeriesRemoval }));
 
 // Stub download-queue and the catalog barrel (which pulls in Dexie/db, unified-cloud-manager,
 // and the rest of the sync stack) — none of that matters for the keyboard shortcut.
-vi.mock('$lib/util/download-queue', () => ({
+vi.mock('#lib/util/download-queue.js', () => ({
   downloadQueue: {
     subscribe: (fn: (v: unknown[]) => void) => {
       fn([]);
@@ -21,7 +21,7 @@ vi.mock('$lib/util/download-queue', () => ({
     getSeriesQueueStatus: () => ({ hasQueued: false, hasDownloading: false })
   }
 }));
-vi.mock('$lib/catalog', () => ({
+vi.mock('#lib/catalog/index.js', () => ({
   volumes: {
     subscribe: (fn: (v: Record<string, unknown>) => void) => {
       fn({});
@@ -31,7 +31,7 @@ vi.mock('$lib/catalog', () => ({
 }));
 
 import CatalogListItem from '../CatalogListItem.svelte';
-import type { VolumeMetadata } from '$lib/types';
+import type { VolumeMetadata } from '#lib/types/index.js';
 
 function localVolume(overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
   return {

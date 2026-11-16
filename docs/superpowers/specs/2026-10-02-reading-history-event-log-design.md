@@ -264,6 +264,15 @@ device.
   - **Don't ask again:** offered only after the user has answered a few prompts (e.g. 3), not on the first
     ones. It stores a standing default (`'full'` | `'typical'` | `'none'`) in the `tracking` section; prompts
     stop and new pauses resolve to that default. Changeable in settings.
+  - **Revised (owner, 2026-11-07), replacing the three bullets above:** an unanswered pause counts **up
+    to the cap** (the released timer's rule), not typical time, and there is no review list, no
+    "typical" choice and no standing default. The prompt says "No page turn for N, so the timer
+    stopped." with Still reading / Close / Don't ask again; on return, "This page was open M. N
+    counted." with Keep N / Count all M / Count none / Don't ask again. Asking is an on/off setting
+    (`tracking.pauses.ask`, default on); a stored standing default from before reads as off. Recorded
+    `typical` answers still count as they did. The device-label UI (stats card, banner, cloud-page
+    Devices block) was removed as clutter the same day; labels stay in the data, a readable
+    per-device breakdown is wishlisted.
   - Legacy data converted from `recentPageTurns` is never prompted for; over its cap it counts nothing
     (the old idle rule, kept in phase 3b: counting typical could lift history from before the freeze above
     the frozen `legacyStats` snapshot).

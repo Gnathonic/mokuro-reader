@@ -33,10 +33,12 @@ and the e2e suite use.
 | `GDRIVE_POP`               | the server, at runtime | plain  | `off` only in an emergency (see below)                                    |
 
 - **Never** give a secret a `VITE_` or `PUBLIC_` prefix: those are compiled into
-  the client. The server reads its secrets through `$env/dynamic/private`, at
-  request time. `npm run build` runs `scripts/check-no-server-secrets.mjs`,
-  which fails the build if the value of any secret set in its environment
-  appears in the output (CI builds with canary values).
+  the client. The server reads its secrets through `$app/env/private` (each
+  one declared private and dynamic in `src/env.ts`: SvelteKit 3 exposes nothing
+  undeclared) when it starts. `npm run build`
+  runs `scripts/check-no-server-secrets.mjs`, which fails the build if the value
+  of any secret set in its environment appears in the output (CI builds with
+  canary values).
 - **Define nothing secret at a scope that every branch build can read.** A
   branch that changes the build could print it. A build with the flag but
   without the secrets answers `501 not_configured`, and the client falls back

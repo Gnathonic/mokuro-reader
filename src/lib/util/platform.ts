@@ -1,4 +1,4 @@
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 
 /**
  * Detects if the current platform is mobile (phone or tablet) or desktop

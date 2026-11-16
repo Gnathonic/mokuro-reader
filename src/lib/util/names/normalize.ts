@@ -16,7 +16,7 @@
  * The table format is the contract README's ("Fold v2 and sidecar names rule
  * 2"): `;`-separated entries in lowercase hex, delta-encoded.
  */
-import table from '$lib/interop/contract/fold-table.json';
+import table from '#lib/interop/contract/fold-table.json';
 
 /** The UCD version the tables (and so the fold) are pinned to. */
 export const FOLD_UCD: string = table.ucd;

@@ -25,13 +25,13 @@
    *    snapshot over a newer edit.
    */
   import { Label } from 'flowbite-svelte';
-  import { seriesMetadataMap, updateSeriesMetadata } from '$lib/metadata/store';
-  import { normalizeSeriesKey } from '$lib/metadata/series-key';
+  import { seriesMetadataMap, updateSeriesMetadata } from '#lib/metadata/store.js';
+  import { normalizeSeriesKey } from '#lib/metadata/series-key.js';
   import {
     activeMetadataPermissions,
     canEditSeriesMetadata
-  } from '$lib/util/sync/metadata-permissions';
-  import type { SeriesTitles } from '$lib/metadata/types';
+  } from '#lib/util/sync/metadata-permissions.js';
+  import type { SeriesTitles } from '#lib/metadata/types.js';
 
   let { seriesTitle }: { seriesTitle: string } = $props();
 

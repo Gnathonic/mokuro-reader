@@ -2,9 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import 'fake-indexeddb/auto';
 import { liveQuery } from 'dexie';
 
-vi.mock('$lib/catalog/db', async () => {
+vi.mock('#lib/catalog/db.js', async () => {
   const { CatalogDexieV3 } =
-    await vi.importActual<typeof import('$lib/catalog/db-v3')>('$lib/catalog/db-v3');
+    await vi.importActual<typeof import('#lib/catalog/db-v3.js')>('#lib/catalog/db-v3.js');
   return { db: new CatalogDexieV3('mokuro_v3_cover_persist_test') };
 });
 
@@ -14,7 +14,7 @@ vi.mock('$lib/catalog/db', async () => {
 const { thumbnailCacheInvalidate } = vi.hoisted(() => ({
   thumbnailCacheInvalidate: vi.fn()
 }));
-vi.mock('$lib/catalog/thumbnail-cache', () => ({
+vi.mock('#lib/catalog/thumbnail-cache.js', () => ({
   thumbnailCache: {
     invalidate: (...a: Parameters<typeof thumbnailCacheInvalidate>) =>
       thumbnailCacheInvalidate(...a)
@@ -27,7 +27,7 @@ vi.mock('$lib/catalog/thumbnail-cache', () => ({
 // below have a scope to attribute a cache write to, without pulling in the
 // real module's heavy dependency graph (Dexie, compress-volume, every
 // provider implementation).
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: {
     getActiveProvider: () => ({
       getStatus: () => ({ isAuthenticated: true, accountScope: 'mega:a@b.com' })
@@ -65,12 +65,26 @@ const h = vi.hoisted(() => {
   };
 });
 
-vi.mock('$lib/settings/volume-data', () => ({
+vi.mock('#lib/settings/volume-data.js', () => ({
   volumes: h.readingHistoryStore
 }));
 
-import { db } from '$lib/catalog/db';
-import type { VolumeMetadata } from '$lib/types';
+// A cover REWRITTEN at the same `cloud_covers` key is announced to the
+// resolver (the key-set watch cannot see it). Spied, real otherwise.
+const { replaceCoverKeysSpy } = vi.hoisted(() => ({ replaceCoverKeysSpy: vi.fn() }));
+vi.mock('./cover-resolver', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./cover-resolver')>();
+  return {
+    ...actual,
+    replaceCoverKeys: (...a: Parameters<typeof actual.replaceCoverKeys>) => {
+      replaceCoverKeysSpy(...a);
+      return actual.replaceCoverKeys(...a);
+    }
+  };
+});
+
+import { db } from '#lib/catalog/db.js';
+import type { VolumeMetadata } from '#lib/types/index.js';
 import {
   _resetCoverPersistForTests,
   COVER_PERSIST_MAX_BATCH,
@@ -127,6 +141,7 @@ async function addRow(overrides: Partial<VolumeMetadata> = {}) {
 beforeEach(() => {
   _resetCoverPersistForTests();
   thumbnailCacheInvalidate.mockClear();
+  replaceCoverKeysSpy.mockClear();
   h.resetReadingHistory();
 });
 
@@ -687,5 +702,33 @@ describe('cache rows carry the cover stamp', () => {
     expect(unstamped).toBeDefined();
     expect('cover_size' in unstamped).toBe(false);
     expect('cover_modified' in unstamped).toBe(false);
+  });
+});
+
+describe('a cached cover rewritten in place', () => {
+  const PATH = 'Dr Stone/Volume 01.cbz';
+  const placeholder = {
+    volume_uuid: 'cloud-1',
+    series_title: 'Dr Stone',
+    volume_title: 'Volume 01',
+    isPlaceholder: true,
+    cloudPath: PATH
+  } as never;
+
+  it('an overwrite drops the old decode and announces the rewritten key to the resolver', async () => {
+    installCover(placeholder, coverResult('new.webp'), { size: 9 }, 'overwrite');
+    await flushPendingCoverPersists();
+
+    expect((await _getCloudCoversForTests('mega:a@b.com', [PATH])).get(PATH)?.cover_size).toBe(9);
+    expect(thumbnailCacheInvalidate).toHaveBeenCalledWith('cloud-1');
+    expect(replaceCoverKeysSpy).toHaveBeenCalledWith('mega:a@b.com', [PATH]);
+  });
+
+  it('a fill (a first arrival) announces nothing: the key watch sees new keys', async () => {
+    installCover(placeholder, coverResult());
+    await flushPendingCoverPersists();
+
+    expect(thumbnailCacheInvalidate).not.toHaveBeenCalled();
+    expect(replaceCoverKeysSpy).not.toHaveBeenCalled();
   });
 });

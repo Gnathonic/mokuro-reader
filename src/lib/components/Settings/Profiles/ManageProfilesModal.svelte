@@ -9,8 +9,8 @@
     profiles,
     renameProfile,
     type BuiltInProfile
-  } from '$lib/settings';
-  import { promptConfirmation, showSnackbar } from '$lib/util';
+  } from '#lib/settings/index.js';
+  import { promptConfirmation, showSnackbar } from '#lib/util/index.js';
   import { Input, Listgroup, ListgroupItem, Modal } from 'flowbite-svelte';
   import {
     CirclePlusSolid,

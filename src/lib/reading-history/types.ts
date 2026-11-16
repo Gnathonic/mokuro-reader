@@ -80,12 +80,7 @@ export interface ResolvePayload {
 }
 
 export type EventPayload =
-  | PagePayload
-  | AdjustPayload
-  | RestartPayload
-  | ForgetPayload
-  | PositionPayload
-  | ResolvePayload;
+  PagePayload | AdjustPayload | RestartPayload | ForgetPayload | PositionPayload | ResolvePayload;
 
 /** `t` = epoch ms on the recording device (for `page`: when the view opened). */
 export type ReadingEvent = { device: string; seq: number; t: number } & EventPayload;

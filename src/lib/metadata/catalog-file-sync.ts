@@ -1,7 +1,7 @@
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 import { get } from 'svelte/store';
-import { providerManager } from '$lib/util/sync/provider-manager';
-import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
+import { providerManager } from '#lib/util/sync/provider-manager.js';
+import { unifiedCloudManager } from '#lib/util/sync/unified-cloud-manager.js';
 import { ensureFreshCloudListing } from './series-file-sync';
 import { registerFactsChangeListener } from './store';
 

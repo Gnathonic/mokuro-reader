@@ -55,10 +55,10 @@ export function calculateVolumeTimeToFinish(
  *
  * Example usage:
  *
- * import { volumes } from '$lib/settings';
- * import { personalizedReadingSpeed } from '$lib/settings/reading-speed';
- * import { currentVolumeCharacterCount } from '$lib/catalog';
- * import { calculateVolumeTimeToFinish } from '$lib/util/reading-speed';
+ * import { volumes } from '#lib/settings/index.js';
+ * import { personalizedReadingSpeed } from '#lib/settings/reading-speed.js';
+ * import { currentVolumeCharacterCount } from '#lib/catalog/index.js';
+ * import { calculateVolumeTimeToFinish } from '#lib/util/reading-speed.js';
  *
  * let timeEstimate = $derived.by(() => {
  *   const volumeProgress = $volumes[volumeId];

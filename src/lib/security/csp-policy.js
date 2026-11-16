@@ -1,7 +1,7 @@
-// The Content-Security-Policy of the HTML shell, as SvelteKit's `kit.csp`.
+// The Content-Security-Policy of the HTML shell, as SvelteKit's `csp` option.
 //
-// Plain JavaScript (JSDoc-typed) because `svelte.config.js` imports it: Node
-// loads that file directly, before Vite or any TypeScript tooling runs.
+// Plain JavaScript (JSDoc-typed); vite.config.ts hands it to the `sveltekit()`
+// plugin.
 //
 // The phase is chosen at BUILD time by the `CSP_MODE` environment variable:
 //
@@ -34,6 +34,11 @@
 //                        <style>, which no hash in this policy would cover)
 //   fonts.googleapis.com the Noto Sans JP stylesheet fallback (`web-fonts.ts`)
 //   accounts.google.com/gsi/style        the stylesheet GIS adds for itself
+//   cropperjs 2 (the cover and Anki crops) styles its elements' shadow roots
+//   through constructed (adopted) stylesheets, which style-src does not govern.
+//   Only a browser without them (Safari before 16.4) gets its fallback, a
+//   <style> in each shadow root, which this policy refuses under enforce: there
+//   the crop's frame, handles and shade are unstyled (see Browsers below).
 // style-src-attr 'unsafe-inline'
 //   Svelte `style:` bindings, Flowbite and floating-ui position everything with
 //   inline style attributes. An attribute cannot run script.
@@ -74,7 +79,8 @@
 // Older Safari (iOS/iPadOS 15 devices that cannot update) ignores what it does
 // not know: under enforce it would refuse WebAssembly — in the worker policy
 // too, which vercel.json enforces whatever CSP_MODE says — and every inline
-// style attribute. Safari below 16 is knowingly unsupported under enforce;
+// style attribute. Safari below 16 is knowingly unsupported under enforce
+// (and below 16.4 the image crops lose their styles, see style-src above);
 // check one such device by hand, if one is still to be supported.
 //
 // Not allowed: the Vercel Toolbar. Vercel injects it (scripts, frames and a
@@ -94,8 +100,8 @@
 // report-uri instead: every report would be a serverless function invocation.
 
 /** @typedef {'off' | 'report-only' | 'enforce'} CspMode */
-/** @typedef {NonNullable<NonNullable<import('@sveltejs/kit').KitConfig['csp']>['directives']>} CspDirectives */
-/** @typedef {NonNullable<import('@sveltejs/kit').KitConfig['csp']>} KitCsp */
+/** @typedef {NonNullable<NonNullable<import('@sveltejs/kit/vite').Config['csp']>['directives']>} CspDirectives */
+/** @typedef {NonNullable<import('@sveltejs/kit/vite').Config['csp']>} KitCsp */
 
 /** @type {readonly CspMode[]} */
 export const CSP_MODES = ['off', 'report-only', 'enforce'];
@@ -159,7 +165,7 @@ export function cspDirectives() {
 }
 
 /**
- * `kit.csp` for a mode. Always `mode: 'hash'`: the default, `'auto'`, would
+ * SvelteKit's `csp` option for a mode. Always `mode: 'hash'`: the default, `'auto'`, would
  * use nonces on the server-rendered shell.
  *
  * @param {CspMode} mode

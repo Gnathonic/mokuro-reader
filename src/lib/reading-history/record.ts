@@ -1,4 +1,4 @@
-import { generateUUID } from '$lib/util/uuid';
+import { generateUUID } from '#lib/util/uuid.js';
 import type { HistoryDexie } from './history-db';
 import type { EventPayload, PagePayload, PauseCount, ReadingEvent } from './types';
 

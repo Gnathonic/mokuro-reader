@@ -32,9 +32,9 @@ import {
   type LinkSeriesGuard,
   type PendingSeriesFile
 } from './series-file-import';
-import { isSeriesFilePath } from '$lib/metadata/series-file';
-import { hasWritableNonServerProvider } from '$lib/metadata/series-backfill';
-import { scheduleSeriesFileWrite } from '$lib/metadata/series-file-sync';
+import { isSeriesFilePath } from '#lib/metadata/series-file.js';
+import { hasWritableNonServerProvider } from '#lib/metadata/series-backfill.js';
+import { scheduleSeriesFileWrite } from '#lib/metadata/series-file-sync.js';
 import { createLocalQueueItem, requiresWorkerDecompression } from './local-provider';
 import type {
   ArchiveReview,
@@ -49,7 +49,7 @@ import {
   getFileProcessingPool,
   incrementPoolUsers,
   decrementPoolUsers
-} from '$lib/util/file-processing-pool';
+} from '#lib/util/file-processing-pool.js';
 import { getImportUiBridge, type MissingFilesInfo } from './import-ui';
 import {
   applyStashedLayersFor,
@@ -57,7 +57,7 @@ import {
   clearStashedLayerEntries,
   extractLayerEntries,
   stashLayerEntries
-} from '$lib/reader/edit/layer-import';
+} from '#lib/reader/edit/layer-import.js';
 import type { ImportNames } from './image-only-naming';
 import {
   groupCandidates,
@@ -72,8 +72,8 @@ import {
   noteVolumesInFlight,
   settleVolumesInFlight
 } from './library-series';
-import { generateUUID } from '$lib/util/uuid';
-import { requestPersistentStorage } from '$lib/util/upload';
+import { generateUUID } from '#lib/util/uuid.js';
+import { requestPersistentStorage } from '#lib/util/upload.js';
 import {
   extractArchiveByVolumes,
   decompressArchive,
@@ -518,7 +518,7 @@ async function streamExtractAllVolumes(
     const taskId = generateUUID();
 
     // Create a dedicated worker for streaming
-    const worker = new Worker(new URL('$lib/workers/unified-file-worker.ts', import.meta.url), {
+    const worker = new Worker(new URL('../workers/unified-file-worker.ts', import.meta.url), {
       type: 'module'
     });
 

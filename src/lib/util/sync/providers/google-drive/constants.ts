@@ -1,4 +1,4 @@
-import { CLOUD_TEST_HOOKS, cloudBase } from '../../cloud-test-hooks';
+import { cloudBase } from '../../cloud-test-hooks';
 
 export interface DriveFile {
   id: string;
@@ -64,10 +64,10 @@ const DRIVE_UPLOAD = 'https://www.googleapis.com/upload';
 
 /** The Drive API origin (`/drive/v3/...` follows), read per request. */
 export function driveApiBase(): string {
-  return CLOUD_TEST_HOOKS ? cloudBase('driveApi', DRIVE_API) : DRIVE_API;
+  return __MOKURO_TEST_HOOKS__ ? cloudBase('driveApi', DRIVE_API) : DRIVE_API;
 }
 
 /** The Drive upload origin (`/drive/v3/files...` follows), read per request. */
 export function driveUploadBase(): string {
-  return CLOUD_TEST_HOOKS ? cloudBase('driveUpload', DRIVE_UPLOAD) : DRIVE_UPLOAD;
+  return __MOKURO_TEST_HOOKS__ ? cloudBase('driveUpload', DRIVE_UPLOAD) : DRIVE_UPLOAD;
 }

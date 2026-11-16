@@ -1,7 +1,7 @@
 <script lang="ts">
   import { Label, Select } from 'flowbite-svelte';
-  import type { SettingsKey, ContinuousZoomMode } from '$lib/settings';
-  import { settings, updateSetting } from '$lib/settings';
+  import type { SettingsKey, ContinuousZoomMode } from '#lib/settings/index.js';
+  import { settings, updateSetting } from '#lib/settings/index.js';
 
   let isContinuous = $derived($settings.continuousScroll);
 

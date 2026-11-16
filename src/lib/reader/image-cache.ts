@@ -6,8 +6,8 @@
  * Uses fuzzy matching to align files with pages when paths don't match exactly.
  */
 
-import type { Page } from '$lib/types';
-import { getBasename, normalizeFilename, removeExtension } from '$lib/util/misc';
+import type { Page } from '#lib/types/index.js';
+import { getBasename, normalizeFilename, removeExtension } from '#lib/util/misc.js';
 import { acquireBlobUrl, releaseBlobUrl } from './blob-urls';
 
 export interface CachedImage {
@@ -17,7 +17,7 @@ export interface CachedImage {
   loading: Promise<void> | null;
 }
 
-import { naturalSort } from '$lib/util/natural-sort';
+import { naturalSort } from '#lib/util/natural-sort.js';
 
 /**
  * Match files to pages using fuzzy matching strategies

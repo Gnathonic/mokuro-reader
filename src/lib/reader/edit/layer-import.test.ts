@@ -1,15 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import 'fake-indexeddb/auto';
 
-vi.mock('$lib/catalog/db', async () => {
+vi.mock('#lib/catalog/db.js', async () => {
   const { CatalogDexieV3 } =
-    await vi.importActual<typeof import('$lib/catalog/db-v3')>('$lib/catalog/db-v3');
+    await vi.importActual<typeof import('#lib/catalog/db-v3.js')>('#lib/catalog/db-v3.js');
   return { db: new CatalogDexieV3('mokuro_v3_layer_import_test') };
 });
-vi.mock('$lib/util/sync/sidecar-backfill', () => ({ noteOcrEdited: vi.fn() }));
+vi.mock('#lib/util/sync/sidecar-backfill.js', () => ({ noteOcrEdited: vi.fn() }));
 
-import { db } from '$lib/catalog/db';
-import { clearAllLayers, getLayerWithPages, putLayerWithPages } from '$lib/catalog/layer-store';
+import { db } from '#lib/catalog/db.js';
+import { clearAllLayers, getLayerWithPages, putLayerWithPages } from '#lib/catalog/layer-store.js';
 import {
   applyStashedLayersFor,
   attachLayerFile,
@@ -153,6 +153,54 @@ describe('attachLayerFile', () => {
       'Vol 1.fix.mokuro'
     );
     expect(await attachLayerFile(bare)).toMatchObject({ status: 'no-match' });
+  });
+
+  it('names a layer by what made its file: parts, or the mokuro of a set-aside main', async () => {
+    await seed();
+    const parts = [
+      { role: 'recognizer', name: 'Hayai Nova', version: '2.5' },
+      { role: 'detector', name: 'PP-OCR Manga', version: '0.3' }
+    ];
+    const stamped = JSON.stringify({
+      ...JSON.parse(mokuro('うえ', {})),
+      ocr_engine: { id: 'hayai-nova', parts }
+    });
+    await attachLayerFile(new File([stamped], 'Vol 1.hayai-nova.mokuro'));
+    expect(await getLayerWithPages(db, 'v1', 'hayai-nova')).toMatchObject({
+      kind: 'ocr',
+      name: 'Hayai Nova 2.5 · PP-OCR Manga 0.3',
+      ocr_parts: parts
+    });
+    // mokuro writes its version at the top and on every page.
+    const parsedOriginal = JSON.parse(mokuro('まえ', {}));
+    const original = JSON.stringify({
+      ...parsedOriginal,
+      version: '0.2.2',
+      pages: parsedOriginal.pages.map((p: object) => ({ ...p, version: '0.2.2' }))
+    });
+    await attachLayerFile(new File([original], 'Vol 1.pre-upgrade.mokuro'));
+    expect(await getLayerWithPages(db, 'v1', 'pre-upgrade')).toMatchObject({
+      kind: 'edit',
+      name: 'mokuro 0.2.2',
+      mokuro_version: '0.2.2'
+    });
+  });
+
+  it('a re-imported file the reader wrote (no ocr_engine) keeps the maker the row knew', async () => {
+    await seed();
+    const parts = [{ role: 'recognizer', name: 'Hayai Nova', version: '2.5' }];
+    const stamped = JSON.stringify({
+      ...JSON.parse(mokuro('うえ', {})),
+      ocr_engine: { id: 'hayai-nova', parts }
+    });
+    await attachLayerFile(new File([stamped], 'Vol 1.hayai-nova.mokuro'));
+    // The same layer as the reader exports it: no block, the volume's version.
+    const exported = JSON.stringify({ ...JSON.parse(mokuro('うえ', {})), version: '0.2.5' });
+    await attachLayerFile(new File([exported], 'Vol 1.hayai-nova.mokuro'));
+    expect(await getLayerWithPages(db, 'v1', 'hayai-nova')).toMatchObject({
+      name: 'Hayai Nova 2.5',
+      ocr_parts: parts
+    });
   });
 
   it('reports invalid input and never creates a volume', async () => {

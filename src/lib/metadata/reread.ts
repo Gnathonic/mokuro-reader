@@ -1,9 +1,9 @@
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 import { get } from 'svelte/store';
-import { sortVolumes } from '$lib/catalog/sort-volumes';
-import { archiveAndResetVolumes, volumes, type VolumeData } from '$lib/settings/volume-data';
-import { updateSeriesReadingState } from '$lib/settings/series-data';
-import type { VolumeMetadata } from '$lib/types';
+import { sortVolumes } from '#lib/catalog/sort-volumes.js';
+import { archiveAndResetVolumes, volumes, type VolumeData } from '#lib/settings/volume-data.js';
+import { updateSeriesReadingState } from '#lib/settings/series-data.js';
+import type { VolumeMetadata } from '#lib/types/index.js';
 import { onSeriesRestarted } from './progress-tracker';
 import { normalizeSeriesKey } from './series-key';
 

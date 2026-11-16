@@ -10,10 +10,11 @@
  * at all: they are injected on demand (`google-scripts.ts`: an active Drive at
  * boot, or the cloud page), and the rig answers them with an empty script.
  *
- * A compile-time constant, false in production and under Vitest, so a
- * production build keeps all of it.
+ * Keyed on `__MOKURO_INTEROP__`, read where each piece is left out
+ * (`web-fonts.ts`, `hooks.server.ts`): a literal (vite.config.ts), false in
+ * production and under Vitest, so a production build keeps all of it and
+ * folds the interop branches away.
  */
-export const INTEROP_BUILD: boolean = import.meta.env.MODE === 'interop';
 
 /**
  * The page shell without its off-machine addresses: the `<link>`s to another

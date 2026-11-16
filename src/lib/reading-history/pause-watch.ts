@@ -1,5 +1,5 @@
 import { writable } from 'svelte/store';
-import { typicalDwell, viewCap, type IdleSettings } from './stats-engine';
+import { viewCap, type IdleSettings } from './stats-engine';
 import type { OpenView } from './view-tracker';
 
 /**
@@ -20,14 +20,12 @@ export interface LivePause {
   /** Characters on screen. */
   chars: number;
   cap: number;
-  /** What "Count typical" counts: `typicalDwell(chars, pace, cap)`. */
-  typical: number;
 }
 
 /** The pause the reader is asking about now; `null` = no prompt. */
 export const livePause = writable<LivePause | null>(null);
 
-/** The open view's cap and typical time, as the engine will count them. */
+/** The open view's cap, as the engine will count it. */
 export function livePauseFor(open: OpenView, pace: number | null, idle: IdleSettings): LivePause {
   const chars = open.view.page_chars.reduce((sum, c) => sum + c, 0);
   const cap = viewCap(chars, pace, idle);
@@ -35,8 +33,7 @@ export function livePauseFor(open: OpenView, pace: number | null, idle: IdleSett
     volume: open.view.volume,
     since: open.since,
     chars,
-    cap,
-    typical: typicalDwell(chars, pace, cap)
+    cap
   };
 }
 
@@ -60,9 +57,8 @@ export class PauseWatch {
    * @param onCap the open view reached its cap (once per view).
    * @param onClear a pause that fired no longer stands: its view ended,
    *   another opened, or the cap grew past the time so far.
-   * @param onRefresh a pause that fired still stands, but its cap or typical
-   *   time changed (a pace change under an override or a clamped cap, an idle
-   *   setting): what the prompt shows must follow.
+   * @param onRefresh a pause that fired still stands, but its cap changed
+   *   (an idle setting, a pace change): what the prompt shows must follow.
    */
   constructor(
     private readonly onCap: (p: LivePause) => void,
@@ -81,7 +77,7 @@ export class PauseWatch {
     const prev = this.current;
     const sameView =
       prev !== null && next !== null && prev.volume === next.volume && prev.since === next.since;
-    if (sameView && prev.cap === next.cap && prev.typical === next.typical) return;
+    if (sameView && prev.cap === next.cap) return;
     this.current = next;
 
     if (sameView && this.fired) {

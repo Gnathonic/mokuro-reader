@@ -25,7 +25,7 @@ function view(first: number, extra: Partial<ViewDescriptor> = {}): ViewDescripto
 }
 
 function open(since: number, first = 1, extra: Partial<ViewDescriptor> = {}): OpenView {
-  return { view: view(first, extra), since, answer: null };
+  return { view: view(first, extra), since };
 }
 
 function setup() {
@@ -45,13 +45,12 @@ afterEach(() => {
 });
 
 describe('livePauseFor', () => {
-  it('describes the open view with the cap and typical time the engine uses', () => {
+  it('describes the open view with the cap the engine uses', () => {
     expect(livePauseFor(open(T0), PACE, IDLE)).toEqual({
       volume: 'vol-1',
       since: T0,
       chars: 1000,
-      cap: 5 * MIN,
-      typical: 100_000
+      cap: 5 * MIN
     });
   });
 
@@ -83,8 +82,7 @@ describe('PauseWatch', () => {
       volume: 'vol-1',
       since: T0,
       chars: 1000,
-      cap: 5 * MIN,
-      typical: 100_000
+      cap: 5 * MIN
     });
   });
 
@@ -205,19 +203,20 @@ describe('PauseWatch', () => {
     expect(onCap.mock.calls[1][0].cap).toBe(15 * MIN);
   });
 
-  it('re-arms when only the typical time changes, so the prompt shows the current one', () => {
+  it('a pace change under a fixed cutoff keeps the same pause, firing once at the cutoff', () => {
     const { watch, onCap } = setup();
-    // Under an override the cap is fixed; a pace change moves typical alone.
     const idle: IdleSettings = { k: 3, overrideMs: 5 * MIN };
     watch.update(open(T0), PACE, idle);
     vi.advanceTimersByTime(2 * MIN);
     watch.update(open(T0), PACE * 2, idle);
-    vi.advanceTimersByTime(3 * MIN);
+    vi.advanceTimersByTime(3 * MIN - 1);
+    expect(onCap).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
     expect(onCap).toHaveBeenCalledTimes(1);
-    expect(onCap.mock.calls[0][0]).toMatchObject({ cap: 5 * MIN, typical: 200_000 });
+    expect(onCap.mock.calls[0][0]).toMatchObject({ cap: 5 * MIN });
   });
 
-  it('refreshes a fired pause whose cap or typical changed but is still behind', () => {
+  it('refreshes a fired pause whose cap changed but is still behind', () => {
     const onCap = vi.fn<(p: LivePause) => void>();
     const onClear = vi.fn<() => void>();
     const onRefresh = vi.fn<(p: LivePause) => void>();
@@ -229,11 +228,11 @@ describe('PauseWatch', () => {
     watch.update(open(T0), PACE, { k: 4, overrideMs: null });
     expect(onRefresh).toHaveBeenCalledTimes(1);
     expect(onRefresh.mock.calls[0][0]).toMatchObject({ since: T0, cap: 400_000 });
-    // Typical alone (override holds the cap at 6 min, behind us): refreshed too.
-    watch.update(open(T0), PACE * 2, { k: 4, overrideMs: 6 * MIN });
+    // A fixed cutoff of 6 min, still behind us: refreshed too.
+    watch.update(open(T0), PACE, { k: 4, overrideMs: 6 * MIN });
     expect(onRefresh).toHaveBeenCalledTimes(2);
-    expect(onRefresh.mock.calls[1][0]).toMatchObject({ cap: 6 * MIN, typical: 200_000 });
-    // Nothing changed: no refresh.
+    expect(onRefresh.mock.calls[1][0]).toMatchObject({ cap: 6 * MIN });
+    // Only the pace moved, and the fixed cutoff holds the cap: no refresh.
     watch.update(open(T0), PACE * 2, { k: 4, overrideMs: 6 * MIN });
     expect(onRefresh).toHaveBeenCalledTimes(2);
     vi.advanceTimersByTime(60 * MIN);

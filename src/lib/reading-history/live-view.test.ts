@@ -15,19 +15,12 @@ describe('liveMinutes', () => {
 });
 
 describe('liveMinutes past the cap (phase 3b)', () => {
-  it('counts what the answer says: full, typical, none', () => {
-    const open = { since: 0 };
-    expect(liveMinutes(0, open, 20 * MIN, 5 * MIN, 2 * MIN, 'full')).toBe(20);
-    expect(liveMinutes(0, open, 20 * MIN, 5 * MIN, 2 * MIN, 'typical')).toBe(2);
-    expect(liveMinutes(0, open, 20 * MIN, 5 * MIN, 2 * MIN, 'none')).toBe(0);
+  it('stops the timer at the cap', () => {
+    expect(liveMinutes(0, { since: 0 }, 20 * MIN, 5 * MIN)).toBe(5);
   });
 
-  it('unanswered, the timer stops at the cap while the prompt asks', () => {
-    expect(liveMinutes(0, { since: 0 }, 20 * MIN, 5 * MIN, 2 * MIN, null)).toBe(5);
-  });
-
-  it('under the cap an unanswered view counts its whole dwell', () => {
-    expect(liveMinutes(0, { since: 0 }, 3 * MIN, 5 * MIN, 2 * MIN, null)).toBe(3);
+  it('under the cap counts the whole dwell', () => {
+    expect(liveMinutes(0, { since: 0 }, 3 * MIN, 5 * MIN)).toBe(3);
   });
 });
 
@@ -38,7 +31,7 @@ describe('endedViewMs (phase 3b)', () => {
 
   it('is what the stats will count for the view that just ended', () => {
     expect(endedViewMs(page(3 * MIN), null, 300, idle)).toBe(3 * MIN);
-    expect(endedViewMs(page(10 * MIN), null, 300, idle)).toBe(2 * MIN); // provisional: typical
+    expect(endedViewMs(page(10 * MIN), null, 300, idle)).toBe(6 * MIN); // unanswered: its cap
     expect(endedViewMs(page(10 * MIN), 'none', 300, idle)).toBe(0);
     expect(endedViewMs(page(10 * MIN), 'typical', 300, idle)).toBe(2 * MIN);
     expect(endedViewMs(page(10 * MIN), 'full', 300, idle)).toBe(10 * MIN);

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { Modal, Spinner } from 'flowbite-svelte';
-  import { importPreparingModalStore } from '$lib/util/modals';
+  import { importPreparingModalStore } from '#lib/util/modals.js';
 
   // Conditionally render Modal to avoid Flowbite's internal state issues
   let open = $derived($importPreparingModalStore?.open ?? false);

@@ -19,17 +19,17 @@
  * from the `original` snapshot instead of the edited primary
  * (`catalog/main-sidecar.ts`). Promotion likewise stays a local view choice.
  */
-import { db } from '$lib/catalog/db';
+import { db } from '#lib/catalog/db.js';
 import {
   getLayerMeta,
   getLayerPages,
   getLayerWithPages,
   layerTables,
   putLayerWithPages
-} from '$lib/catalog/layer-store';
-import { buildPageCharCounts } from '$lib/catalog/cloud-ocr-upgrade';
-import { mainSidecarPagesForCloud as mainSidecarPagesFor } from '$lib/catalog/main-sidecar';
-import type { Page } from '$lib/types';
+} from '#lib/catalog/layer-store.js';
+import { buildPageCharCounts } from '#lib/catalog/cloud-ocr-upgrade.js';
+import { mainSidecarPagesForCloud as mainSidecarPagesFor } from '#lib/catalog/main-sidecar.js';
+import type { Page } from '#lib/types/index.js';
 import { EDIT_LAYER_ID, layerNameForId } from './layer-names';
 import { editLayerEpoch } from './edit-layer-epoch';
 
@@ -38,7 +38,7 @@ export { EDIT_LAYER_ID };
 
 /** Ask layer-sync to push edited layers once the edits settle. Never throws. */
 export function noteLayerEdited(): void {
-  void import('$lib/metadata/layer-sync')
+  void import('#lib/metadata/layer-sync.js')
     .then((m) => m.scheduleLayerPush())
     .catch((error) => console.debug('[edit-persist] could not schedule the layer push:', error));
 }

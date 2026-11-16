@@ -1,8 +1,8 @@
 import 'fake-indexeddb/auto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('$app/environment', () => ({ browser: true }));
-vi.mock('$lib/catalog/db', () => ({
+vi.mock('$app/env', () => ({ browser: true }));
+vi.mock('#lib/catalog/db.js', () => ({
   db: {
     volumes: { get: vi.fn(async () => undefined), bulkGet: vi.fn(async () => []) },
     volume_ocr: { get: vi.fn(async () => undefined) }
@@ -10,7 +10,7 @@ vi.mock('$lib/catalog/db', () => ({
 }));
 
 import { get } from 'svelte/store';
-import { VolumeData, clearVolumes, volumesWithTrash } from '$lib/settings/volume-data';
+import { VolumeData, clearVolumes, volumesWithTrash } from '#lib/settings/volume-data.js';
 import { HistoryDexie } from './history-db';
 import { getOrCreateDeviceId, notifyEventsRecorded } from './record';
 import { _resetHistoryTurns, loadHistoryTurns } from './turns-store';
@@ -218,7 +218,7 @@ describe('position store', () => {
   });
 
   it('waits while the reader has the volume open, and applies the reset once it closes (I5)', async () => {
-    const { currentView } = await import('$lib/util/hash-router');
+    const { currentView } = await import('#lib/util/hash-router.js');
     currentView.set({ type: 'reader', seriesId: 's', volumeId: 'v' });
     volumesWithTrash.set({ v: new VolumeData({ progress: 61, chars: 610 }) });
     const restart: ReadingEvent = {

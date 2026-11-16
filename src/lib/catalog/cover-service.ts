@@ -1,34 +1,34 @@
 import { get } from 'svelte/store';
-import { db } from '$lib/catalog/db';
-import type { VolumeMetadata } from '$lib/types';
-import { volumes as readingHistoryStore } from '$lib/settings/volume-data';
-import type { ReadingHistoryEntry } from '$lib/settings/reading-activity';
-import { isIndexedPlaceholder } from '$lib/catalog/placeholders';
-import { needsDownload } from '$lib/catalog/volume-state';
-import { materializeSeriesVolumes } from '$lib/catalog/materialize';
+import { db } from '#lib/catalog/db.js';
+import type { VolumeMetadata } from '#lib/types/index.js';
+import { volumes as readingHistoryStore } from '#lib/settings/volume-data.js';
+import type { ReadingHistoryEntry } from '#lib/settings/reading-activity.js';
+import { isIndexedPlaceholder } from '#lib/catalog/placeholders.js';
+import { needsDownload } from '#lib/catalog/volume-state.js';
+import { materializeSeriesVolumes } from '#lib/catalog/materialize.js';
 import {
   groupSeriesSidecarFiles,
   isSidecarStale,
   isoToEpochSeconds,
   stampFromSidecarFiles
-} from '$lib/metadata/cloud-sidecar-stamps';
+} from '#lib/metadata/cloud-sidecar-stamps.js';
 import {
   isArchiveSize,
   orderVolumeEntryFields,
   type SeriesFileVolume
-} from '$lib/metadata/series-file';
-import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
-import { activeAccountScope, normalizeCachePath } from '$lib/catalog/cloud-cache-key';
-import type { CloudCover } from '$lib/catalog/cloud-covers';
+} from '#lib/metadata/series-file.js';
+import { normalizeSeriesKey, normalizeVolumeTitleKey } from '#lib/metadata/series-key.js';
+import { activeAccountScope, normalizeCachePath } from '#lib/catalog/cloud-cache-key.js';
+import type { CloudCover } from '#lib/catalog/cloud-covers.js';
 import {
   acquireBackfillSlot,
   buildNoMetadataEntry,
   pullMokuroEntry,
   releaseBackfillSlot
-} from '$lib/metadata/sidecar-pull';
-import { scheduleSeriesFileWrite } from '$lib/metadata/series-file-sync';
-import type { CloudFileMetadata } from '$lib/util/sync/provider-interface';
-import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
+} from '#lib/metadata/sidecar-pull.js';
+import { scheduleSeriesFileWrite } from '#lib/metadata/series-file-sync.js';
+import type { CloudFileMetadata } from '#lib/util/sync/provider-interface.js';
+import { unifiedCloudManager } from '#lib/util/sync/unified-cloud-manager.js';
 import { fetchCloudThumbnail, type CloudThumbnailResult } from './cloud-thumbnails';
 import { coverBelongsOnRow, installCover } from './cover-persist';
 
@@ -333,7 +333,7 @@ function coverFetchTarget(
   seriesTitle: string,
   volumeTitle: string,
   cloudProvider: VolumeMetadata['cloudProvider'],
-  cover: { fileId: string; path: string }
+  cover: { fileId: string; path: string; size?: number; modifiedTime?: string }
 ): VolumeMetadata {
   return {
     volume_uuid: uuid,
@@ -346,7 +346,10 @@ function coverFetchTarget(
     page_char_counts: [],
     cloudProvider,
     cloudThumbnailFileId: cover.fileId,
-    cloudThumbnailPath: cover.path
+    cloudThumbnailPath: cover.path,
+    // The version the download is made against: keys the session copy.
+    cloudThumbnailSize: cover.size,
+    cloudThumbnailModifiedTime: cover.modifiedTime
   };
 }
 
@@ -559,8 +562,7 @@ async function materializeBatch(
     // the foreign row this series' cover.
     const seriesKey = normalizeSeriesKey(seriesTitle);
     const rows = (await db.volumes.bulkGet(entries.map((e) => e.volume_uuid))) as (
-      | VolumeMetadata
-      | undefined
+      VolumeMetadata | undefined
     )[];
     queued.forEach((q, i) => {
       const existing = rows[i];
@@ -672,10 +674,10 @@ function deliverToRow(
  * same listing renders them — a gate read off it would be empty for the first
  * screenful and let exactly the storm it exists to stop through.
  *
- * NOT A STALENESS CHECK on its own: for a relationship-less volume the
- * answer is "cached, done" whatever the stamp says (a stale cache-resident
- * cover is the backfill's `refresh` request to fix). Only a promotion
- * compares stamps, because only a promotion writes the blob somewhere new.
+ * NOT A STALENESS CHECK on its own: the caller compares the cached row's
+ * stamp with the listing's. For a relationship-less volume a stale hit is
+ * fetched back into the cache; for a read one it is fetched onto the row
+ * instead of promoted. A stampless row (cached by older code) is never stale.
  *
  * `undefined` = not cached; `'error'` = the cache could not be consulted,
  * which the caller treats as a miss (fetching is the safe answer, exactly as
@@ -721,15 +723,34 @@ async function resolveAndDeliver(
   if (!options.refresh && !vol.thumbnail && vol.cloudPath) {
     const cached = await readCachedCover(vol.cloudPath);
     if (cached && cached !== 'error') {
-      // No relationship: the surface drawing this volume resolves the cache
-      // by path (`cover-resolver.ts`) and there is nothing to fetch.
-      if (!wantsRow(vol)) return 'cache';
       const cachedStamp = { size: cached.cover_size, modified: cached.cover_modified };
       const currentStamp = {
         size: vol.cloudThumbnailSize,
         modified: isoToEpochSeconds(vol.cloudThumbnailModifiedTime)
       };
-      if (!isSidecarStale(cachedStamp, currentStamp)) {
+      const stale = isSidecarStale(cachedStamp, currentStamp);
+      if (!wantsRow(vol)) {
+        // No relationship: the surface drawing this volume resolves the cache
+        // by path (`cover-resolver.ts`). Fresh (or stampless — the same
+        // never-stale inversion; its 14-day expiry refreshes it) → nothing to
+        // fetch. Stale → fetch the listed sidecar straight back into the
+        // cache under the same key, and never through cases 3/4: a changed
+        // cover is no reason to pull a sidecar or materialize a row.
+        if (!stale || !vol.cloudThumbnailFileId) return 'cache';
+        const result = await fetchCloudThumbnail(vol, stillNear);
+        if (!result) return 'retry';
+        deliverToRow(
+          vol.volume_uuid,
+          vol.cloudPath,
+          result,
+          { size: vol.cloudThumbnailSize, modifiedTime: vol.cloudThumbnailModifiedTime },
+          // An overwrite: the old blob sits at this key, and the cards and
+          // decodes showing it are told it changed.
+          true
+        );
+        return 'cache';
+      }
+      if (!stale) {
         // PROMOTION: the blob this account already holds, carrying the
         // freshness it actually has (the cache row's own stamp, never the
         // listing's current one — a stampless row cached by older code
@@ -764,9 +785,12 @@ async function resolveAndDeliver(
         ...existingRow,
         cloudProvider: vol.cloudProvider,
         cloudThumbnailFileId: vol.cloudThumbnailFileId,
-        cloudThumbnailPath: vol.cloudThumbnailPath
+        cloudThumbnailPath: vol.cloudThumbnailPath,
+        cloudThumbnailSize: vol.cloudThumbnailSize,
+        cloudThumbnailModifiedTime: vol.cloudThumbnailModifiedTime
       },
-      stillNear
+      stillNear,
+      { refresh: options.refresh }
     );
     if (!result) return 'retry'; // transient: worth another attempt
     // A download can finish during the fetch (up to 15s) and INSTALL the
@@ -803,7 +827,7 @@ async function resolveAndDeliver(
     // it, never minting a `volumes` row just because this placeholder was
     // rendered.
     if (!vol.cloudThumbnailFileId) return 'none'; // no row, and genuinely no cover to fetch
-    const result = await fetchCloudThumbnail(vol, stillNear);
+    const result = await fetchCloudThumbnail(vol, stillNear, { refresh: options.refresh });
     if (!result) return 'retry'; // transient: worth another attempt
     installCover({ volume_uuid: vol.volume_uuid, cloudPath: vol.cloudPath }, result, {
       size: vol.cloudThumbnailSize,
@@ -843,7 +867,8 @@ async function resolveAndDeliver(
       vol.cloudProvider,
       cover
     ),
-    stillNear
+    stillNear,
+    { refresh: options.refresh }
   );
   if (!result) return 'retry';
   deliverToRow(

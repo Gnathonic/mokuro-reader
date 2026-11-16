@@ -2,26 +2,26 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 
-vi.mock('$lib/settings', async () => {
+vi.mock('#lib/settings/index.js', async () => {
   const { writable } = await import('svelte/store');
   return { volumes: writable({}) };
 });
-vi.mock('$lib/settings/reading-speed', async () => {
+vi.mock('#lib/settings/reading-speed.js', async () => {
   const { writable } = await import('svelte/store');
   return { personalizedReadingSpeed: writable({ charsPerMinute: 100 }) };
 });
-vi.mock('$lib/catalog', async () => {
+vi.mock('#lib/catalog/index.js', async () => {
   const { writable } = await import('svelte/store');
   return { currentVolume: writable(null), currentVolumeCharacterCount: writable(0) };
 });
-vi.mock('$lib/util/reading-speed', () => ({ calculateVolumeTimeToFinish: () => null }));
-vi.mock('$lib/reading-history/series-speeds', async () => {
+vi.mock('#lib/util/reading-speed.js', () => ({ calculateVolumeTimeToFinish: () => null }));
+vi.mock('#lib/reading-history/series-speeds.js', async () => {
   const { writable } = await import('svelte/store');
   return { seriesSpeeds: writable(new Map()) };
 });
 // What the stats have counted for v1 so far (the store re-emits to apply it).
 const countedMs = vi.hoisted(() => ({ value: 0 }));
-vi.mock('$lib/reading-history/stats-store', async () => {
+vi.mock('#lib/reading-history/stats-store.js', async () => {
   const { writable } = await import('svelte/store');
   return {
     // 300 ms/char: a 400-char page expects 2 min, so its cap at k = 3 is 6 min.
@@ -30,19 +30,17 @@ vi.mock('$lib/reading-history/stats-store', async () => {
   };
 });
 
-import { endedView, liveView, readingPaused } from '$lib/reading-history/live-view';
-import { readingStats } from '$lib/reading-history/stats-store';
+import { endedView, liveView, readingPaused } from '#lib/reading-history/live-view.js';
+import { readingStats } from '#lib/reading-history/stats-store.js';
 import type { Writable } from 'svelte/store';
-import type { PauseCount } from '$lib/reading-history/types';
 import Timer from '../Timer.svelte';
 
 const MIN = 60_000;
 const NOW = Date.UTC(2026, 9, 10, 12);
 
-function open(answer: PauseCount | null, since = NOW) {
+function open(since = NOW) {
   liveView.set({
     since,
-    answer,
     view: {
       volume: 'v1',
       first_page: 3,
@@ -85,54 +83,45 @@ afterEach(() => {
 });
 
 describe('Timer past the cap (phase 3b)', () => {
-  it('under a standing "Count all" default keeps counting and stays Active', async () => {
-    open(null);
-    const { getByRole } = render(Timer, { props: { volumeId: 'v1' } });
-    await at(6 * MIN);
-    open('full'); // the default answers the view at its cap
-    await at(4 * MIN);
-    expect(getByRole('button').textContent).toMatch(/Active \| Minutes read: 10/);
-  });
-
   it('unanswered shows Idle past the cap and never steps back', async () => {
-    open(null);
+    open();
     const { getByRole } = render(Timer, { props: { volumeId: 'v1' } });
     await at(6 * MIN); // exactly at the cap: still the whole dwell
     expect(getByRole('button').textContent).toMatch(/Active \| Minutes read: 6/);
-    await at(4 * MIN); // past it the live part is typical (2 min); the figure holds
+    await at(4 * MIN); // past it the timer holds at the cap
     expect(getByRole('button').textContent).toMatch(/Idle \| Minutes read: 6/);
   });
 
   it('after "Don\u2019t count" drops the paused minutes and counts on from the answer', async () => {
-    open(null);
+    open();
     const { getByRole } = render(Timer, { props: { volumeId: 'v1' } });
     await at(10 * MIN); // prompt up, timer held at the 6 min cap
     expect(getByRole('button').textContent).toMatch(/Minutes read: 6/);
-    open(null, NOW + 10 * MIN); // split: the paused view ends with 'none'
+    open(NOW + 10 * MIN); // split: the paused view ends with 'none'
     await ended(0, true);
     expect(getByRole('button').textContent).toMatch(/Active \| Minutes read: 0/);
     await at(2 * MIN);
     expect(getByRole('button').textContent).toMatch(/Active \| Minutes read: 2/);
   });
 
-  it('after "Count typical" shows the typical time before the stats catch up, once', async () => {
-    open(null);
+  it('after "Keep" shows the cutoff before the stats catch up, once', async () => {
+    open();
     const { getByRole } = render(Timer, { props: { volumeId: 'v1' } });
     await at(10 * MIN);
-    open(null, NOW + 10 * MIN);
-    await ended(2 * MIN, false); // recorded, not yet counted
-    expect(getByRole('button').textContent).toMatch(/Minutes read: 2/);
-    countedMs.value = 2 * MIN; // the stats now include it: not counted twice
+    open(NOW + 10 * MIN);
+    await ended(6 * MIN, false); // recorded, not yet counted
+    expect(getByRole('button').textContent).toMatch(/Minutes read: 6/);
+    countedMs.value = 6 * MIN; // the stats now include it: not counted twice
     (readingStats as unknown as Writable<object>).update((s) => ({ ...s }));
     await tick();
-    expect(getByRole('button').textContent).toMatch(/Minutes read: 2/);
+    expect(getByRole('button').textContent).toMatch(/Minutes read: 6/);
   });
 
   it('a page turn never dips while the ended view is on its way into the stats', async () => {
-    open(null);
+    open();
     const { getByRole } = render(Timer, { props: { volumeId: 'v1' } });
     await at(3 * MIN);
-    open(null, NOW + 3 * MIN);
+    open(NOW + 3 * MIN);
     await ended(3 * MIN, false);
     expect(getByRole('button').textContent).toMatch(/Minutes read: 3/);
   });

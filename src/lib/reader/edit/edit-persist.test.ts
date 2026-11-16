@@ -1,22 +1,22 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import 'fake-indexeddb/auto';
-import type { Page } from '$lib/types';
+import type { Page } from '#lib/types/index.js';
 
-vi.mock('$lib/catalog/thumbnails', () => ({ generateThumbnail: vi.fn() }));
-vi.mock('$lib/util/progress-tracker', () => ({
+vi.mock('#lib/catalog/thumbnails.js', () => ({ generateThumbnail: vi.fn() }));
+vi.mock('#lib/util/progress-tracker.js', () => ({
   progressTrackerStore: { addProcess: vi.fn(), updateProcess: vi.fn(), removeProcess: vi.fn() }
 }));
-vi.mock('$lib/catalog/db', async () => {
+vi.mock('#lib/catalog/db.js', async () => {
   const { CatalogDexieV3 } =
-    await vi.importActual<typeof import('$lib/catalog/db-v3')>('$lib/catalog/db-v3');
+    await vi.importActual<typeof import('#lib/catalog/db-v3.js')>('#lib/catalog/db-v3.js');
   return { db: new CatalogDexieV3('mokuro_v3_edit_persist_test') };
 });
 const scheduleLayerPush = vi.hoisted(() => vi.fn());
-vi.mock('$lib/metadata/layer-sync', () => ({ scheduleLayerPush }));
+vi.mock('#lib/metadata/layer-sync.js', () => ({ scheduleLayerPush }));
 
-import { countIdbOps } from '$lib/catalog/__tests__/idb-op-counter';
-import { db } from '$lib/catalog/db';
-import { clearAllLayers, getLayerWithPages } from '$lib/catalog/layer-store';
+import { countIdbOps } from '#lib/catalog/__tests__/idb-op-counter.js';
+import { db } from '#lib/catalog/db.js';
+import { clearAllLayers, getLayerWithPages } from '#lib/catalog/layer-store.js';
 import {
   EDIT_LAYER_ID,
   ORIGINAL_LAYER_ID,

@@ -1,14 +1,15 @@
 import { get } from 'svelte/store';
-import { db } from '$lib/catalog/db';
-import type { VolumeMetadata } from '$lib/types';
-import { needsDownload } from '$lib/catalog/volume-state';
-import { isArchiveSize } from '$lib/metadata/series-file';
-import { isoToEpochSeconds } from '$lib/metadata/cloud-sidecar-stamps';
-import { thumbnailCache } from '$lib/catalog/thumbnail-cache';
-import { activeAccountScope } from '$lib/catalog/cloud-cache-key';
-import { putCloudCovers, type CloudCover } from '$lib/catalog/cloud-covers';
-import { volumes as readingHistoryStore } from '$lib/settings/volume-data';
-import { hasReadingActivity, type ReadingHistoryEntry } from '$lib/settings/reading-activity';
+import { db } from '#lib/catalog/db.js';
+import type { VolumeMetadata } from '#lib/types/index.js';
+import { needsDownload } from '#lib/catalog/volume-state.js';
+import { isArchiveSize } from '#lib/metadata/series-file.js';
+import { isoToEpochSeconds } from '#lib/metadata/cloud-sidecar-stamps.js';
+import { thumbnailCache } from '#lib/catalog/thumbnail-cache.js';
+import { activeAccountScope } from '#lib/catalog/cloud-cache-key.js';
+import { putCloudCovers, type CloudCover } from '#lib/catalog/cloud-covers.js';
+import { replaceCoverKeys } from '#lib/catalog/cover-resolver.js';
+import { volumes as readingHistoryStore } from '#lib/settings/volume-data.js';
+import { hasReadingActivity, type ReadingHistoryEntry } from '#lib/settings/reading-activity.js';
 import type { CloudThumbnailResult } from './cloud-thumbnails';
 
 /**
@@ -340,6 +341,10 @@ async function flushOneBatch(): Promise<void> {
     console.debug('[cover-persist] could not resolve the active account scope:', error);
   }
   const forCoverTable: CloudCover[] = [];
+  // Cache rows REWRITTEN at the same key (an overwrite of a stale cover):
+  // their volumes' decodes and the cards holding them must be told, since the
+  // cover key watch only sees keys that are new.
+  const rewritten: Array<{ volumeUuid: string; path: string }> = [];
 
   // Which volumes the user actually has a relationship with, read ONCE for
   // the whole batch — a synchronous, localStorage-backed store read, not a
@@ -424,6 +429,7 @@ async function flushOneBatch(): Promise<void> {
             ...(coverSize !== undefined ? { cover_size: coverSize } : {}),
             ...(coverModified !== undefined ? { cover_modified: coverModified } : {})
           });
+          if (mode === 'overwrite') rewritten.push({ volumeUuid, path: cachePath });
         }
       }
     });
@@ -432,6 +438,13 @@ async function flushOneBatch(): Promise<void> {
     // whole batch: preserves the "one batch, one write per table" property
     // this module's write-storm-avoidance design depends on.
     await putCloudCovers(forCoverTable);
+    if (scope && rewritten.length > 0) {
+      for (const { volumeUuid } of rewritten) thumbnailCache.invalidate(volumeUuid);
+      replaceCoverKeys(
+        scope,
+        rewritten.map(({ path }) => path)
+      );
+    }
   } catch (error) {
     console.debug('[cover-persist] could not persist a batch of catalog covers:', error);
   }

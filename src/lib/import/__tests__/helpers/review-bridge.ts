@@ -5,7 +5,7 @@
  */
 
 import { get } from 'svelte/store';
-import { miscSettings } from '$lib/settings/misc';
+import { miscSettings } from '#lib/settings/misc.js';
 import { getImportUiBridge, setImportUiBridge } from '../../import-ui';
 import { defaultNaming, type GroupNaming, type ReviewGroup } from '../../image-only-review';
 import type { GroupDecision } from '../../review-session';

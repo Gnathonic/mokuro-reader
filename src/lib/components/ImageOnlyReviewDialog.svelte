@@ -1,15 +1,15 @@
 <script lang="ts">
   import { Modal } from 'flowbite-svelte';
   import { get } from 'svelte/store';
-  import { miscSettings } from '$lib/settings/misc';
+  import { miscSettings } from '#lib/settings/misc.js';
   import {
     currentStep,
     decideCurrent,
     reviewSession,
     skipAllRemaining
-  } from '$lib/import/review-session';
-  import { listLibrarySeries } from '$lib/import/library-series';
-  import type { LibrarySeries } from '$lib/import/image-only-review';
+  } from '#lib/import/review-session.js';
+  import { listLibrarySeries } from '#lib/import/library-series.js';
+  import type { LibrarySeries } from '#lib/import/image-only-review.js';
   import ImageOnlyReviewStep from './ImageOnlyReviewStep.svelte';
 
   const step = $derived(currentStep($reviewSession));

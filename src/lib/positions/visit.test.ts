@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
 
-vi.mock('$app/environment', () => ({ browser: true }));
-vi.mock('$lib/catalog/db', () => ({
+vi.mock('$app/env', () => ({ browser: true }));
+vi.mock('#lib/catalog/db.js', () => ({
   db: { volumes: { get: vi.fn().mockResolvedValue(undefined), bulkGet: vi.fn(async () => []) } }
 }));
 
@@ -15,12 +15,12 @@ import {
   registerPositionListener,
   updateProgress,
   volumesWithTrash
-} from '$lib/settings/volume-data';
-import type { HistoryDexie } from '$lib/reading-history/history-db';
-import { liveView } from '$lib/reading-history/live-view';
-import { notifyEventsRecorded } from '$lib/reading-history/record';
-import { _resetHistoryTurns, loadHistoryTurns } from '$lib/reading-history/turns-store';
-import type { ReadingEvent } from '$lib/reading-history/types';
+} from '#lib/settings/volume-data.js';
+import type { HistoryDexie } from '#lib/reading-history/history-db.js';
+import { liveView } from '#lib/reading-history/live-view.js';
+import { notifyEventsRecorded } from '#lib/reading-history/record.js';
+import { _resetHistoryTurns, loadHistoryTurns } from '#lib/reading-history/turns-store.js';
+import type { ReadingEvent } from '#lib/reading-history/types.js';
 import { _resetEscapesForTests, noteUploaded } from './escapes';
 import { reconcilePositions } from './positions-reconcile';
 import { noteReaderClosed, noteReaderOpened, openReader } from './reader-open';
@@ -100,8 +100,7 @@ async function turn(page: number, after = 0, { last = page, progress = page }: V
       orientation: 'portrait',
       viewport: { w: 1, h: 1 }
     },
-    since: clock,
-    answer: null
+    since: clock
   });
   updateProgress('v', progress, progress * 300, progress === LAST_PAGE);
   await flush();
@@ -190,8 +189,7 @@ describe('look-up visits (live)', () => {
     open = { page: 40, last: 40, since: clock };
     liveView.set({
       view: { ...get(liveView)!.view, first_page: 40, last_page: 40, chars_before: 39 * 300 },
-      since: clock,
-      answer: null
+      since: clock
     });
     await land(ended);
     updateProgress('v', 40, 12_000, false);

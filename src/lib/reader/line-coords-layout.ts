@@ -878,7 +878,7 @@ export function layoutLines(
     };
   }
   if (!asFiled) {
-    for (let settled = false; !settled; ) {
+    for (let settled = false; !settled;) {
       settled = true;
       for (let i = 0; i < layouts.length; i++) {
         if (!layouts[i].rotation) continue;

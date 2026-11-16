@@ -3,18 +3,20 @@
  * `bunko-cloudsim`) instead of Google, Microsoft and MEGA, and hand them a
  * token instead of running Google Identity Services or MSAL.
  *
- * Every read is written `CLOUD_TEST_HOOKS ? <hook read> : fallback`, and
- * `CLOUD_TEST_HOOKS` is a compile-time constant: false in a production build,
- * so the bundler folds each guarded read to its fallback and drops the hook
- * state. `scripts/check-no-test-hooks.mjs` greps the production bundle to
- * prove it. The hooks are on under Vitest (`MODE === 'test'`) or in a build
- * made with `vite build --mode interop` (the interop rig's reader). They key on
- * the mode, never on an environment variable, so a hosting provider's settings
- * cannot switch them on in a production build.
+ * Every read is written `__MOKURO_TEST_HOOKS__ ? <hook read> :
+ * fallback`, where the read is. The switch is a literal (vite.config.ts), false
+ * in a production build, so the bundler folds each guarded read to its fallback
+ * and drops the hook state. `scripts/check-no-test-hooks.mjs` greps the
+ * production bundle to prove it. Never through an imported constant: Rolldown
+ * folds the read, but a hook it guarded stays exported from a shared chunk, and
+ * a guarded dynamic `import()` still gets its chunk. The hooks are on under
+ * Vitest (the `test` mode) or in a build made with `vite build --mode interop`
+ * (the interop rig's reader). They key on the mode, never on an environment
+ * variable, so a hosting provider's settings cannot switch them on in a
+ * production build.
  */
 
-export const CLOUD_TEST_HOOKS: boolean =
-  import.meta.env.MODE === 'test' || import.meta.env.MODE === 'interop';
+const CLOUD_TEST_HOOKS: boolean = __MOKURO_TEST_HOOKS__;
 
 /** Base addresses, each replacing one provider's real one. */
 export type CloudBases = {
@@ -68,6 +70,25 @@ export function setCloudTestToken<P extends keyof TestTokens>(
 /** The injected token, or null (always, when hooks are off). */
 export function cloudTestToken<P extends keyof TestTokens>(provider: P): TestTokens[P] | null {
   return CLOUD_TEST_HOOKS ? tokens[provider] : null;
+}
+
+let folderHandle: FileSystemDirectoryHandle | null = null;
+
+/**
+ * Hand the Local Folder provider the folder its next login opens, in place of
+ * the File System Access picker (`showDirectoryPicker`), which a test cannot
+ * answer (`null` takes it back). The interop rig gets a real handle to a
+ * folder on its disk by dropping that folder on the page (the rig driver's
+ * `connectFolder`).
+ */
+export function setFolderTestHandle(handle: FileSystemDirectoryHandle | null): void {
+  requireHooks('setFolderTestHandle');
+  folderHandle = handle;
+}
+
+/** The handed folder, or null (always, when hooks are off). */
+export function folderTestHandle(): FileSystemDirectoryHandle | null {
+  return CLOUD_TEST_HOOKS ? folderHandle : null;
 }
 
 /**
@@ -125,7 +146,7 @@ function applyInteropConfig(raw: unknown): void {
   if (typeof onedrive === 'string') setCloudTestToken('onedrive', onedrive);
   const driveApi = config.bases?.driveApi;
   if (config.gapiShim && driveApi) {
-    void import('$lib/interop/gapi-rest-shim')
+    void import('#lib/interop/gapi-rest-shim.js')
       .then((m) => m.installGapiRestShim(driveApi))
       .catch((error) => console.error('[cloud-test-hooks] gapi shim failed to load:', error));
   }

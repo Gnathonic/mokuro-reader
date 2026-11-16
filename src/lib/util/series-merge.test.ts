@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { detectSeriesConflicts, generateMergeSeriesPreview } from '$lib/util/series-merge';
+import { detectSeriesConflicts, generateMergeSeriesPreview } from '#lib/util/series-merge.js';
 
 // Mock the database
-vi.mock('$lib/catalog/db', () => ({
+vi.mock('#lib/catalog/db.js', () => ({
   db: {
     volumes: {
       toArray: vi.fn(),
@@ -16,7 +16,7 @@ vi.mock('$lib/catalog/db', () => ({
 }));
 
 // Mock the volume data store
-vi.mock('$lib/settings/volume-data', () => ({
+vi.mock('#lib/settings/volume-data.js', () => ({
   volumes: {
     subscribe: vi.fn()
   }
@@ -34,7 +34,7 @@ describe('Series Merge Functionality', () => {
 
   describe('detectSeriesConflicts', () => {
     it('should return empty array when no volumes exist', async () => {
-      const { db } = await import('$lib/catalog/db');
+      const { db } = await import('#lib/catalog/db.js');
       vi.mocked(db.volumes.toArray).mockResolvedValue([]);
 
       const conflicts = await detectSeriesConflicts();
@@ -42,7 +42,7 @@ describe('Series Merge Functionality', () => {
     });
 
     it('should detect series with multiple UUIDs', async () => {
-      const { db } = await import('$lib/catalog/db');
+      const { db } = await import('#lib/catalog/db.js');
       const mockVolumes = [
         {
           series_title: 'Test Series',
@@ -76,7 +76,7 @@ describe('Series Merge Functionality', () => {
     });
 
     it('should not return series with single UUID', async () => {
-      const { db } = await import('$lib/catalog/db');
+      const { db } = await import('#lib/catalog/db.js');
       const mockVolumes = [
         {
           series_title: 'Consistent Series',
@@ -99,7 +99,7 @@ describe('Series Merge Functionality', () => {
     });
 
     it('should detect series with different casing as conflicts (case-insensitive)', async () => {
-      const { db } = await import('$lib/catalog/db');
+      const { db } = await import('#lib/catalog/db.js');
       const mockVolumes = [
         {
           series_title: 'Test Series',
@@ -134,7 +134,7 @@ describe('Series Merge Functionality', () => {
 
   describe('generateMergeSeriesPreview', () => {
     it('should generate preview of database and localStorage changes', async () => {
-      const { db } = await import('$lib/catalog/db');
+      const { db } = await import('#lib/catalog/db.js');
       const mockVolumes = [
         {
           volume_uuid: 'vol-1',

@@ -20,11 +20,10 @@ type Answer = { count: PauseCount; t: number } | null;
 
 function setup() {
   const emitted: { payload: PagePayload; t: number; answer: Answer }[] = [];
-  const changes: Array<{ first: number; since: number; answer: PauseCount | null } | null> = [];
+  const changes: Array<{ first: number; since: number } | null> = [];
   const tracker = new ViewTracker(
     (payload, t, answer) => emitted.push({ payload, t, answer }),
-    (open) =>
-      changes.push(open && { first: open.view.first_page, since: open.since, answer: open.answer })
+    (open) => changes.push(open && { first: open.view.first_page, since: open.since })
   );
   return { tracker, emitted, changes };
 }
@@ -101,6 +100,19 @@ describe('ViewTracker onChange', () => {
 });
 
 describe('ViewTracker answers', () => {
+  it('split with no answer writes the paused view unanswered and reopens it', () => {
+    const { tracker, emitted, changes } = setup();
+    tracker.setView(view(1), 1000);
+    tracker.split(400_000, null);
+    expect(emitted).toEqual([
+      { payload: { kind: 'page', ...view(1), dwell_ms: 399_000 }, t: 1000, answer: null }
+    ]);
+    expect(changes).toEqual([
+      { first: 1, since: 1000 },
+      { first: 1, since: 400_000 }
+    ]);
+  });
+
   it('split writes the paused view with the answer and reopens the same view at the answer', () => {
     const { tracker, emitted, changes } = setup();
     tracker.setView(view(1), 1000);
@@ -113,8 +125,8 @@ describe('ViewTracker answers', () => {
       }
     ]);
     expect(changes).toEqual([
-      { first: 1, since: 1000, answer: null },
-      { first: 1, since: 400_000, answer: null }
+      { first: 1, since: 1000 },
+      { first: 1, since: 400_000 }
     ]);
     // The continuation is the same view: re-setting it is no change, and it
     // ends unanswered with the time since the answer.
@@ -128,59 +140,17 @@ describe('ViewTracker answers', () => {
     });
   });
 
-  it('setAnswer presets the open view: written with its stamp when the view ends', () => {
-    const { tracker, emitted, changes } = setup();
-    tracker.setView(view(1), 0);
-    tracker.setAnswer('full', 300_000);
-    expect(emitted).toHaveLength(0);
-    expect(changes).toEqual([
-      { first: 1, since: 0, answer: null },
-      { first: 1, since: 0, answer: 'full' }
-    ]);
-    tracker.setView(view(2), 900_000);
-    expect(emitted[0]).toEqual({
-      payload: { kind: 'page', ...view(1), dwell_ms: 900_000 },
-      t: 0,
-      answer: { count: 'full', t: 300_000 }
-    });
-  });
-
-  it('clears the answer on the next view', () => {
-    const { tracker, emitted } = setup();
-    tracker.setView(view(1), 0);
-    tracker.setAnswer('none', 100_000);
-    tracker.setView(view(2), 200_000);
-    tracker.close(250_000);
-    tracker.setView(view(2), 300_000);
-    tracker.setView(null, 310_000);
-    expect(emitted.map((e) => e.answer)).toEqual([{ count: 'none', t: 100_000 }, null, null]);
-  });
-
-  it('a live answer replaces the preset, and the continuation starts unanswered', () => {
-    const { tracker, emitted } = setup();
-    tracker.setView(view(1), 0);
-    tracker.setAnswer('none', 100_000);
-    tracker.split(200_000, 'full');
-    tracker.close(260_000);
-    expect(emitted.map((e) => [e.t, e.payload.dwell_ms, e.answer])).toEqual([
-      [0, 200_000, { count: 'full', t: 200_000 }],
-      [200_000, 60_000, null]
-    ]);
-  });
-
-  it('split and setAnswer with no open view do nothing', () => {
+  it('split with no open view does nothing', () => {
     const { tracker, emitted, changes } = setup();
     tracker.split(5, 'none');
-    tracker.setAnswer('full', 6);
     expect(emitted).toEqual([]);
     expect(changes).toEqual([]);
     tracker.setView(view(1), 10);
     tracker.close(20);
-    tracker.split(30, 'typical');
-    tracker.setAnswer('typical', 40);
+    tracker.split(30, 'full');
     expect(emitted).toHaveLength(1);
     expect(emitted[0].answer).toBeNull();
-    expect(changes).toEqual([{ first: 1, since: 10, answer: null }, null]);
+    expect(changes).toEqual([{ first: 1, since: 10 }, null]);
   });
 
   it('never emits a negative dwell when splitting on a clock that stepped back', () => {
@@ -188,38 +158,5 @@ describe('ViewTracker answers', () => {
     tracker.setView(view(1), 5000);
     tracker.split(4000, 'full');
     expect(emitted[0].payload.dwell_ms).toBe(0);
-  });
-
-  it('setAnswer(null) withdraws a preset; the view ends unanswered', () => {
-    const { tracker, emitted } = setup();
-    tracker.setView(view(1), 0);
-    tracker.setAnswer('none', 100);
-    tracker.setAnswer(null, 200);
-    tracker.setView(view(2), 900);
-    expect(emitted[0].answer).toBeNull();
-  });
-
-  it('a withdrawn preset (cap grew past the time so far) is re-applied when the cap is reached again', () => {
-    const { tracker, emitted, changes } = setup();
-    tracker.setView(view(1), 0);
-    tracker.setAnswer('full', 300_000); // standing default preset at the cap
-    tracker.setAnswer(null, 320_000); // the cap grew past the time so far: withdrawn
-    tracker.setAnswer(null, 330_000); // already withdrawn: no change reported
-    tracker.setAnswer('full', 600_000); // the new cap is reached: preset again
-    tracker.setView(view(2), 700_000);
-    expect(changes).toEqual([
-      { first: 1, since: 0, answer: null },
-      { first: 1, since: 0, answer: 'full' },
-      { first: 1, since: 0, answer: null },
-      { first: 1, since: 0, answer: 'full' },
-      { first: 2, since: 700_000, answer: null }
-    ]);
-    expect(emitted).toEqual([
-      {
-        payload: { kind: 'page', ...view(1), dwell_ms: 700_000 },
-        t: 0,
-        answer: { count: 'full', t: 600_000 }
-      }
-    ]);
   });
 });

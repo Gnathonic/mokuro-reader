@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { Storage } from 'megajs';
 
-vi.mock('$app/environment', () => ({ browser: true }));
+vi.mock('$app/env', () => ({ browser: true }));
 vi.mock('./mega-cache', () => ({ megaCache: { fetch: vi.fn() } }));
 vi.mock('../../cache-manager', () => ({
   cacheManager: { clearAll: vi.fn(), registerCache: vi.fn() }

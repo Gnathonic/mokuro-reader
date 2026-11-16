@@ -1,4 +1,4 @@
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 import type {
   ControlFileResult,
   SyncProvider,
@@ -14,7 +14,7 @@ import { ProviderError } from '../../provider-interface';
 import { setActiveProviderKey, clearActiveProviderKey } from '../../provider-detection';
 import { ONEDRIVE_CONFIG } from './constants';
 import { onedriveTokenManager } from './token-manager';
-import { CLOUD_TEST_HOOKS, cloudTestCredentials } from '../../cloud-test-hooks';
+import { cloudTestCredentials } from '../../cloud-test-hooks';
 import {
   createFolder,
   deleteItem,
@@ -28,8 +28,13 @@ import {
 import { oneDriveRevision } from '../../core/providers/onedrive-core';
 import { getCloudProviderCore } from '../../core/cloud-provider-core-registry';
 import { isSyncableFile } from '../../syncable-file';
-import { ControlNodeCache, readControlNodes } from '../../control-file-read';
-import { withCloudBunkoStatus } from '$lib/catalog/cloud-bunko-marker';
+import {
+  ControlNodeCache,
+  controlReadKey,
+  isPathSafeFolderName,
+  readControlNodes
+} from '../../control-file-read';
+import { withCloudBunkoStatus } from '#lib/catalog/cloud-bunko-marker.js';
 
 /** Worth retrying later; a full drive (507) is not, so it is excluded. */
 const RETRYABLE_MESSAGE = /network|timed out|\b429\b|\b5(?!07)\d\d\b/i;
@@ -237,19 +242,35 @@ export class OneDriveProvider implements SyncProvider {
   }
 
   /**
-   * Read a control file at the library root (`mokuro-reader/<name>`): ONE
-   * `GET /me/drive/root:/mokuro-reader/<name>` per read. OneDrive names are
-   * unique within a folder, so there is at most one node. Its `cTag` (content
-   * tag; falls back to `eTag`) is the version: unchanged means no content
-   * download. Never creates anything; a missing file (or folder) is null.
+   * Read a control file at the library root (`mokuro-reader/<name>`), or in a
+   * series folder (`mokuro-reader/<folder>/<name>`): ONE
+   * `GET /me/drive/root:/<path>` per read, each segment encoded on its own.
+   * OneDrive names are unique within a folder and case-insensitive, so every
+   * spelling of `folder` is the one folder and there is at most one node. Its
+   * `cTag` (content tag; falls back to `eTag`) is the version: unchanged means
+   * no content download. Never creates anything; a missing file (or folder)
+   * is null.
    */
-  async readControlFile(name: string, opts?: { ifNoneMatch?: string }): Promise<ControlFileResult> {
+  async readControlFile(
+    name: string,
+    opts?: { ifNoneMatch?: string; folder?: string }
+  ): Promise<ControlFileResult> {
     if (!this.isAuthenticated()) {
       throw new ProviderError('Not authenticated', 'onedrive', 'NOT_AUTHENTICATED', true);
     }
+    const folder = opts?.folder;
+    const key = controlReadKey(name, folder);
+    if (folder !== undefined && !isPathSafeFolderName(folder)) {
+      this.controlCache.retain(key, []);
+      return null;
+    }
     try {
       const token = await onedriveTokenManager.getAccessToken();
-      const item = await getItemByPath(token, `${ONEDRIVE_CONFIG.MOKURO_FOLDER}/${name}`);
+      const path =
+        folder === undefined
+          ? `${ONEDRIVE_CONFIG.MOKURO_FOLDER}/${name}`
+          : `${ONEDRIVE_CONFIG.MOKURO_FOLDER}/${folder}/${name}`;
+      const item = await getItemByPath(token, path);
       const version = item ? (item.cTag ?? item.eTag) : undefined;
       const listed =
         item && version
@@ -262,7 +283,7 @@ export class OneDriveProvider implements SyncProvider {
             ]
           : [];
       return await readControlNodes(
-        name,
+        key,
         listed,
         async (node) => downloadItemContent(await onedriveTokenManager.getAccessToken(), node.id),
         this.controlCache,
@@ -624,12 +645,12 @@ export class OneDriveProvider implements SyncProvider {
 
   async getWorkerUploadCredentials(): Promise<Record<string, any>> {
     const accessToken = await onedriveTokenManager.getAccessToken();
-    return { accessToken, ...(CLOUD_TEST_HOOKS ? cloudTestCredentials() : {}) };
+    return { accessToken, ...(__MOKURO_TEST_HOOKS__ ? cloudTestCredentials() : {}) };
   }
 
   async getWorkerDownloadCredentials(_fileId: string): Promise<Record<string, any>> {
     const accessToken = await onedriveTokenManager.getAccessToken();
-    return { accessToken, ...(CLOUD_TEST_HOOKS ? cloudTestCredentials() : {}) };
+    return { accessToken, ...(__MOKURO_TEST_HOOKS__ ? cloudTestCredentials() : {}) };
   }
 }
 

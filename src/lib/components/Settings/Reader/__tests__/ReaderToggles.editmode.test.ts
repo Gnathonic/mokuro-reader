@@ -13,7 +13,7 @@ const settingsStore = vi.hoisted(() => {
   };
 });
 
-vi.mock('$lib/settings', async () => {
+vi.mock('#lib/settings/index.js', async () => {
   const { writable, readable } = await import('svelte/store');
   const store = writable<Record<string, unknown>>({
     defaultFullscreen: false,
@@ -28,6 +28,7 @@ vi.mock('$lib/settings', async () => {
     showTimer: false,
     quickActions: true,
     swapWheelBehavior: false,
+    pageKeysScrollFirst: true,
     disableAnimations: false,
     textBoxContextMenu: false,
     continuousScroll: false,
@@ -54,7 +55,7 @@ vi.mock('../ScheduledFilterCard.svelte', async () => {
 });
 
 import ReaderToggles from '../ReaderToggles.svelte';
-import { editModeActive, editModeRequest, setEditModeActive } from '$lib/reader/edit/edit-mode';
+import { editModeActive, editModeRequest, setEditModeActive } from '#lib/reader/edit/edit-mode.js';
 
 afterEach(() => {
   cleanup();
@@ -95,11 +96,38 @@ describe('ReaderToggles — Edit OCR text', () => {
   });
 });
 
-describe('ReaderToggles — long pauses', () => {
-  it('carries the long-pause setting right after the idle cutoff', () => {
+describe('ReaderToggles — reading timer', () => {
+  it('carries the cutoff and the long-pause question as one "Reading timer" group', () => {
+    const { getByRole, getByLabelText, queryByLabelText } = render(ReaderToggles);
+    expect(getByRole('heading', { name: 'Reading timer' })).toBeTruthy();
+    const cutoff = getByLabelText('Stop the timer after');
+    const ask = getByLabelText('Ask if I’m still reading');
+    expect(cutoff.compareDocumentPosition(ask) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // The controls it replaced are gone.
+    expect(queryByLabelText('Automatic idle cutoff')).toBeNull();
+    expect(queryByLabelText('When a page stays open past the cutoff')).toBeNull();
+  });
+});
+
+describe('ReaderToggles — page keys scroll tall pages (#283)', () => {
+  it('lists the toggle next to the other input toggles and writes the setting', async () => {
+    const { updateSetting } = await import('#lib/settings/index.js');
+    vi.mocked(updateSetting).mockClear();
+    settingsStore.get().update((s) => ({ ...s, continuousScroll: false }));
     const { getByLabelText } = render(ReaderToggles);
-    const cutoff = getByLabelText('Automatic idle cutoff');
-    const pauses = getByLabelText('When a page stays open past the cutoff');
-    expect(cutoff.compareDocumentPosition(pauses) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const input = getByLabelText(
+      /Page Up\/Down scroll tall pages before turning/
+    ) as HTMLInputElement;
+    expect(input.checked).toBe(true);
+    const swap = getByLabelText(/Swap mouse wheel scroll\/zoom/);
+    expect(swap.compareDocumentPosition(input) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await fireEvent.click(input);
+    expect(updateSetting).toHaveBeenCalledWith('pageKeysScrollFirst', false);
+  });
+
+  it('stays visible in continuous scroll mode (the rule applies there too)', () => {
+    settingsStore.get().update((s) => ({ ...s, continuousScroll: true }));
+    const { getByLabelText } = render(ReaderToggles);
+    expect(getByLabelText(/Page Up\/Down scroll tall pages before turning/)).toBeTruthy();
   });
 });

@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import 'fake-indexeddb/auto';
-import type { CloudFileMetadata } from '$lib/util/sync/provider-interface';
+import type { CloudFileMetadata } from '#lib/util/sync/provider-interface.js';
 import type { CatalogFileEntry } from './catalog-file';
-import { countIdbOps } from '$lib/catalog/__tests__/idb-op-counter';
+import { countIdbOps } from '#lib/catalog/__tests__/idb-op-counter.js';
 
 /**
  * The facts half of a catalog refresh, against a REAL Dexie (fake-indexeddb) —
@@ -29,12 +29,12 @@ import { countIdbOps } from '$lib/catalog/__tests__/idb-op-counter';
  * - and one bad entry still costs exactly that one entry.
  */
 
-vi.mock('$lib/catalog/thumbnails', () => ({ generateThumbnail: vi.fn() }));
-vi.mock('$lib/util/progress-tracker', () => ({
+vi.mock('#lib/catalog/thumbnails.js', () => ({ generateThumbnail: vi.fn() }));
+vi.mock('#lib/util/progress-tracker.js', () => ({
   progressTrackerStore: { addProcess: vi.fn(), updateProcess: vi.fn(), removeProcess: vi.fn() }
 }));
 
-vi.mock('$lib/catalog/db', async () => {
+vi.mock('#lib/catalog/db.js', async () => {
   const { default: Dexie } = await import('dexie');
   const db = new Dexie('catalog-index-sync-facts-test');
   db.version(1).stores({ series_metadata: 'series_key', catalog_index: 'id' });
@@ -42,7 +42,7 @@ vi.mock('$lib/catalog/db', async () => {
 });
 
 const getActiveProvider = vi.fn();
-vi.mock('$lib/util/sync/provider-manager', () => ({ providerManager: { getActiveProvider } }));
+vi.mock('#lib/util/sync/provider-manager.js', () => ({ providerManager: { getActiveProvider } }));
 
 const POISON = 'Bad Entry';
 
@@ -58,8 +58,8 @@ const POISON = 'Bad Entry';
  */
 const { poison } = vi.hoisted(() => ({ poison: { mode: 'clone' as 'clone' | 'merge' } }));
 
-vi.mock('$lib/metadata/catalog-file', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('$lib/metadata/catalog-file')>();
+vi.mock('#lib/metadata/catalog-file.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('#lib/metadata/catalog-file.js')>();
   return {
     ...actual,
     catalogEntryToSeriesFile: (entry: CatalogFileEntry) => {
@@ -76,7 +76,7 @@ vi.mock('$lib/metadata/catalog-file', async (importOriginal) => {
   };
 });
 
-import { db } from '$lib/catalog/db';
+import { db } from '#lib/catalog/db.js';
 
 function entry(series_title: string, anilist: number) {
   return {

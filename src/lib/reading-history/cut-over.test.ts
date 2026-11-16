@@ -1,11 +1,11 @@
 import 'fake-indexeddb/auto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('$app/environment', () => ({ browser: true }));
+vi.mock('$app/env', () => ({ browser: true }));
 const volumeOcr = vi.hoisted(() => ({
   get: vi.fn(async (_id: string): Promise<unknown> => undefined)
 }));
-vi.mock('$lib/catalog/db', () => ({
+vi.mock('#lib/catalog/db.js', () => ({
   db: {
     volumes: { get: vi.fn(async () => undefined), bulkGet: vi.fn(async () => []) },
     volume_ocr: volumeOcr
@@ -13,7 +13,7 @@ vi.mock('$lib/catalog/db', () => ({
 }));
 
 import { get } from 'svelte/store';
-import { VolumeData, clearVolumes, volumes, volumesWithTrash } from '$lib/settings/volume-data';
+import { VolumeData, clearVolumes, volumes, volumesWithTrash } from '#lib/settings/volume-data.js';
 import { HistoryDexie } from './history-db';
 import { attachProjectedTurns, cutOverLegacyTurns } from './cut-over';
 import { appendEvent } from './record';

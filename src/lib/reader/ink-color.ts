@@ -423,9 +423,7 @@ async function sampleIsMonochrome(image: Blob): Promise<boolean> {
         ? new OffscreenCanvas(size, size)
         : Object.assign(document.createElement('canvas'), { width: size, height: size });
     const ctx = canvas.getContext('2d', { willReadFrequently: true }) as
-      | OffscreenCanvasRenderingContext2D
-      | CanvasRenderingContext2D
-      | null;
+      OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D | null;
     if (!ctx) throw new Error('no 2d context');
     ctx.drawImage(bitmap, 0, 0, size, size);
     return isMonochrome(ctx.getImageData(0, 0, size, size));

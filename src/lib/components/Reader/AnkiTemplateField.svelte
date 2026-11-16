@@ -1,7 +1,7 @@
 <script lang="ts">
   import { ChevronRightOutline } from 'flowbite-svelte-icons';
   import { slide } from 'svelte/transition';
-  import { fieldHtmlToPreviewText } from '$lib/anki-connect/field-html';
+  import { fieldHtmlToPreviewText } from '#lib/anki-connect/field-html.js';
 
   type TemplateButton = {
     readonly template: string;
@@ -227,8 +227,7 @@
             class="block w-full resize-none overflow-hidden rounded-lg border border-gray-300 bg-gray-50 p-2 font-mono text-sm text-gray-900 focus:border-blue-500 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white dark:placeholder-gray-400 dark:focus:border-blue-500 dark:focus:ring-blue-500"
             rows="1"
             oninput={handleInput}
-            use:initTextarea
-          ></textarea>
+            use:initTextarea></textarea>
 
           {#if hint}
             <p class="text-xs text-gray-500 dark:text-gray-400">{hint}</p>
@@ -261,8 +260,7 @@
             class="block w-full resize-none overflow-hidden rounded-lg border border-gray-300 bg-gray-50 p-2 font-mono text-xs text-gray-900 focus:border-blue-500 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white dark:placeholder-gray-400 dark:focus:border-blue-500 dark:focus:ring-blue-500"
             rows="1"
             oninput={handleInput}
-            use:initTextarea
-          ></textarea>
+            use:initTextarea></textarea>
 
           {#if hint}
             <p class="text-xs text-gray-500 dark:text-gray-400">{hint}</p>

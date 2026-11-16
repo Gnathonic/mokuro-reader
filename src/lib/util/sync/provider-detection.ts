@@ -1,5 +1,5 @@
-import { browser } from '$app/environment';
-import { GOOGLE_DRIVE_CONFIG } from '$lib/util/sync/providers/google-drive/constants';
+import { browser } from '$app/env';
+import { GOOGLE_DRIVE_CONFIG } from '#lib/util/sync/providers/google-drive/constants.js';
 import type { ProviderType } from './provider-interface';
 
 /** localStorage key for tracking the active cloud provider */

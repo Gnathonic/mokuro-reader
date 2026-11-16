@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { concatBytes, fromBase64, toBase64Url, utf8 } from './bytes';
 
-/** The server's environment, as `$env/dynamic/private` hands it over. */
+/** The server's environment, as `$app/env/private` hands it over (declared in src/env.ts). */
 export type AuthEnv = Record<string, string | undefined>;
 
 /** One cookie-sealing key and the id a sealed cookie names it by. */

@@ -5,8 +5,8 @@
     detectSeriesConflicts,
     generateMergeSeriesPreview,
     executeMergeSeries
-  } from '$lib/util/series-merge';
-  import type { SeriesConflict, MergeSeriesPreview } from '$lib/util/series-merge';
+  } from '#lib/util/series-merge.js';
+  import type { SeriesConflict, MergeSeriesPreview } from '#lib/util/series-merge.js';
 
   let conflicts: SeriesConflict[] = $state([]);
   let loading = $state(true);
@@ -176,8 +176,7 @@
       </Alert>
     {:else if conflicts.length === 0}
       <Alert color="green">
-        <strong>Great news!</strong> No series conflicts were found. All your series have consistent
-        UUIDs.
+        <strong>Great news!</strong> No series conflicts were found. All your series have consistent UUIDs.
       </Alert>
     {:else}
       <!-- Conflicts List -->

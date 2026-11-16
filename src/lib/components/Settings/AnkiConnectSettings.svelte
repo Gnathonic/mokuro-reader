@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { page } from '$app/stores';
-  import { settings, updateAnkiSetting } from '$lib/settings';
+  import { page } from '$app/state';
+  import { settings, updateAnkiSetting } from '#lib/settings/index.js';
   import {
     AccordionItem,
     Button,
@@ -18,7 +18,7 @@
     fetchConnectionData,
     isAnkiUrlTrusted,
     openConfigureModal
-  } from '$lib/anki-connect';
+  } from '#lib/anki-connect/index.js';
   import { onMount } from 'svelte';
 
   // Connection state
@@ -132,7 +132,7 @@
     <!-- Setup Instructions -->
     <Helper>
       To use AnkiConnect integration, add this reader (<code class="text-primary-500"
-        >{$page.url.origin}</code
+        >{page.url.origin}</code
       >) to your AnkiConnect <b class="text-primary-500">webCorsOriginList</b> setting.
     </Helper>
 

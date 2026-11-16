@@ -117,8 +117,7 @@ async function readCapped(request: Request, limit: number): Promise<Uint8Array> 
 }
 
 export type Validated =
-  | { ok: true; body: Record<string, unknown> }
-  | { ok: false; response: Response; event: string };
+  { ok: true; body: Record<string, unknown> } | { ok: false; response: Response; event: string };
 
 /**
  * The checks every route runs before any crypto or Google call: JSON only,

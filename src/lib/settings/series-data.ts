@@ -1,13 +1,13 @@
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 import { get, writable } from 'svelte/store';
 import {
   FUTURE_TOLERANCE_MS,
   isRecord,
   normalizeUpdatedAt,
   sanitizeTracking
-} from '$lib/metadata/sanitize';
-import { normalizeSeriesKey } from '$lib/metadata/series-key';
-import type { SeriesTracking } from '$lib/metadata/types';
+} from '#lib/metadata/sanitize.js';
+import { normalizeSeriesKey } from '#lib/metadata/series-key.js';
+import type { SeriesTracking } from '#lib/metadata/types.js';
 
 /**
  * Series-level READING STATE: how many times a series has been read, whether
@@ -54,8 +54,7 @@ export type SeriesReadingStatePatch = Partial<Omit<SeriesReadingState, 'lastUpda
  * silently undo the other's edit.
  */
 export type SeriesReadingStatePatchInput =
-  | SeriesReadingStatePatch
-  | ((existing: SeriesReadingState) => SeriesReadingStatePatch);
+  SeriesReadingStatePatch | ((existing: SeriesReadingState) => SeriesReadingStatePatch);
 
 function emptyState(): SeriesReadingState {
   return { read_count: 0, lastUpdated: new Date(0).toISOString() };

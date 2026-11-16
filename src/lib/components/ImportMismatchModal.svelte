@@ -1,7 +1,7 @@
 <script lang="ts">
   import { Modal, Button, AccordionItem, Accordion } from 'flowbite-svelte';
   import { ExclamationCircleSolid } from 'flowbite-svelte-icons';
-  import { importMismatchModalStore, type ImportMismatchInfo } from '$lib/util/modals';
+  import { importMismatchModalStore, type ImportMismatchInfo } from '#lib/util/modals.js';
 
   let open = $derived($importMismatchModalStore?.open ?? false);
   let volumes = $derived($importMismatchModalStore?.volumes ?? []);

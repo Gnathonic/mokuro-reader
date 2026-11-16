@@ -1,7 +1,7 @@
 import { get } from 'svelte/store';
-import { migratePageTurnData } from '$lib/settings/reading-speed';
-import { VolumeData, projectedTurnsOf, volumesWithTrash } from '$lib/settings/volume-data';
-import { turnKey } from '$lib/util/sync/volume-record-merge';
+import { migratePageTurnData } from '#lib/settings/reading-speed.js';
+import { VolumeData, projectedTurnsOf, volumesWithTrash } from '#lib/settings/volume-data.js';
+import { turnKey } from '#lib/util/sync/volume-record-merge.js';
 import type { HistoryDexie } from './history-db';
 import { convertLegacyRecord } from './legacy';
 import { notifyEventsRecorded } from './record';

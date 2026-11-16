@@ -22,13 +22,13 @@
  * keep ignoring them.
  */
 
-import { CATALOG_FILE_NAME, isCatalogFilePath } from '$lib/metadata/catalog-file';
-import { SERIES_FILE_NAME, isSeriesFilePath } from '$lib/metadata/series-file';
-import { GOALS_FILE_NAME } from '$lib/goals/goals-file';
-import { compareCodePoints, foldName, splitAtDots } from '$lib/util/names/fold';
-import { isHistoryFilePath } from '$lib/reading-history/paths';
-import { POSITIONS_FILE_NAME } from '$lib/positions/positions-file';
-import { isReservedLayerId } from '$lib/reader/edit/layer-names';
+import { CATALOG_FILE_NAME, isCatalogFilePath } from '#lib/metadata/catalog-file.js';
+import { SERIES_FILE_NAME, isSeriesFilePath } from '#lib/metadata/series-file.js';
+import { GOALS_FILE_NAME } from '#lib/goals/goals-file.js';
+import { compareCodePoints, foldName, splitAtDots } from '#lib/util/names/fold.js';
+import { isHistoryFilePath } from '#lib/reading-history/paths.js';
+import { POSITIONS_FILE_NAME } from '#lib/positions/positions-file.js';
+import { isReservedLayerId } from '#lib/reader/edit/layer-names.js';
 
 const ROOT_CONFIG_FILENAMES = new Set([
   'volume-data.json',
@@ -113,10 +113,30 @@ export function dedupKeepsEveryCopy(basename: string): boolean {
 export const QUEUE_FILE_NAME = '.mokuro-queue.json';
 export const BUNKO_MARKER_NAME = '.mokuro-bunko.json';
 
-/** Is this basename one of Bunko's control files (R8: by its fold)? */
+/** Is this basename one of Bunko's ROOT control files (R8: by its fold)? */
 export function isBunkoControlFile(basename: string): boolean {
   const folded = foldName(basename);
   return folded === QUEUE_FILE_NAME || folded === BUNKO_MARKER_NAME;
+}
+
+/**
+ * Bunko's per-series OCR queue file (queue file v2): `<Series>/` + this name,
+ * one per series folder that owes OCR. A control file like the two above —
+ * read by name (`readControlFile(name, { folder })`), never listed, so it stays
+ * OUT of {@link isSyncableFile} — but it lives in a SERIES folder, so it is not
+ * an {@link isBunkoControlFile} (that one names the root files only). The name
+ * folds to neither root name, so a released reader's exact-name hooks stay
+ * silent for it.
+ */
+export const SERIES_QUEUE_FILE_NAME = '.mokuro-series-queue.json';
+
+/**
+ * Is this basename the series queue file (R8: by its fold)? Two spellings of
+ * one series folder are compared the same way: `foldName` on both (R1), so
+ * `Example Saga/`, `example saga/` and an NFD spelling are one folder.
+ */
+export function isSeriesQueueFile(basename: string): boolean {
+  return foldName(basename) === SERIES_QUEUE_FILE_NAME;
 }
 
 /**

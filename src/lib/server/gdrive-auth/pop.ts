@@ -69,8 +69,7 @@ export function parseProof(value: unknown): PopProof | null {
 }
 
 export type ProofCheck =
-  | { ok: true; thumbprint: string }
-  | { ok: false; reason: 'clock' | 'bad_key' | 'bad_signature' };
+  { ok: true; thumbprint: string } | { ok: false; reason: 'clock' | 'bad_key' | 'bad_signature' };
 
 /**
  * Check a well-formed proof for `path` at `origin`: its clock, then its

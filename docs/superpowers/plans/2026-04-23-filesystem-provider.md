@@ -85,10 +85,7 @@ Replace the `AnyCloudFileMetadata` union:
 
 ```typescript
 export type AnyCloudFileMetadata =
-  | DriveFileMetadata
-  | MegaFileMetadata
-  | WebDAVFileMetadata
-  | FilesystemFileMetadata;
+  DriveFileMetadata | MegaFileMetadata | WebDAVFileMetadata | FilesystemFileMetadata;
 ```
 
 - [ ] **Step 3: Type-check**
@@ -1620,8 +1617,8 @@ Immediately before that `{#if}`, add:
     {/snippet}
     <div class="flex flex-col gap-2">
       <span>
-        <span class="font-medium">Permission needed:</span> Reconnect to grant the browser access to
-        the folder you chose previously.
+        <span class="font-medium">Permission needed:</span> Reconnect to grant the browser access to the
+        folder you chose previously.
       </span>
       <Button
         size="xs"

@@ -1,6 +1,6 @@
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 import { writable, type Readable } from 'svelte/store';
-import { showSnackbar } from '$lib/util/snackbar';
+import { showSnackbar } from '#lib/util/snackbar.js';
 import { anilistRequest, AniListError } from './providers/anilist';
 
 const TOKEN_KEY = 'anilist_token';
@@ -185,9 +185,7 @@ export async function handleAniListCallbackHash(hash: string): Promise<boolean> 
  * from the future, proves nothing about when the login started).
  */
 export type AniListLoginMarker =
-  | { state: 'started'; hash: string }
-  | { state: 'expired'; hash: string }
-  | { state: 'none' };
+  { state: 'started'; hash: string } | { state: 'expired'; hash: string } | { state: 'none' };
 
 /** Read the marker startAniListLogin() saved, and clear it (one use). */
 export function consumeAniListLoginMarker(): AniListLoginMarker {

@@ -109,7 +109,28 @@ src/
 └── app.d.ts                   # App-level type definitions
 ```
 
-**Routing:** The app uses a hash-based router (`$lib/util/hash-router.ts`) with views loaded dynamically from `$lib/views/`. Routes like `#/series/uuid` or `#/reader/uuid` are handled client-side.
+**Routing:** The app uses a hash-based router (`src/lib/util/hash-router.ts`) with views loaded dynamically from `src/lib/views/`. Routes like `#/series/uuid` or `#/reader/uuid` are handled client-side.
+
+**Imports and config (SvelteKit 3):** `src/lib` is imported as `#lib/...`, a subpath import
+declared in package.json (`"imports": { "#lib/*": "./src/lib/*" }`; SvelteKit 3 provides no
+`$lib` and its `alias` option is deprecated). A subpath import names a file, so write the
+extension it resolves with: a `.ts`/`.js` module as `.js` (`#lib/catalog/db.js`), a directory
+as `/index.js`, a `.svelte` file or asset as it is, a `?query` after the extension.
+`$app/env` (not the deprecated `$app/environment`), and the server env from
+`$app/env/private` (not `$env/dynamic/private`). A worker's `new URL(…, import.meta.url)` stays
+relative: `#lib` in a URL is a fragment. A branch still carrying `$lib` imports runs
+`node scripts/migrate-lib-subpath.mjs | xargs -r npx prettier --write` (idempotent; issue #359;
+it only REPORTS `$env/dynamic/private`, whose replacement is `import * as env`, a hand fix).
+`src/migrate-lib-subpath.test.ts` runs its `--check` on the repo, so any old specifier fails
+`npm test` — including one in a `vi.mock` string, where `$app/environment` still resolves (to
+a module nothing imports) and the mock would silently never apply.
+SvelteKit's options live in `vite.config.ts` (`sveltekit({...})`); there is no
+`svelte.config.js`. The app registers its own service worker (`src/lib/util/sw-register.ts`, from
+`hooks.client.ts`) with SvelteKit's registration off: SvelteKit 3 registers it
+`{ type: 'module' }` in every build, the app CLASSIC in production, as SvelteKit 2 did.
+`scripts/check-service-worker.mjs` (part of `npm run build`) runs the built worker and fails if
+it no longer parses as a classic script or if a path it precaches is missing from the output
+(`addAll` is all-or-nothing: no client could install).
 
 ### State Management
 
@@ -434,7 +455,7 @@ interface VolumeFiles {
 **Usage:**
 
 ```typescript
-import { db } from '$lib/catalog/db';
+import { db } from '#lib/catalog/db.js';
 
 // Query volumes
 const volumes = await db.volumes.toArray();
@@ -458,7 +479,7 @@ import {
   listLayerMetas,
   getLayerPages,
   putLayerWithPages
-} from '$lib/catalog/layer-store';
+} from '#lib/catalog/layer-store.js';
 
 const layers = await listLayerMetas(db, volume_uuid); // metadata only — never reads pages
 const pages = await getLayerPages(db, volume_uuid, layer_id); // one layer's pages
@@ -479,7 +500,7 @@ on "remove from device".
 
 Thumbnails are generated automatically on app load via `startThumbnailProcessing()`.
 
-**Volume states** (`$lib/catalog/volume-state.ts` — always test them through
+**Volume states** (`src/lib/catalog/volume-state.ts` — always test them through
 `isVolumeInstalled(v)` / `needsDownload(v)`, never the raw flags):
 
 | State         | Row? | `volume_ocr` / `volume_files` | Marked by             |
@@ -660,8 +681,8 @@ keepsake — a case merge's `curated-<n>`, its copy of a second, different
 They are filed kind `edit` whatever `ocr_engine` stamp their file carries, and
 a pull never re-files one as `ocr`. `pre-upgrade*` and `previous-ocr*` are
 NOT special: bunko no longer writes or reserves them, so a layer under one of
-those ids is an ordinary hand-made layer everywhere — named from its id,
-filed by its stamp, pushed, uploaded beside a backup and deleted under the
+those ids is an ordinary hand-made layer everywhere — named by what made
+its file (below), filed by its stamp, pushed, uploaded beside a backup and deleted under the
 same rights as any other library file.
 Two capabilities say what this server does with them
 (`ProviderStatus`): `editLayerSync` is `push` when bunko's identity lists
@@ -869,6 +890,57 @@ answer a client PUT of `curated` without the right, or of `curated-<n>`, with
 any other hand-made layer); and (cloud-direct) write `curated: true` into the marker when the folder's
 owner may publish.
 
+**What OCR is called** (`reader/edit/ocr-label.ts`, pure). The primary and
+every layer read from a file are named by what MADE the file: its
+`ocr_engine.parts` (bunko: each tool, display order, `name` already a display
+name, `version` optional) joined as "Hayai Nova 2.5 · PP-OCR Manga 0.3"; else
+its `ocr_engine.id`'s display name (`layerNameForId`: "Hayai Nova", "PP-OCR
+Manga"); else mokuro's — `mokuro <version>`, plain `mokuro` for an image-only
+volume. Malformed `parts` (not an array of objects with a string `name`) count
+as none.
+
+- **The primary** is named by the maker of the CURRENT main,
+  `VolumeMetadata.ocr_maker` (`MainOcrMaker`: engine id, parts, version;
+  `mainMakerOfFile`), set by every install (`saveVolume`), the image-only
+  upgrade and the OCR upgrade's `upgraded` (a file with no `ocr_engine` is
+  mokuro's, whatever the replaced main was; an EDITED file's maker is unknown:
+  cleared) and `recorded` with a stamped file; promoting a layer that knows its
+  maker (`mainMakerOfLayer`: engine/`maker_engine`, parts, version) takes that
+  layer's, any other promote keeps the main's. An edit keeps it: an edited
+  Bunko main still reads "Hayai Nova 2.5 · …", never "mokuro 0.2.5" (the
+  version Bunko writes). A row from before `ocr_maker`: its newest provenance
+  entry while unedited, else `mokuro <version>`.
+- **Layers.** A row remembers its file's `ocr_parts` and `mokuro_version` —
+  the version its PAGES name (mokuro writes it on every page and the reader
+  keeps it), else the file's — both unindexed (`layerFileMaker`). An `edited`
+  file, or one with no `ocr_engine` (a file the reader wrote, re-imported) over
+  a row that already knows its maker, leaves them as they were
+  (`makerFieldsOnWrite`). Ids that say what a layer IS keep their names
+  (corrections, `curated`, hand-made ids); an engine layer without parts is
+  still named from its id. A set-aside main (`pre-upgrade[-n]`,
+  `previous-ocr[-n]`) and the upgrade's `updated-ocr` are named by their maker
+  ("mokuro 0.2.2"); `updated-ocr` keeps its engine in `maker_engine`, for the
+  name only (an `engine` would file the mirror as server model output). Rows
+  stored before versions were kept get theirs from their pages once per
+  browser (`backfillSetAsideLayerVersions`, `set-aside-versions.ts`).
+- **Whose name.** A typed name is the user's for good: a rename and a layer
+  made by name set `named_by_user`, every rewrite carries it, and such a row is
+  never relabelled. A row is relabelled only when it came from a file (cloud
+  stamp, engine, maker fields, archive or upgrade marks) and still has a name
+  the reader gave it (`isAutoNamedLayer`): the title-cased slug, the id's
+  display name, v1.10.0's "Previous OCR"/"Previous OCR (n)" for
+  `previous-ocr*` (`PREVIOUS_OCR_NAME_RE`, shared with its cleanup), "Updated
+  OCR" for `updated-ocr`, or its current label. Such a row is SHOWN with the
+  current label (`summarizeLayers`) and re-named on every rewrite from a file
+  (`layerNameOnWrite`).
+- **Pending server jobs** (`server-ocr-pending.ts`) are named the same way
+  from the queue file's optional per-job `parts` (malformed → dropped, the job
+  kept), else their generation id — the main file's job too, never "Text". A
+  line shows the recognizer alone, the parts without versions only where two
+  lines would read the same, cut to 16 characters (`distinctShortNames`); the
+  label keeps the full name. Lines run soonest first: running by ETA, queued by
+  ETA, then unpriced and held, ties in the server's order.
+
 Edit mode is paged-mode only (`Reader.svelte` bails out under continuous
 scroll). It's entered by the `E` key, the quick actions menu, the settings
 toggle, or "Edit text" in the text-box context menu — all funnel through the
@@ -1006,14 +1078,48 @@ min`); `released` at once; rank epoch desc, claimed_at asc, instance_id asc.
   beside readable ones keeps its last record, and a read with NO node keeps
   the still-fresh records UNSTAMPED, so they go stale at 2 × ttl — the scope
   is forgotten only once nothing kept is fresh.
-- `.mokuro-queue.json` (`server-ocr-queue.ts`, `cloudSourceFor`): the server
-  queue file plus `instance_id`, `truncated` and `done[]`. Trusted only when
-  `instance_id` names the top-ranked fresh marker. The cloud poller keeps
-  going while the tab is visible (per-provider floors; MEGA also on its live
-  tree's events), completes a volume ONLY via `done[]` (absence from a
-  truncated list is waiting), and then relists (the hook `+layout.svelte`
-  sets), runs the OCR upgrade pass and pulls layers — never
-  `pullCompletedVolume`. Cloud uploads are watched while a marker is fresh.
+- Queue file v2 (bunko `docs/design/queue-file-v2.md`): NO root queue file is
+  read from a cloud library. The marker's `series_queue` block carries the
+  hold, held rows and the ETA work clock; `MarkerPoller`
+  (`server-ocr-queue.ts`) reads the marker every max(floor, ttl/3) while the
+  tab is visible (MEGA also on root control-file events). Each series folder
+  holds `.mokuro-series-queue.json` (`series-queue.ts`: parser, clock, trust,
+  slice), read ONLY by the open series page's loop (`series-queue-loop.ts`,
+  hooked from `SeriesView`): a stored copy counts only when its
+  `instance_id` names a fresh holder with `series_queue`, the highest `rev`
+  wins, a lower `rev` and torn JSON keep the last good copy. Over a bunko
+  server the virtual file carries `live` and is trusted as is; a 404 for a
+  series the listing holds marks that server v1 for the session and hands it
+  to its root-file `QueuePoller`. Cards read `seriesQueueStore` (one slice per
+  series, set only when what they show changed) before the v1 statuses
+  (`pendingStatusFor`). Completions (a job gone, a newer `done` entry) run
+  the SCOPED pull (`SeriesPulls` in `server-ocr-queue.ts`), on a cloud
+  library and on the connected bunko server alike: per series, debounced
+  10 s, ≥ 60 s apart, one in flight, retried at +60/+120/+240 s while
+  neither `series.json` nor a finished volume's sidecar moved.
+  `unifiedCloudManager.refreshSeriesFolder(S)` lists ONLY S (Drive: the
+  change feed when `changeFeedUsable()`, else `listFolder`; others
+  `listFolder`) and swaps only the cached entries under `S/`
+  (`CloudCache.replaceFolderEntries`, which replays writes made meanwhile,
+  `CoalescedCacheStore.beginPartialListing`), then
+  `refreshSeriesIndexForSeries(S)`; then the upgrade pass and
+  `pullLayersForVolume` per finished local row. NEVER `refreshSeriesIndexes`
+  with a partial map (it deletes other series' indexes) and never a
+  whole-account `fetchAllCloudVolumes`. The manifest pull
+  (`pullCompletedVolume`) is kept only for deep links and v1 servers.
+- Watches (uploads to a library a Bunko runs, deep-link imports; 24 h) are
+  read off their page by `WatchSchedule` (`series-queue-watch.ts`): first at
+  creation + 2 W, then at the soonest watched ETA + W (≥ W, ≤ 15 min), at
+  most 20 series in rotation, paused while hidden. An upload watch reads
+  through the connected library (`lookSeriesQueue`: the page loop's memo,
+  trust and completions) and waits while that library is not connected or
+  the page is open; a deep link's reads `<dav root>/<S>/.mokuro-series-queue.json`
+  through the link's origin, anonymously under the link's redirect rule
+  (`fetchForPull`), and its 404 hands the server to its v1 poller. Done or
+  vanished ends the watch (a link's through its manifest); never listed
+  after 2 reads → one scoped pull, and a `.mokuro` newer than the watch
+  completes it. `saveWatches` is debounced 1 s (flushed when the tab hides):
+  a bulk upload no longer rewrites every watch per volume.
 - Folder dedup keeps EVERY copy of both control files when duplicate roots
   merge (`dedupKeepsEveryCopy`, beside the merged root files): trashing the
   older one would pull a marker or queue out from under a running Bunko. A
@@ -1106,7 +1212,7 @@ re-fetches it and swaps the new OCR in — automatically, in the background
   device edits it, and that device published this file as the edit's base.
 - **Edited volumes keep their edits.** With `ocr_edited_at` set, a file equal
   to the pre-edit `original` layer only records the hash; otherwise it is
-  filed as the `updated-ocr` layer ("Updated OCR", kind `ocr`) carrying
+  filed as the `updated-ocr` layer (named by its maker, kind `ocr`) carrying
   `source_sha256` and `source_at` (= `updated_at` while untouched, compared
   like `passive_at`). While untouched that row is a mirror of the cloud's own
   primary: never pushed as a layer file (`layerNeedsPush`, the backup's layer
@@ -1603,9 +1709,9 @@ must hold:
 
 - A view counts its raw dwell up to its CAP: `clamp(k × chars_visible × pace,
 60 s, 30 min)`, pace = median ms/char of the newest 500 views (≥ 30 needed,
-  else 5 min), or the synced manual override. Over the cap the reader ASKS
-  (phase 3b, below); unanswered, it counts TYPICAL time (`expected`, at least
-  the floor), provisionally.
+  else 5 min), or the synced manual override. Over the cap it counts the CAP
+  unless answered (phase 3b, below) — the released timer's rule (time on a
+  page stopped counting at the cutoff). Never default to "typical" time.
 - A view faster than 1500 cpm is a SKIP: its time counts, never its speed; a
   page only skip views showed is skimmed, not read (`skippedChars`, shown apart).
   Per pass (split at `restart`) a page's characters count once.
@@ -1627,8 +1733,8 @@ freeze) + history after` (`figuresFor`, via the engine's per-volume
 - `timeReadInMinutes` is frozen: parsed, never written. The volume editor
   edits the derived time and records the difference as an `adjust` event (no
   record stamp). The reader timer is that figure plus the open view counted by
-  the same rule (`countedDwell`: up to its cap, or as a standing long-pause
-  default counts it); clicking it ends the view until the next page.
+  the same rule (`countedDwell`: up to its cap); clicking it ends the view
+  until the next page.
 - Recent speed = the newest 8 h of counted reading, by time (no per-volume
   window); under 30 min, completed volumes' BASELINES fill in. A series' own
   speed (≥ 60 min of its reading) drives its time left (`series-speeds.ts`,
@@ -1637,14 +1743,16 @@ freeze) + history after` (`figuresFor`, via the engine's per-volume
   `volume-data.json` (`tracking-data.ts`), per key newest-wins with the
   series section's clamp + forfeit-on-bogus and raw upload comparison.
 
-**Long pauses (phase 3b).** A view that reaches its cap is ASKED about, never
-guessed: `pause-watch.ts` arms one timer at `since + cap` (re-armed when the
-pace, `k` or the override moves) and `LongPausePrompt.svelte` asks, non-modal,
-above the page — never inside `Timer.svelte`, whose markup hides with the HUD.
-Rules that must hold:
+**Long pauses (phase 3b).** A view that reaches its cap stops the timer and
+counts the cap unless the user says otherwise. `pause-watch.ts` arms one timer
+at `since + cap` (re-armed when the pace, `k` or the override moves) and, while
+`tracking.pauses.ask` is on (the default), `LongPausePrompt.svelte` says so,
+non-modal, above the page — never inside `Timer.svelte`, whose markup hides
+with the HUD. Nothing NEEDS an answer. Rules that must hold:
 
 - An answer is a `resolve` event (`volume`, `target: [device, seq]`, `count`
-  = `full` | `typical` | `none`), kind 5 inside segment format 1. `volume` is
+  = `full` | `typical` | `none`; `typical` is no longer offered, but recorded
+  ones still count), kind 5 inside segment format 1. `volume` is
   the target's, so everything keyed by volume (turns store, codec, index)
   handles it unchanged. The latest answer per target wins in event order
   (t, device, seq) on every device; nothing is ever edited.
@@ -1654,8 +1762,9 @@ Rules that must hold:
   later event, so a page turn or close loses no answer; the continuation earns
   no new characters (a page counts once per pass).
 - `countedDwell` is the one rule for engine and live timer: `full` = the raw
-  dwell, `none` = 0, `typical` or unanswered-over-cap = typical. Live, an
-  unanswered view STOPS at its cap while the prompt asks; a view that just
+  dwell, `none` = 0, `typical` = typical, unanswered = up to the cap. Live, an
+  open view STOPS at its cap (every answer splits it, so the open view is
+  never answered); a view that just
   ended adds `endedViewMs` (what the stats will count) until the stats move,
   so the timer is exact both ways — no dip on a page turn, and no kept
   minutes after "Don't count" (it used to only ever rise). An answer
@@ -1668,16 +1777,19 @@ Rules that must hold:
 floor`: its time reflects the floor, not pace — fitting `k` to one tap on a
   one-bubble page raised every other page's cap ~5.5×). `k` shares
   `tracking.idle`'s stamp with the override; Settings shows the widening with
-  a Reset.
-- Two minutes past the cap the prompt shows how long the page has been open:
-  count all / typical / none. Unanswered (turn, hide, pause click, close) the
-  pause counts typical and is listed PROVISIONAL on the reading-speed page
-  (`pause-review.ts`, `LongPausesCard.svelte`), where any answer can change.
-- "Always do this" appears once 3 pauses are answered — DERIVED from the
-  answers across every volume and device, never stored. The standing default
-  is `tracking.pauses` (its own key and stamp), written as a view's answer
-  when the view ENDS, only for views that reached the cap while it was set —
-  never backwards over the review list.
+  a Reset (only while automatic: a fixed cutoff is never stretched).
+- The prompt's copy and buttons (`pause-answer.ts` `PauseAnswer`, one pure
+  function for all of them): at the cap "No page turn for N, so the timer
+  stopped." → Still reading, Close (= keep), Don't ask again; two minutes past
+  it "This page was open M. N counted." → Keep N, Count all M, Count none,
+  Don't ask again. Keep and Close split the view UNANSWERED; Don't ask again
+  is Keep plus `setAskOnLongPause(false)`. A page turn, hide or pause click
+  ends the view unanswered. There is no review list and no standing answer:
+  `tracking.pauses` is `{ ask, lastUpdated }` (its own key and stamp); an
+  older build's `{ default }` reads as `ask: false` when one was set.
+- Settings show both as one "Reading timer" card (`ReadingTimerSetting.svelte`):
+  "Stop the timer after" (Automatic or fixed minutes) and "Ask if I'm still
+  reading".
 - Converted `legacy:` views are never prompted; over the cap they still count
   nothing, and a `resolve` aimed at one is ignored.
 - `e2e/long-pauses.spec.ts` drives all of it on Playwright's page clock
@@ -1744,18 +1856,16 @@ merged_into?, lastUpdated}`, `tracking-data.ts`) — never in `device.json`,
   recounts. "Before history" = legacy views + the pre-history baseline, so rows
   sum to the page's totals; volume-editor `adjust`s are an "Edits" row. Both
   hidden at zero, neither renamable. Speed shows only with ≥ 30 min of samples.
-- One edit component (`DeviceNameField.svelte`), three entry points: the
-  "Devices" block on `#/cloud` (`DevicesSettings.svelte`, once ≥ 2 raw ids are
-  known, so an unmerge stays reachable), inline rename in the reading-speed
-  page's per-device card (`DeviceStatsCard.svelte`, ≥ 2 groups with native
-  events) and `SecondDeviceBanner.svelte` under that page's heading (same rule,
-  this device unnamed, `localStorage` `device-banner:dismissed` unset — per
-  browser). The banner stays as "Saved." after naming until closed (no layout
-  motion). A single-device user sees none of them.
+- NO device UI for now (owner, 2026-11-07): the cloud page's Devices block,
+  the reading-speed page's per-device card and its "name this device?"
+  banner were removed as clutter. Readable labels and a clean "where you
+  read" breakdown are wishlisted. The data layer stays — labels still parse,
+  merge and sync (`tracking-data.ts` setters included), and `deviceStats` is
+  a lazy store nothing subscribes to — so a later UI starts from real data.
 - The position offer names the offering device by its label ("on Pixel 8");
   a device this one knows nothing about keeps "on another device".
-- `e2e/devices.spec.ts` drives all of it: two browser contexts plus a third
-  device planted on the WebDAV stub (`device.json` + an encoded month).
+- `e2e/devices.spec.ts` drives the offer's device name: browser contexts on
+  the WebDAV stub (`device.json` + an encoded month).
 
 **Cloud (phase 2a).** Each device uploads ONLY its own events, one file per UTC
 month, `history/<device>/<YYYY-MM>.events` (deflated, versioned rows —
@@ -1928,7 +2038,10 @@ type is not raster.
 cloud cover: surfaces through `createCoverClaims`, the series-open pass through
 `installCoversForSeries` (a candidate builder), the backfill's stale refresh with
 `{ refresh: true }`. Its ladder: fresh row thumbnail → cached in `cloud_covers` (PROMOTED
-onto the row when the volume is metadata-only AND read, `coverBelongsOnRow`) → fetch. The
+onto the row when the volume is metadata-only AND read, `coverBelongsOnRow`) → fetch. A cached cover
+whose recorded stamp is stale against the listing is fetched again (stampless rows wait for the
+14-day expiry); a rewrite at the same key reaches cards already showing it
+(`replaceCoverKeys`). The
 write queue (`cover-persist.ts`) routes by the same predicate. Never fetch or write a cover
 from anywhere else. Synced-progress rows are minted after every progress sync
 (`resolveSyncedProgress`), never from a view mount.
@@ -1971,7 +2084,9 @@ VITE_ANILIST_CLIENT_ID=your_anilist_client_id
   `GDRIVE_SESSION_KEY` (`openssl rand -base64 32`), optional `GDRIVE_SESSION_KEY_PREV`,
   `GDRIVE_CLIENT_ID` (falls back to `VITE_GDRIVE_CLIENT_ID`) and `GDRIVE_POP=off`: the Drive
   auth backend (`docs/gdrive-auth-backend.md`). Secrets never take a `VITE_`/`PUBLIC_` prefix;
-  `npm run build` fails if one set in its env shows up in the output.
+  `npm run build` fails if one set in its env shows up in the output. Every server variable is
+  declared (private, dynamic, optional) in `src/env.ts`: SvelteKit 3's `$env/dynamic/private`
+  exposes only declared variables, so an undeclared one reads as unset on every server.
 - `VITE_ONEDRIVE_CLIENT_ID`: required only for OneDrive sync. Register an
   Azure AD app (any Microsoft account tenant, "common" authority) and add the
   deploy origin as a **Single-page application** redirect URI. Scopes used:
@@ -1981,7 +2096,7 @@ VITE_ANILIST_CLIENT_ID=your_anilist_client_id
   Register an AniList API client (implicit grant) whose redirect URL is the deploy
   origin with a trailing slash. Searching/linking series needs no key.
 - MEGA, WebDAV, and Local Folder require no env vars.
-- `CSP_MODE` (build time, NOT a `VITE_` var — read by `svelte.config.js`):
+- `CSP_MODE` (build time, NOT a `VITE_` var — read by `vite.config.ts`):
   `off` (default) | `report-only` | `enforce`. See "Security headers and CSP".
   Any other value fails the build.
 
@@ -2003,7 +2118,7 @@ SAMEORIGIN`, `Cross-Origin-Opener-Policy: same-origin-allow-popups` (never
   not inherit the page's. That one is NOT phased by `CSP_MODE` — it is enforced
   from the first deploy. No global `Referrer-Policy` (the Drive API key's
   referrer restriction needs the origin).
-- **The shell's CSP** is `kit.csp` (`src/lib/security/csp-policy.js`, mode
+- **The shell's CSP** is SvelteKit's `csp` option (`src/lib/security/csp-policy.js`, mode
   `hash` — never nonces on a CDN-cached shell), phased by `CSP_MODE`. Every
   source in it is justified there; add a third-party host only with the same
   evidence, and NEVER bare `accounts.google.com` / `www.gstatic.com` in
@@ -2080,8 +2195,13 @@ SAMEORIGIN`, `Cross-Origin-Opener-Policy: same-origin-allow-popups` (never
 - mokuro-bunko's rig (`cargo xtask interop rig`, `interop/e2e/rig/`) builds this reader with
   `vite build --mode interop` and drives it through `globalThis.__mokuroInterop` (API v1: connect,
   sync, library, progress, rename/delete, edit/Publish/layer selection, provider/control/history
-  status). `+layout.svelte` installs it only under `CLOUD_TEST_HOOKS`, and
+  status). `+layout.svelte` installs it only under `__MOKURO_TEST_HOOKS__`, and
   `scripts/check-no-test-hooks.mjs` bans its names from the production bundle.
+- Every test-hook guard reads `__MOKURO_TEST_HOOKS__` (the `test` and `interop` modes) or
+  `__MOKURO_INTEROP__` (`interop` only) — boolean `define`s (`vite.config.ts`) — where the guarded
+  code is, never through an imported constant: Rolldown folds such a constant only after it splits
+  chunks, so the hooks a guard called stay exported from a shared chunk, and a guarded `import()`
+  keeps its chunk, in the production build.
 - Each method calls the stores and functions the UI calls for that action (the cloud screen's
   connect, `syncProgress`, the volume editor's rename, the card's delete, the paged page turn —
   `reader/paged-progress.ts`, shared with `Reader.svelte` —, the editor persist path, the layer
@@ -2122,7 +2242,7 @@ SAMEORIGIN`, `Cross-Origin-Opener-Policy: same-origin-allow-popups` (never
   refuses every other request and FAILS the spec that made it (only `apis.google.com/js/api.js`
   and `accounts.google.com/gsi/client`, which `google-scripts.ts` injects on demand, are
   answered, empty). So
-  `src/lib/interop/hermetic.ts` (`INTEROP_BUILD`, MODE interop only — Vitest keeps it off) skips
+  `src/lib/interop/hermetic.ts` (`__MOKURO_INTEROP__`, the interop mode only — Vitest keeps it off) skips
   the Noto Sans JP web font, and `src/hooks.server.ts` serves the shell without `app.html`'s
   other absolute addresses (the font host's preconnects, the jidoujisho icon). A new third-party
   fetch needs the same treatment, or the rig fails.
@@ -2166,7 +2286,7 @@ The sync system (`src/lib/util/sync/`) uses a provider abstraction. To extend:
 Always use the Dexie instance from `src/lib/catalog/db.ts`:
 
 ```typescript
-import { db } from '$lib/catalog/db';
+import { db } from '#lib/catalog/db.js';
 
 // Query volumes
 const volumes = await db.volumes.toArray();

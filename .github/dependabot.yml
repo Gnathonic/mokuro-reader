@@ -14,6 +14,12 @@ updates:
       default-days: 7
     open-pull-requests-limit: 5
     groups:
+      # vitest and its @vitest/* packages pin each other exactly, so a bump of
+      # one alone cannot install (the vitest 5 PR failed npm ci on
+      # @vitest/coverage-v8's peer). Listed first: a package goes to the first
+      # group it matches, majors included.
+      vitest:
+        patterns: [vitest, '@vitest/*']
       npm-minor-and-patch:
         update-types: [minor, patch]
     commit-message:

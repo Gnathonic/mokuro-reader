@@ -6,13 +6,12 @@
     grayscaleActive,
     type SettingsKey,
     updateSetting
-  } from '$lib/settings';
+  } from '#lib/settings/index.js';
   import { Toggle } from 'flowbite-svelte';
   import ScheduledFilterCard from './ScheduledFilterCard.svelte';
   import PageAdjustCard from './PageAdjustCard.svelte';
-  import IdleCutoffSetting from './IdleCutoffSetting.svelte';
-  import LongPauseSetting from './LongPauseSetting.svelte';
-  import { editModeActive, requestEditMode } from '$lib/reader/edit/edit-mode';
+  import ReadingTimerSetting from './ReadingTimerSetting.svelte';
+  import { editModeActive, requestEditMode } from '#lib/reader/edit/edit-mode.js';
 
   let isContinuous = $derived($settings.continuousScroll);
 
@@ -46,6 +45,11 @@
           key: 'swapWheelBehavior',
           text: 'Swap mouse wheel scroll/zoom',
           value: $settings.swapWheelBehavior
+        },
+        {
+          key: 'pageKeysScrollFirst',
+          text: 'Page Up/Down scroll tall pages before turning',
+          value: $settings.pageKeysScrollFirst
         },
         {
           key: 'disableAnimations',
@@ -127,6 +131,4 @@
 <!-- Page brightness / contrast — the images only, never the OCR text -->
 <PageAdjustCard />
 
-<IdleCutoffSetting />
-
-<LongPauseSetting />
+<ReadingTimerSetting />
