@@ -227,6 +227,12 @@ export interface VolumeTotals {
   /** Latest end among `samples` (−Infinity without any). */
   newestSampleEnd: number;
   timeline: TimelinePoint[];
+  /**
+   * `timeline` per pass (index = pass): each pass's own entries, totalled
+   * within it — what the pre-history snapshot's pass explains of its
+   * position (`stats-store.ts`).
+   */
+  passTimelines: TimelinePoint[][];
   /** Non-skip views that counted time, oldest first. */
   samples: SpeedSample[];
   /** Native views over their cap or answered, oldest first. Legacy never. */
@@ -541,7 +547,7 @@ export function countVolume(
   // skipped when only skip views did (an unread legacy turn does neither).
   let measuredChars = 0;
   let skippedChars = 0;
-  const entries: Array<[t: number, ms: number, read: number, skipped: number]> = [];
+  const entries: Array<[t: number, ms: number, read: number, skipped: number, pass: number]> = [];
   const samples: SpeedSample[] = [];
   const credited = new Set<string>();
   const readPages = new Set<string>();
@@ -607,7 +613,7 @@ export function countVolume(
     measuredChars += fresh;
     skippedChars += skimmed;
     passes[view.pass].measuredChars += fresh;
-    entries.push([view.t, ms, fresh, skimmedAny]);
+    entries.push([view.t, ms, fresh, skimmedAny, view.pass]);
     const part = deviceTotals(byDevice, view.device);
     part.timeMs += ms;
     part.readChars += fresh;
@@ -624,7 +630,7 @@ export function countVolume(
     measuredMs += a.ms;
     measuredChars += a.chars;
     passes[a.pass].measuredChars += a.chars;
-    entries.push([a.t, a.ms, a.chars, 0]);
+    entries.push([a.t, a.ms, a.chars, 0, a.pass]);
     const part = deviceTotals(byDevice, a.device);
     part.adjustMs += a.ms;
     part.adjustChars += a.chars;
@@ -683,18 +689,22 @@ export function countVolume(
     if (chars === 0) continue;
     measuredChars += chars;
     passes[reset.pass].measuredChars = 0;
-    entries.push([reset.t, 0, chars, 0]);
+    entries.push([reset.t, 0, chars, 0, reset.pass]);
     deviceTotals(byDevice, reset.device).adjustChars += chars;
   }
 
   entries.sort((a, b) => a[0] - b[0]);
   const timeline: TimelinePoint[] = [];
+  const passTimelines: TimelinePoint[][] = passes.map(() => []);
   let [t0, r0, s0] = [0, 0, 0];
-  for (const [t, ms, read, skipped] of entries) {
+  for (const [t, ms, read, skipped, pass] of entries) {
     t0 += ms;
     r0 += read;
     s0 += skipped;
     timeline.push([t, t0, r0, s0]);
+    const own = passTimelines[pass];
+    const [, pt, pr, ps] = own[own.length - 1] ?? [0, 0, 0, 0];
+    own.push([t, pt + ms, pr + read, ps + skipped]);
   }
 
   for (const p of passes) p.chars = Math.max(0, p.measuredChars) + p.creditChars;
@@ -717,6 +727,7 @@ export function countVolume(
     lastReadAt,
     newestSampleEnd,
     timeline,
+    passTimelines,
     samples,
     pauses,
     byDevice,

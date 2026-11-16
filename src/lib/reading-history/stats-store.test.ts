@@ -540,6 +540,79 @@ describe('credits (#224)', () => {
     expect(measuredFigures(figures)).toEqual({ timeMs: 3 * MIN, chars: 3000 });
   });
 
+  /**
+   * The review's counterexample: a v1.11.0 Reset All (a negative edit) on
+   * one device, and a snapshot frozen LATER on another device that never saw
+   * it (`volume-record-merge.ts` keeps the later freeze). The snapshot holds
+   * the old reading; the edit is explained by it. The pass and the lifetime
+   * must agree on that, or a credit fills the pass and lands on top of a
+   * lifetime figure that already holds the volume.
+   */
+  it('a negative edit a later-frozen snapshot explains: the pass holds what the lifetime holds', async () => {
+    const legacyStats = { time_ms: 120 * MIN, chars: 6000, before: 3 * MIN };
+    await record([
+      { ...v111Reset('ln', 2 * MIN, 6000), time_delta_ms: -120 * MIN } as ReadingEvent
+    ]);
+    let stats = get(readingStats);
+    expect(figuresFor(stats, 'ln', { legacyStats }).chars).toBe(6000);
+    // One pass, nothing archived: the pass is the lifetime.
+    expect(passFiguresFor(stats, 'ln', { legacyStats })).toMatchObject({
+      chars: 6000,
+      measuredChars: 6000
+    });
+    expect(editorStats(stats, 'ln', { legacyStats }).passChars).toBe(6000);
+    expect(pagesNotReadHere(stats, 'ln', SIX, { legacyStats })).toEqual([]);
+    // Counted anyway, on a device that offered every page: nothing to add.
+    await record([credit('ln', 4 * MIN, [1, 2, 3, 4, 5, 6], SIX, 60 * MIN, 6000)]);
+    stats = get(readingStats);
+    expect(figuresFor(stats, 'ln', { legacyStats })).toMatchObject({
+      chars: 6000,
+      timeMs: 120 * MIN,
+      credit: { chars: 0, timeMs: 0 }
+    });
+  });
+
+  it('… the smaller shape: two pages, a negative edit, a snapshot of one or both', async () => {
+    const pages = [300, 300];
+    await record([v111Reset('ls', 2 * MIN, 300)]);
+    for (const chars of [300, 600]) {
+      const source = { legacyStats: { time_ms: 0, chars, before: 3 * MIN } };
+      const stats = get(readingStats);
+      const lifetime = figuresFor(stats, 'ls', source).chars;
+      expect(passFiguresFor(stats, 'ls', source).chars).toBe(lifetime);
+      const offered = pagesNotReadHere(stats, 'ls', pages, source);
+      expect(offered.reduce((n, page) => n + pages[page - 1], 0)).toBe(600 - lifetime);
+    }
+    await record([credit('ls', 4 * MIN, [1, 2], pages, 2 * MIN, 600)]);
+    for (const chars of [300, 600]) {
+      const source = { legacyStats: { time_ms: 0, chars, before: 3 * MIN } };
+      expect(figuresFor(get(readingStats), 'ls', source).chars).toBe(600);
+    }
+  });
+
+  it("the pass's share of the snapshot is its position less what that pass's own events explain", async () => {
+    // Read once before history (archived: its own pass), then 4,000 more,
+    // 1,000 of which history holds (a view before the freeze).
+    const source = {
+      legacyStats: { time_ms: 60 * MIN, chars: 6000 + 4000, before: 10 * MIN },
+      archivedReads: [{ at: -10, chars: 6000 }]
+    };
+    await record([restart('ap', -10), view('ap', MIN, 1, 1000, MIN)]);
+    const stats = get(readingStats);
+    // Not 1,000 + 4,000: the view is part of the old position.
+    expect(passFiguresFor(stats, 'ap', source).chars).toBe(4000);
+    expect(figuresFor(stats, 'ap', source).chars).toBe(10_000);
+    expect(pagesNotReadHere(stats, 'ap', SIX, source)).toEqual([5, 6]);
+  });
+
+  it('a negative edit in an EARLIER pass never inflates the snapshot’s pass', async () => {
+    await record([v111Reset('ep', MIN, 6000), restart('ep', 2 * MIN)]);
+    const source = { legacyStats: { time_ms: 0, chars: 3000, before: 3 * MIN } };
+    const stats = get(readingStats);
+    expect(passFiguresFor(stats, 'ep', source).chars).toBe(3000);
+    expect(figuresFor(stats, 'ep', source).chars).toBe(3000);
+  });
+
   it('… also when the baseline had cut the credit', async () => {
     const legacyStats = { time_ms: 30 * MIN, chars: 4000, before: 1 };
     await record([credit('rc', 10, [1, 2, 3, 4, 5, 6], SIX, 60 * MIN, 6000)]);

@@ -463,6 +463,30 @@ function compare(c: Case, A: World, B: World, device: string) {
     expect(pa.chars).toBeLessThanOrEqual(Math.max(size, pb.chars));
   }
 
+  // The LIFETIME never holds more than its passes do, plus the snapshot's
+  // reads archived before its freeze (passes of their own that history may
+  // not hold): credits bounded per pass are then bounded for the lifetime
+  // too — one pass and nothing archived, never past the volume. Credit-free
+  // (B), one pass, nothing archived: the lifetime IS the pass.
+  const freeze = record.legacyStats?.before ?? Infinity;
+  const archived = sum(
+    (record.archivedReads ?? []).filter((r) => (r.at ?? -Infinity) < freeze).map((r) => r.chars)
+  );
+  const passesA = ta.passes.map((_, pass) => passFiguresFor(a, VOLUME, record, pass).chars);
+  const passesB = tb.passes.map((_, pass) => passFiguresFor(b, VOLUME, record, pass).chars);
+  expect(fa.chars).toBeLessThanOrEqual(sum(passesA) + archived);
+  expect(fb.chars).toBeLessThanOrEqual(sum(passesB) + archived);
+  if (ta.passes.length === 1 && archived === 0) {
+    expect(fb.chars).toBe(passesB[0]);
+    expect(fa.chars).toBeLessThanOrEqual(Math.max(size, fb.chars));
+  }
+
+  // The editor accounts for every credit on the card: its measured figure
+  // plus what its counted lines show is the card's time.
+  const lines = [editorA.counted, editorA.earlier];
+  expect(sum(lines.map((l) => l?.ms ?? 0))).toBeCloseTo(fa.credit.timeMs, 6);
+  expect(sum(lines.map((l) => l?.chars ?? 0))).toBe(fa.credit.chars);
+
   // Speed never sees a credit.
   expect(JSON.stringify(ta.samples)).toBe(JSON.stringify(tb.samples));
   expect(JSON.stringify(ta.pauses)).toBe(JSON.stringify(tb.pauses));
@@ -479,6 +503,8 @@ interface Reached {
   resetsOfCredits: number;
   /** A re-read after every credit was taken back. */
   rereadsAfterCredits: number;
+  /** A Reset All while an EARLIER pass held a live credit. */
+  resetsOfEarlierCredits: number;
 }
 
 function run(c: Case, reached: Reached) {
@@ -492,6 +518,11 @@ function run(c: Case, reached: Reached) {
         reached.editsBelowCredit++;
       }
       if (action.kind === 'resetAll' && counted) reached.resetsOfCredits++;
+      if (
+        action.kind === 'resetAll' &&
+        editorStats(A.state(action.device), VOLUME, c.record).earlier
+      )
+        reached.resetsOfEarlierCredits++;
     }
     // A re-read on a device whose credits were all taken back (retracted, or
     // in a pass Reset All ended): what it adds is what it adds without them.
@@ -534,7 +565,10 @@ function run(c: Case, reached: Reached) {
       expect(pass.chars).toBe(0);
       expect(pass.credit).toEqual({ timeMs: 0, chars: 0 });
       expect(currentPassCredits(state, VOLUME, c.record)).toEqual([]);
-      expect(measuredFigures(figuresFor(state, VOLUME, c.record)).timeMs).toBeLessThan(MIN);
+      // Every pass's credits go: the card's time is what the field saved.
+      const figures = figuresFor(state, VOLUME, c.record);
+      expect(figures.credit).toEqual({ timeMs: 0, chars: 0 });
+      expect(figures.timeMs).toBeLessThan(MIN);
     }
   }
 }
@@ -544,7 +578,12 @@ describe('credits never mix with edits: a sweep over interleavings (#224)', () =
     let resets = 0;
     let lowEdits = 0;
     let oldEdits = 0;
-    const reached: Reached = { editsBelowCredit: 0, resetsOfCredits: 0, rereadsAfterCredits: 0 };
+    const reached: Reached = {
+      editsBelowCredit: 0,
+      resetsOfCredits: 0,
+      rereadsAfterCredits: 0,
+      resetsOfEarlierCredits: 0
+    };
     for (let seed = 1; seed <= 1500; seed++) {
       const c = build(seed);
       resets += c.actions.filter((a) => a.kind === 'resetAll').length;
@@ -567,5 +606,6 @@ describe('credits never mix with edits: a sweep over interleavings (#224)', () =
     expect(reached.editsBelowCredit).toBeGreaterThan(300);
     expect(reached.resetsOfCredits).toBeGreaterThan(200);
     expect(reached.rereadsAfterCredits).toBeGreaterThan(50);
+    expect(reached.resetsOfEarlierCredits).toBeGreaterThan(30);
   }, 120_000);
 });

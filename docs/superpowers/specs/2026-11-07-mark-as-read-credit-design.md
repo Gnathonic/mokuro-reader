@@ -326,7 +326,8 @@ So:
   pass's credits (`coverFirstPages`), a page covered in part keeping the rest; the time scales by
   the characters kept. Real reading is never cut, and a credit never counts a negative.
 - **Store.** A frozen baseline's share of one pass is its position part (the snapshot less reads
-  archived before the freeze, each a pass of its own), in the pass the record was on when frozen.
+  archived before the freeze, each a pass of its own) less what that pass's own events from before
+  the freeze explain of it, in the pass the record was on when frozen (amended, 5.7).
   It cuts that pass's credits the same way, computed once per credit (`baselineOf`) and read by
   `figuresFor`, `creditsFor` and `passFiguresFor` alike. An unfrozen snapshot is explained and cut
   as freezing it now would (views and edits, never a credit), and a mark freezes the record's
@@ -404,6 +405,31 @@ So credits and measured reading never mix, at any level:
   worlds; measured figures (and what the editor shows) equal the other world's figures exactly,
   lifetime and per pass; with no credit counted, the figures are equal; a re-read after the credits
   were taken back adds what it adds without them; credits never pass the volume nor reach speed.
+
+#### 5.7 The lifetime holds no more than its passes (amended after the fourth review)
+
+The bound was per pass, but the card shows the LIFETIME. The two disagreed on the pre-history
+snapshot: the lifetime sets every event from before the freeze against it (an older editor's negative
+edit included), while the pass added the whole position part on top of its own pre-freeze events. A
+v1.11.0 Reset All (−6,000) on one device and a snapshot of 6,000 frozen later by a stale device (the
+record merge keeps the later freeze): the lifetime showed 6,000, the pass 0, Mark as read offered
+every page, and the card showed 12,000 / 6,000 after Count. Without credits the lifetime differed
+from its one pass too.
+
+- **Store.** The pass's share is the position less what that pass's own events from before the
+  freeze explain (`passTimelines`, the engine's timeline per pass), held between 0 and the baseline.
+  The rest of the baseline is the archived reads' (passes history may not hold): with what the
+  earlier passes measured, never more than they hold. So the lifetime is at most the sum of its
+  passes plus the archived reads, a credit bounded per pass is bounded for the lifetime, and with one
+  pass and nothing archived the lifetime IS the pass.
+- **Editor.** Credits of earlier passes count on the card like any other, so the editor shows them
+  as a line of their own ("Counted when marked read in earlier read-throughs: …"): Time Read plus its
+  lines is the card's time. Reset All retracts EVERY live credit — the card's time is then what the
+  field saved; earlier passes' measured characters stay, as in v1.11.0. Remove and Mark as unread
+  stay this read-through's (Undo re-records a credit now, in the current pass).
+- **Swept.** Both sweeps check, after every step and for every history: lifetime ≤ Σ passes +
+  archived reads (with and without credits), one pass and nothing archived: credit-free lifetime =
+  the pass; the editor's lines sum to the card's credits; after Reset All no credit of any pass.
 
 ### 7. Setting and default
 

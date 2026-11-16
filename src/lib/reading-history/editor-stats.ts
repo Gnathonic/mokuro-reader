@@ -1,5 +1,6 @@
-import { currentPassCredits } from './credit';
+import type { CreditTotals } from './stats-engine';
 import {
+  creditsFor,
   figuresFor,
   passFiguresFor,
   resetEndsPass,
@@ -26,13 +27,47 @@ import {
  * credits — and keep their meaning.
  */
 
+/** What credits count, summed — `null` when they count nothing. */
+export interface CountedLine {
+  ms: number;
+  chars: number;
+  pages: number;
+}
+
 export interface EditorStats {
   /** "Time Read", whole minutes measured: a time edit records the difference from this. */
   minutes: number;
   /** "Characters Read X / volume": the current pass, measured. */
   passChars: number;
-  /** "Also counted when marked read": the current pass's credits; `null` = nothing. */
-  counted: { ms: number; chars: number; pages: number } | null;
+  /** "Also counted when marked read": the current pass's credits (Remove takes these). */
+  counted: CountedLine | null;
+  /**
+   * What credits of EARLIER passes (read-throughs before a restart) count:
+   * on the card's lifetime figures like any credit, so shown beside them —
+   * the editor accounts for every credit the card holds (`minutes` + both
+   * lines' time = the card's time). Reset All takes these too; Remove and
+   * Mark as unread are about this read-through only.
+   */
+  earlier: CountedLine | null;
+}
+
+function line(credits: CreditTotals[]): CountedLine | null {
+  const ms = credits.reduce((n, c) => n + c.ms, 0);
+  const chars = credits.reduce((n, c) => n + c.chars, 0);
+  const pages = credits.reduce((n, c) => n + c.pages.length, 0);
+  return ms > 0 || chars > 0 ? { ms, chars, pages } : null;
+}
+
+/** Every live credit of the volume, split into the current pass's and earlier ones. */
+function creditsByPass(stats: ReadingStatsState, volume: string, record?: BaselineSource) {
+  const totals = stats.byVolume.get(volume);
+  const all = totals ? creditsFor(stats, volume, record) : [];
+  const pass = totals?.pass ?? 0;
+  return {
+    all,
+    current: all.filter((c) => c.pass === pass),
+    earlier: all.filter((c) => c.pass !== pass)
+  };
 }
 
 export function editorStats(
@@ -40,14 +75,12 @@ export function editorStats(
   volume: string,
   record?: BaselineSource
 ): EditorStats {
-  const credits = currentPassCredits(stats, volume, record);
-  const ms = credits.reduce((n, c) => n + c.ms, 0);
-  const chars = credits.reduce((n, c) => n + c.chars, 0);
-  const pages = credits.reduce((n, c) => n + c.pages.length, 0);
+  const credits = creditsByPass(stats, volume, record);
   return {
     minutes: Math.floor(figuresFor(stats, volume, record).measured.timeMs / 60_000),
     passChars: passFiguresFor(stats, volume, record).measuredChars,
-    counted: ms > 0 || chars > 0 ? { ms, chars, pages } : null
+    counted: line(credits.current),
+    earlier: line(credits.earlier)
   };
 }
 
@@ -57,7 +90,7 @@ export interface EditorSave {
   timeRead: { from: number; to: number };
   /** Reset All ends the current pass (`reset`): only when it measured something. */
   reset: boolean;
-  /** Credits to retract, `[device, seq]`: Reset All takes the current pass's. */
+  /** Credits to retract, `[device, seq]`: Reset All takes every live one, of any pass. */
   retract: Array<[device: string, seq: number]>;
 }
 
@@ -67,7 +100,10 @@ export interface EditorSave {
  * Reset All waits for this save — read against `stats` as they are at the
  * save. Reset All is two independent things: the `reset` of what the pass
  * measured (`resetEndsPass`, which never looks at a credit) and the retract
- * of what it counted when marked read, as Remove does.
+ * of every credit the volume holds — the current pass's, as Remove does,
+ * and earlier passes' too: Reset All takes the card's time to what the
+ * field saved, and a credit's time cannot go without its characters. (An
+ * earlier pass's MEASURED characters stay on the card, as in v1.11.0.)
  */
 export function editorSave(
   stats: ReadingStatsState,
@@ -79,7 +115,7 @@ export function editorSave(
     timeRead: { from: edit.shownMinutes, to: edit.toMinutes },
     reset: edit.resetAll && resetEndsPass(stats, volume, record),
     retract: edit.resetAll
-      ? currentPassCredits(stats, volume, record).map((c): [string, number] => [c.device, c.seq])
+      ? creditsByPass(stats, volume, record).all.map((c): [string, number] => [c.device, c.seq])
       : []
   };
 }

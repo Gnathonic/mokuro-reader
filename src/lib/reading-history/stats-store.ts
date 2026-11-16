@@ -285,7 +285,14 @@ interface Baseline {
  * a credit's pages; this does, by characters. Its share of ONE pass is the
  * old counter's POSITION part — the snapshot less the reads archived before
  * the freeze, each a pass of its own (`convertLegacyRecord` made them
- * restarts) — in the pass the record was on when it was frozen (`lump`).
+ * restarts) — less what that pass's own events from before the freeze
+ * explain of it, in the pass the record was on when it was frozen (`lump`).
+ * The rest of the baseline is the archived reads' and belongs to no pass:
+ * with what the earlier passes measured, never more than they hold — so
+ * the lifetime figure never holds more than
+ * its passes plus the archived reads, and a credit bounded per pass is
+ * bounded for the lifetime too (one pass, nothing archived: the lifetime
+ * IS the pass).
  * A credit in that pass gives up what would take the pass past the
  * volume's characters with the lump in it — the pass's measured characters
  * and the lump held at zero together, as `passFiguresFor` counts them (`cut`,
@@ -316,12 +323,27 @@ function baselineOf(
   for (const read of record?.archivedReads ?? []) {
     if ((read.at ?? -Infinity) < snapshot.before) archived += read.chars;
   }
-  const chars = Math.min(baseline.chars, Math.max(0, snapshot.chars - archived));
-  if (chars <= 0) return none;
   let pass = 0;
   const passes = totals?.passes ?? [];
   for (let p = 1; p < passes.length; p++) if (passes[p].start < snapshot.before) pass = p;
   const inPass = passes[pass];
+  // The pass's share: the old POSITION less what this pass's own events
+  // from before the freeze explain of it — never below zero, never more
+  // than the baseline. Not the position alone: the lifetime figure sets ALL
+  // of those events against the snapshot (an older editor's negative edit
+  // before a later freeze included), so a pass that kept them and added the
+  // whole position would count less, or more, than the lifetime holds of it
+  // — and a credit would fill a pass the lifetime already holds in full.
+  const own = totals?.passTimelines[pass];
+  const explainedHere = own
+    ? totalsBefore({ timeline: own }, snapshot.before)
+    : { readChars: 0, skippedChars: 0 };
+  const position = snapshot.chars - archived;
+  const chars = Math.min(
+    baseline.chars,
+    Math.max(0, position - explainedHere.readChars - explainedHere.skippedChars)
+  );
+  if (chars <= 0) return none;
   // "Reset All" ended that pass: its share of the lump counts nothing either.
   if (inPass?.reset) {
     return {

@@ -103,6 +103,12 @@
   let finished = $state(false);
   /** What the current pass's credits count (the "Also counted when marked read" line). */
   let counted = $state<{ ms: number; chars: number; pages: number } | null>(null);
+  /**
+   * What credits of earlier read-throughs count: on the card like any credit,
+   * so shown too (the editor accounts for all of the card's time). Reset All
+   * takes them; Remove is about this read-through.
+   */
+  let earlier = $state<{ ms: number; chars: number; pages: number } | null>(null);
   /** The last Remove, offered back until the editor closes. */
   let removedUndo = $state<{ text: string; undo: () => Promise<void> } | null>(null);
   let creditBusy = $state(false);
@@ -282,6 +288,7 @@
     }
     charsRead = shown.passChars;
     counted = shown.counted;
+    earlier = shown.earlier;
   }
 
   async function refreshAfterCredit() {
@@ -831,6 +838,13 @@
                   data-testid="editor-credit-remove">Remove</Button
                 >
               </div>
+            {/if}
+            {#if earlier && !resetChars}
+              <p class="text-gray-600 dark:text-gray-400" data-testid="editor-credit-earlier">
+                Counted when marked read in earlier read-throughs: {formatMinutes(
+                  earlier.ms / 60_000
+                )} · {earlier.chars.toLocaleString()} characters
+              </p>
             {/if}
             {#if removedUndo}
               <div class="flex flex-wrap items-center justify-between gap-2">

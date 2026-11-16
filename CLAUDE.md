@@ -1914,9 +1914,17 @@ never saw read (spec `2026-11-07-mark-as-read-credit-design.md`;
   takes the excess off the credits' LOWEST pages (`coverFirstPages`: what a
   pass counts without pages is reading from the start). The store does the
   same for the frozen baseline's share of the pass it was frozen in
-  (`baselineOf`: its position part, archived reads being passes of their
-  own), and the sheet offers only what is left (`pagesNotReadHere` takes
-  page characters). A credit row without `total_chars` (pre-release builds)
+  (`baselineOf`: its position part — archived reads being passes of their
+  own — less what that pass's OWN events from before the freeze explain,
+  `passTimelines`), and the sheet offers only what is left
+  (`pagesNotReadHere` takes page characters). The lifetime must never hold
+  more than its passes plus the archived reads, or a bound per pass is no
+  bound: the lifetime sets EVERY pre-freeze event against the snapshot, so a
+  pass that added the whole position on top of its own pre-freeze events
+  disagreed with it — after a v1.11.0 Reset All (a negative edit) and a
+  snapshot frozen later by a stale device, the pass showed 0 while the
+  lifetime showed the volume, and a credit filled the pass on top (12,000 /
+  6,000). One pass, nothing archived: the lifetime IS the pass. A credit row without `total_chars` (pre-release builds)
   decodes but counts nothing. Per-volume "X / volume" figures are the
   CURRENT pass (`passFiguresFor`); `figuresFor` is the lifetime, re-reads
   included. Pinned by `credit-bound.test.ts` (real states through the flow)
@@ -1950,8 +1958,15 @@ never saw read (spec `2026-11-07-mark-as-read-credit-design.md`;
   into another pass than the same history without them) — a format-2 event
   in a month makes format-1-only builds skip that whole device-month. Never
   gate on the clamped pass figure: a v1.11.0 Reset All's negative adjust
-  holds it at 0 while the pass's pages are read. The pass's credits go by a
-  `retract` each, as Remove does (`editorSave`). "Count pages read
+  holds it at 0 while the pass's pages are read. Every live credit goes by a
+  `retract` each (`editorSave`) — this pass's, as Remove does, and EARLIER
+  passes' too: Reset All takes the card's time to what the field saved, and
+  a credit's time cannot go without its characters (an earlier pass's
+  measured characters stay, as in v1.11.0). The editor shows earlier passes'
+  credits as a line of their own ("Counted when marked read in earlier
+  read-throughs"), so its time plus its lines is the card's time; Remove and
+  Mark as unread stay this read-through's (an Undo re-records a credit NOW,
+  in the current pass, so it could not restore an earlier pass's). "Count pages read
   elsewhere…" is off while a Reset All waits for Save, and records no freeze
   of the snapshot (it marks nothing, and a credit must not change the record).
 - A `credit`, `retract` or `reset` makes its month segment format 2; every other

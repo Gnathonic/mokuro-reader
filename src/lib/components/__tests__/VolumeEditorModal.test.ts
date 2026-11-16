@@ -314,6 +314,42 @@ describe('VolumeEditorModal reading progress (#224)', () => {
     });
   });
 
+  it("shows an earlier read-through's credit too, and Reset All retracts it with this one's", async () => {
+    readingStats.store.set({
+      ready: true,
+      byVolume: new Map([
+        [
+          'vol-1',
+          {
+            pass: 1,
+            credits: [
+              { device: 'd', seq: 2, t: 0, pass: 0, ms: 45 * MIN, chars: 4000, pages: [3, 4] },
+              { device: 'd', seq: 5, t: 9, pass: 1, ms: 10 * MIN, chars: 1000, pages: [2] }
+            ]
+          }
+        ]
+      ])
+    });
+    const { getByText } = render(VolumeEditorModal);
+    promptVolumeEditor('vol-1');
+    await waitFor(() => expect(text('editor-credit-earlier')).toBeTruthy());
+    expect(text('editor-credit')).toContain('Also counted when marked read: 10 min');
+    expect(text('editor-credit-earlier')).toBe(
+      'Counted when marked read in earlier read-throughs: 45 min · 4,000 characters'
+    );
+    await fireEvent.click(getByText('Reset All'));
+    expect(text('editor-credit-earlier')).toBeUndefined();
+    await fireEvent.click(getByText('Save'));
+    await waitFor(() => expect(editor.updateVolumeStats).toHaveBeenCalled());
+    expect(editor.updateVolumeStats.mock.calls[0][1]).toMatchObject({
+      retract: [
+        ['d', 2],
+        ['d', 5]
+      ],
+      timeRead: { from: 60, to: 0 }
+    });
+  });
+
   it('a time edit is from the measured time shown, whatever marking read counted', async () => {
     readingStats.store.set({
       ready: true,

@@ -352,6 +352,31 @@ function check({ pageChars, events, record, pageExact, frozenNow }: Case) {
   expect(current.chars).toBeLessThanOrEqual(Math.max(size, currentWithout.chars) + 1e-6);
   expect(current.credit.chars).toBeGreaterThanOrEqual(0);
   if (pageExact) expect(figures.chars).toBeLessThanOrEqual(size * totals.passes.length);
+
+  // The LIFETIME holds no more than its passes do, plus the snapshot's reads
+  // archived before its freeze (their own passes, which history may not
+  // hold) — so credits bounded per pass are bounded for the lifetime: one
+  // pass and nothing archived, never past the volume. Without credits, one
+  // pass and nothing archived, the lifetime IS the pass (the review's
+  // counterexample: an older editor's negative edit before a later freeze
+  // made the pass count less than the lifetime, and a credit filled it).
+  // (An unfrozen snapshot is frozen "now": every archived read is before it.)
+  const freeze = record.legacyStats?.before ?? Infinity;
+  const archived = sum(
+    (record.archivedReads ?? [])
+      .filter((read) => (read.at ?? -Infinity) < freeze)
+      .map((read) => read.chars)
+  );
+  const passes = totals.passes.map((_, pass) => passFiguresFor(state, VOLUME, record, pass).chars);
+  const passesWithout = plain.passes.map(
+    (_, pass) => passFiguresFor(bare, VOLUME, record, pass).chars
+  );
+  expect(figures.chars).toBeLessThanOrEqual(sum(passes) + archived + 1e-6);
+  expect(reference.chars).toBeLessThanOrEqual(sum(passesWithout) + archived + 1e-6);
+  if (totals.passes.length === 1 && archived === 0) {
+    expect(reference.chars).toBe(passesWithout[0]);
+    expect(figures.chars).toBeLessThanOrEqual(Math.max(size, reference.chars) + 1e-6);
+  }
   expect(totals.passRead.size).toBeLessThanOrEqual(pageChars.length);
 
   // The sheet offers no more than the pass has left.
@@ -452,9 +477,6 @@ describe('credits never take a pass past its volume: a sweep over states (#224)'
           target
         })
       );
-      // Credits of earlier passes are earlier reads': Reset All leaves them.
-      const current = before.byVolume.get(VOLUME)!.pass;
-      const earlier = creditsFor(before, VOLUME, record).filter((c) => c.pass < current);
       // Then the whole volume read again in the app, 30 s a page.
       const DWELL = 30_000;
       const reread: ReadingEvent[] = pageChars.map((chars, i) => ({
@@ -476,10 +498,11 @@ describe('credits never take a pass past its volume: a sweep over states (#224)'
         const after = stateOf(saved);
         const figures = figuresFor(after, VOLUME, record);
         // The time field said 0: what is left measured is under a minute
-        // (minutes are whole); what counts on top is the earlier passes' credits.
+        // (minutes are whole), and no credit of any pass counts on top.
         expect(figures.measured.timeMs).toBeGreaterThanOrEqual(0);
         expect(figures.measured.timeMs).toBeLessThan(MIN);
-        expect(figures.credit.timeMs).toBeCloseTo(sum(earlier.map((c) => c.ms)), 6);
+        expect(figures.credit).toEqual({ timeMs: 0, chars: 0 });
+        expect(creditsFor(after, VOLUME, record)).toEqual([]);
         const pass = passFiguresFor(after, VOLUME, record);
         expect(pass.chars).toBe(0);
         expect(pass.credit).toEqual({ timeMs: 0, chars: 0 });

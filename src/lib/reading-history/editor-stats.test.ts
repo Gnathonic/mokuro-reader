@@ -42,7 +42,7 @@ class History {
    * Credits and retracts land between the minutes, so every other event has
    * the same time with or without them.
    */
-  private add(payload: EventPayload) {
+  add(payload: EventPayload) {
     const credit = payload.kind === 'credit' || payload.kind === 'retract';
     const t = credit ? this.t + 1 + (this.seq % 1000) : (this.t += MIN);
     this.events.push({ device: 'dev-a', seq: ++this.seq, t, ...payload } as ReadingEvent);
@@ -131,8 +131,40 @@ describe('the volume editor never edits a credit (#224)', () => {
     expect(editorStats(h.state(), VOLUME)).toEqual({
       minutes: 4,
       passChars: 4000,
-      counted: { ms: 30 * MIN, chars: 2000, pages: 2 }
+      counted: { ms: 30 * MIN, chars: 2000, pages: 2 },
+      earlier: null
     });
+  });
+
+  /*
+   * Review finding (LOW): an earlier read-through's credit is on the card,
+   * but the editor showed only this read-through's, and Reset All left it —
+   * the card kept its time after Time Read was saved at 0.
+   */
+  it("an earlier read-through's credit is shown, and Reset All takes the card's time to 0", () => {
+    const h = new History();
+    h.read([1, 2], MIN);
+    h.credit([3, 4, 5, 6], 40 * MIN);
+    h.add({ kind: 'restart', volume: VOLUME });
+    h.read([1, 2], 1.5 * MIN);
+    h.credit([3], 10 * MIN);
+    const figures = h.figures();
+    expect(figures).toMatchObject({ timeMs: 55 * MIN, chars: 9000 });
+    const shown = editorStats(h.state(), VOLUME);
+    expect(shown).toEqual({
+      minutes: 5,
+      passChars: 2000,
+      counted: { ms: 10 * MIN, chars: 1000, pages: 1 },
+      earlier: { ms: 40 * MIN, chars: 4000, pages: 4 }
+    });
+    // Every minute on the card is in the editor: measured, or one of its lines.
+    expect(shown.minutes * MIN + shown.counted!.ms + shown.earlier!.ms).toBe(figures.timeMs);
+    // Remove and Mark as unread are about this read-through only.
+    expect(currentPassCredits(h.state(), VOLUME).map((c) => c.chars)).toEqual([1000]);
+    h.editor('reset all');
+    // The earlier pass's measured characters stay, as in v1.11.0; no credit does.
+    expect(h.figures()).toMatchObject({ timeMs: 0, chars: 2000, credit: { timeMs: 0, chars: 0 } });
+    expect(editorStats(h.state(), VOLUME)).toMatchObject({ counted: null, earlier: null });
   });
 
   it('a time edit below the credit edits the measured time; the credit stays as counted', () => {
