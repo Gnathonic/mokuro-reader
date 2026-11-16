@@ -337,8 +337,11 @@
    * one (it was opened over the panel) and report true; the panel then stops
    * the key, so it never also reaches the layout's "Escape = back" — which
    * would leave the reader (PageAdjustPanel.svelte). Same steps those
-   * controls take on Escape themselves. Modal dialogs (re-read prompt, layer
-   * name) are the panel's own check.
+   * controls take on Escape themselves. Only controls that hear Escape on the
+   * WINDOW belong here (the panel stops the key before the window): one that
+   * handles it on its own element with the focus — the OCR text editor, a
+   * field — gets the key before the panel even sees it. Modal dialogs
+   * (re-read prompt, layer name) are the panel's own check.
    */
   function escapeToOtherControl(): boolean {
     if (layerPickerOpen) {

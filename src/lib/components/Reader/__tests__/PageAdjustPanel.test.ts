@@ -155,6 +155,50 @@ describe('PageAdjustPanel (#362, #363)', () => {
     }
   });
 
+  it('a control with the focus that handles Escape itself gets it first (the OCR text editor)', async () => {
+    const onEscapeElsewhere = vi.fn(() => true);
+    render(PageAdjustPanel, { onEscapeElsewhere });
+    const bubbled = vi.fn();
+    window.addEventListener('keydown', bubbled);
+    // Like EditableBlock's line: Escape closes the editor and stops there.
+    const editor = document.createElement('div');
+    editor.contentEditable = 'true';
+    const closeEditor = vi.fn((e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+    });
+    editor.addEventListener('keydown', closeEditor);
+    // One that only prevents the default: it took the key too.
+    const field = document.createElement('input');
+    field.addEventListener('keydown', (e) => e.preventDefault());
+    document.body.append(editor, field);
+    const escape = (at: Element) =>
+      at.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'Escape',
+          code: 'Escape',
+          bubbles: true,
+          cancelable: true
+        })
+      );
+    try {
+      escape(editor);
+      expect(closeEditor).toHaveBeenCalledTimes(1);
+      escape(field);
+      expect(onEscapeElsewhere).not.toHaveBeenCalled();
+      expect(get(pageAdjustPanelOpen)).toBe(true);
+      // Neither went on to "back".
+      expect(bubbled).not.toHaveBeenCalled();
+      // With the editor closed, the next Escape is the reader's/panel's again.
+      escape(document.body);
+      expect(onEscapeElsewhere).toHaveBeenCalledTimes(1);
+    } finally {
+      window.removeEventListener('keydown', bubbled);
+      editor.remove();
+      field.remove();
+    }
+  });
+
   it('opened while a modal dialog is still closing, it takes focus once the dialog closes', async () => {
     // The drawer's <dialog> is still modal when its card opens the panel, so
     // the page is inert and the first focus() is refused. jsdom does not do

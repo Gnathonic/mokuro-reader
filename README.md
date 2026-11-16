@@ -96,6 +96,8 @@ https://github.com/Gnathonic/mokuro-reader/assets/39561296/45a214a8-3f69-461c-87
 | ----------------------- | -------------------------------------------------------------- |
 | `N`                     | Toggle night mode                                              |
 | `I`                     | Toggle color inversion                                         |
+| `A`                     | Open/close the brightness & contrast panel over the page       |
+| `B`                     | Toggle brightness & contrast on/off, keeping its values        |
 | `P`                     | Toggle page mode (single/dual)                                 |
 | `C`                     | Toggle cover display                                           |
 | `Z`                     | Toggle zoom mode                                               |

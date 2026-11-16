@@ -17,9 +17,15 @@
    * automatic cutoff this pace. If the reader comes back a while later, the
    * copy says how long the page was open and offers to count all of it or
    * none. The box keeps one width and Close one place, so the copy changing
-   * and the refreshing time never move anything around it. It shares the
-   * bottom centre with the page image panel: whichever shows up second stacks
-   * above the other (`reader/bottom-overlay.ts`), so neither covers the other.
+   * and the refreshing time never move anything around it. Nor does its
+   * height: the copy turning "away" adds a line and a row of buttons on a
+   * narrow screen, so the box always holds an invisible copy of the variant
+   * it is NOT showing in the same grid cell, and is as tall as the taller of
+   * the two from the start. It shares the bottom centre with the page image
+   * panel: whichever shows up second stacks above the other
+   * (`reader/bottom-overlay.ts`), so neither covers the other — and a box
+   * that never grows never pushes the panel stacked above it up under a
+   * slider being held.
    */
   let { onAnswer }: { onAnswer: (answer: PauseAnswer) => void } = $props();
 
@@ -50,6 +56,9 @@
     return rest ? `${hours}h ${rest}m` : `${hours}h`;
   }
 
+  /** The away copy's minutes at the moment it first shows — what its stand-in reserves. */
+  let awayElapsed = $derived(pause ? minutes(pause.cap + AWAY_AFTER_MS) : '');
+
   function answer(choice: PauseAnswer) {
     if (!pause) return;
     settled = pause.since;
@@ -57,59 +66,92 @@
   }
 </script>
 
+<!--
+  One variant of the prompt's content. `ghost` renders it as the size-only
+  stand-in: no text nodes (its words are a ::before `content`, so no text or
+  role query and no screen reader finds them), no buttons, invisible and inert.
+-->
+{#snippet body(isAway: boolean, ghost: boolean)}
+  {@const open = ghost ? awayElapsed : elapsed}
+  {#snippet text(words: string)}
+    {#if ghost}<span class="ghost-text" data-text={words}></span>{:else}{words}{/if}
+  {/snippet}
+  {#snippet control(cls: string, words: string, choice: PauseAnswer, extra = {})}
+    <svelte:element
+      this={ghost ? 'span' : 'button'}
+      type={ghost ? undefined : 'button'}
+      class={cls}
+      {...extra}
+      onclick={ghost ? undefined : () => answer(choice)}>{@render text(words)}</svelte:element
+    >
+  {/snippet}
+  <div class="flex items-start gap-3">
+    <svelte:element this={ghost ? 'div' : 'p'} class="min-w-0 flex-1">
+      {@render text(
+        isAway
+          ? `This page was open ${open}. ${counted} counted.`
+          : `No page turn for ${counted}, so the timer stopped.`
+      )}
+    </svelte:element>
+    {@render control(
+      'relative z-10 -mt-1 -mr-2 shrink-0 rounded px-2 py-1 text-gray-400 hover:text-white',
+      '✕',
+      'keep',
+      ghost ? {} : { 'aria-label': 'Close', title: `Keep ${counted}` }
+    )}
+  </div>
+  <div class="relative z-10 flex flex-wrap items-center gap-2">
+    {#if isAway}
+      {@render control(
+        'rounded bg-primary-700 px-3 py-1 font-medium hover:bg-primary-600',
+        `Keep ${counted}`,
+        'keep'
+      )}
+      {@render control(
+        'rounded bg-gray-700 px-3 py-1 hover:bg-gray-600',
+        `Count all ${open}`,
+        'all'
+      )}
+      {@render control('rounded bg-gray-700 px-3 py-1 hover:bg-gray-600', 'Count none', 'none')}
+    {:else}
+      {@render control(
+        'rounded bg-primary-700 px-3 py-1 font-medium hover:bg-primary-600',
+        'Still reading',
+        'still-reading'
+      )}
+    {/if}
+    {@render control(
+      'ml-auto rounded px-2 py-1 text-xs text-gray-400 hover:text-white hover:underline',
+      'Don’t ask again',
+      'stop-asking'
+    )}
+  </div>
+{/snippet}
+
 {#if pause}
   <div
-    class="fixed bottom-16 left-1/2 z-20 flex w-[min(34rem,calc(100vw-2rem))] -translate-x-1/2 flex-col gap-2 rounded-lg px-4 py-3 text-sm text-white shadow-lg"
+    class="fixed bottom-16 left-1/2 z-20 grid w-[min(34rem,calc(100vw-2rem))] -translate-x-1/2 rounded-lg px-4 py-3 text-sm text-white shadow-lg"
     style="backdrop-filter: blur(8px); background-color: rgba(17, 24, 39, 0.9);"
     role="status"
     data-testid="long-pause"
     use:bottomOverlay
   >
-    <div class="flex items-start gap-3">
-      <p class="min-w-0 flex-1">
-        {#if away}
-          This page was open {elapsed}. {counted} counted.
-        {:else}
-          No page turn for {counted}, so the timer stopped.
-        {/if}
-      </p>
-      <button
-        type="button"
-        class="relative z-10 -mt-1 -mr-2 shrink-0 rounded px-2 py-1 text-gray-400 hover:text-white"
-        aria-label="Close"
-        title="Keep {counted}"
-        onclick={() => answer('keep')}>✕</button
-      >
+    <div class="col-start-1 row-start-1 flex flex-col gap-2">
+      {@render body(away, false)}
     </div>
-    <div class="relative z-10 flex flex-wrap items-center gap-2">
-      {#if away}
-        <button
-          type="button"
-          class="rounded bg-primary-700 px-3 py-1 font-medium hover:bg-primary-600"
-          onclick={() => answer('keep')}>Keep {counted}</button
-        >
-        <button
-          type="button"
-          class="rounded bg-gray-700 px-3 py-1 hover:bg-gray-600"
-          onclick={() => answer('all')}>Count all {elapsed}</button
-        >
-        <button
-          type="button"
-          class="rounded bg-gray-700 px-3 py-1 hover:bg-gray-600"
-          onclick={() => answer('none')}>Count none</button
-        >
-      {:else}
-        <button
-          type="button"
-          class="rounded bg-primary-700 px-3 py-1 font-medium hover:bg-primary-600"
-          onclick={() => answer('still-reading')}>Still reading</button
-        >
-      {/if}
-      <button
-        type="button"
-        class="ml-auto rounded px-2 py-1 text-xs text-gray-400 hover:text-white hover:underline"
-        onclick={() => answer('stop-asking')}>Don’t ask again</button
-      >
+    <div
+      class="invisible col-start-1 row-start-1 flex flex-col gap-2"
+      aria-hidden="true"
+      inert
+      data-reserve
+    >
+      {@render body(!away, true)}
     </div>
   </div>
 {/if}
+
+<style>
+  .ghost-text::before {
+    content: attr(data-text);
+  }
+</style>

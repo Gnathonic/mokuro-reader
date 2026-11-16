@@ -30,10 +30,11 @@
     /** The reader's B: flips the adjustment and shows its notice. */
     onToggleAdjust?: () => void;
     /**
-     * Escape outside the panel: the reader closes another non-modal control
-     * opened over it (the layer picker, the page-number popover, a text box
-     * menu, an edit-mode selection or draw tool) and returns true, or returns
-     * false when there is none — then the Escape is the panel's.
+     * Escape outside the panel that no focused control took: the reader
+     * closes another non-modal control opened over it that listens for
+     * Escape on the window (the layer picker, the page-number popover, a text
+     * box menu, an edit-mode selection or draw tool) and returns true, or
+     * returns false when there is none — then the Escape is the panel's.
      */
     onEscapeElsewhere?: () => boolean;
   }
@@ -72,19 +73,27 @@
     }
   }
 
-  // While the panel is open, Escape never leaves the reader. The reader's
-  // shortcuts and the layout's global "Escape = back" are both bubble-phase
-  // window listeners, and the layout's ignores `defaultPrevented`, so the
-  // panel takes Escape in the capture phase and stops it there (as
-  // RereadPromptModal does). One Escape closes one thing, the latest first: a
-  // modal dialog above the panel handles its own; with focus outside the
-  // panel, a reader control opened over it (`onEscapeElsewhere`) closes; only
-  // then the panel itself.
-  function onWindowKeyDown(e: KeyboardEvent) {
-    if (e.key !== 'Escape' || e.defaultPrevented) return;
+  // While the panel is open, Escape never leaves the reader, and one Escape
+  // closes one thing, the latest first. The reader's shortcuts and the
+  // layout's global "Escape = back" are both bubble-phase WINDOW listeners,
+  // and the layout's ignores `defaultPrevented`, so the panel stops Escape on
+  // its way up at the DOCUMENT — after every element on the path has had it,
+  // before either window listener does:
+  //  - a control with the focus that handles its own Escape (the OCR text
+  //    editor, a popover's field, …) gets it first and stops it, so it never
+  //    gets here; one that only prevents the default is left at that;
+  //  - a modal dialog above the panel handles its own;
+  //  - with focus outside the panel, a reader control opened over it that
+  //    listens on the window (`onEscapeElsewhere`: the layer picker, the
+  //    page-number popover, a text box menu, an edit-mode selection or draw
+  //    tool) closes;
+  //  - only then the panel itself.
+  function onDocumentKeyDown(e: KeyboardEvent) {
+    if (e.key !== 'Escape') return;
     if (document.querySelector('dialog:modal')) return;
-    e.preventDefault();
     e.stopPropagation();
+    if (e.defaultPrevented) return;
+    e.preventDefault();
     const inPanel = root?.contains(e.target as Node) ?? false;
     if (!inPanel && onEscapeElsewhere?.()) return;
     closePageAdjustPanel();
@@ -106,9 +115,9 @@
     if (document.activeElement !== root?.querySelector('input[type="range"]')) {
       for (const d of pending) d.addEventListener('close', focusFirstSlider, { once: true });
     }
-    window.addEventListener('keydown', onWindowKeyDown, true);
+    document.addEventListener('keydown', onDocumentKeyDown);
     return () => {
-      window.removeEventListener('keydown', onWindowKeyDown, true);
+      document.removeEventListener('keydown', onDocumentKeyDown);
       for (const d of pending) d.removeEventListener('close', focusFirstSlider);
     };
   });

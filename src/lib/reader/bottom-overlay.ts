@@ -1,18 +1,25 @@
 /**
  * Non-modal reader overlays that share the bottom-centre of the screen — the
  * page image panel (#363) and the long-pause prompt — never cover each other,
- * and never move once they are on screen.
+ * and never move under the user once they are on screen.
  *
  * Rule: whichever arrives SECOND stacks above the one already there. The one
  * already on screen keeps its place; the newcomer picks its place once, when
- * it appears, and keeps it while it stays (even if the other one leaves). So
- * nothing jumps under a finger or a cursor: a prompt that shows up while the
- * brightness slider is held appears above the panel instead of over the
- * slider, and a panel opened over a waiting prompt opens above it.
+ * it appears, and keeps it while it stays — also when the other one LEAVES
+ * or SHRINKS. Dropping back down then would move it under a finger or a
+ * cursor that may be on its slider; the gap left below it is harmless, and
+ * an overlay that shows up later simply takes its own default place in it.
+ * So a prompt that shows up while the brightness slider is held appears above
+ * the panel instead of over the slider, and a panel opened over a waiting
+ * prompt opens above it and stays there when the prompt is answered.
  *
- * A placement is redone only when the screen changes (a resize or rotation,
- * which re-lays out everything anyway) or when the overlay it cleared grows
- * into it.
+ * A stacked overlay moves only:
+ *  - UP, just far enough, when an overlay it cleared grows into it — the one
+ *    case where staying put would cover something. The long-pause prompt
+ *    reserves the height of its taller variant (LongPausePrompt.svelte), so
+ *    its copy changing does not grow it;
+ *  - when the screen changes (a resize or rotation, which re-lays out
+ *    everything anyway): it is placed again from scratch.
  */
 
 /** Marks an element as a bottom overlay (`use:bottomOverlay`). */
@@ -32,10 +39,10 @@ const overlaps = (a: Box, b: Box) =>
   a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
 
 /**
- * Where `own` (measured at its default place) must sit to clear every box in
+ * Where `own` (measured where it is now) must sit to clear every box in
  * `others`: its `bottom` in px from the viewport's bottom edge, or null when
- * the default place already clears them all. Lifting above one box can land
- * on another higher up, so it repeats until nothing overlaps.
+ * it already clears them all. Lifting above one box can land on another
+ * higher up, so it repeats until nothing overlaps. It only ever lifts.
  */
 export function clearancePlacement(
   own: Box,
@@ -63,40 +70,37 @@ export function clearancePlacement(
  */
 export function bottomOverlay(node: HTMLElement) {
   node.setAttribute(BOTTOM_OVERLAY_ATTR, '');
-  // The overlays the current placement cleared, with the height each had.
-  let cleared = new Map<Element, number>();
-  const grown =
+  const others = () =>
+    [...document.querySelectorAll(`[${BOTTOM_OVERLAY_ATTR}]`)].filter((el) => el !== node);
+  // Watches the overlays a stacked one cleared. Observing reports each one's
+  // size once, and a report for one that left (a removed element reports a
+  // zero size) or shrank finds nothing in the way: neither moves anything.
+  const watch =
     typeof ResizeObserver === 'undefined'
       ? null
       : new ResizeObserver((entries) => {
-          // Observing reports the current size once; only a real change re-places.
-          const changed = entries.some(
-            (e) =>
-              Math.abs(e.target.getBoundingClientRect().height - (cleared.get(e.target) ?? -1)) >
-              0.5
-          );
-          if (changed) place();
+          for (const e of entries) if (!e.target.isConnected) watch?.unobserve(e.target);
+          lift();
         });
 
-  function place() {
-    node.style.bottom = '';
-    const own = node.getBoundingClientRect();
-    const others = [...document.querySelectorAll(`[${BOTTOM_OVERLAY_ATTR}]`)].filter(
-      (el) => el !== node
-    );
+  /** Up from where it is now, just clear of anything over it; never down. */
+  function lift() {
     const bottom = clearancePlacement(
-      own,
-      others.map((el) => el.getBoundingClientRect()),
+      node.getBoundingClientRect(),
+      others().map((el) => el.getBoundingClientRect()),
       window.innerHeight
     );
     if (bottom !== null) node.style.bottom = `${bottom}px`;
-    grown?.disconnect();
-    cleared = new Map();
-    if (bottom === null) return;
-    for (const el of others) {
-      cleared.set(el, el.getBoundingClientRect().height);
-      grown?.observe(el);
-    }
+  }
+
+  /** From scratch: the CSS default, stacked above whatever is there. */
+  function place() {
+    node.style.bottom = '';
+    lift();
+    watch?.disconnect();
+    // An overlay at its default place was there first: what comes later
+    // stacks above it, so it has nothing to watch.
+    if (node.style.bottom) for (const el of others()) watch?.observe(el);
   }
 
   function onResize() {
@@ -109,7 +113,7 @@ export function bottomOverlay(node: HTMLElement) {
   return {
     destroy() {
       window.removeEventListener('resize', onResize);
-      grown?.disconnect();
+      watch?.disconnect();
     }
   };
 }

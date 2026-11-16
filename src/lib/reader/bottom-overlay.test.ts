@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   BOTTOM_OVERLAY_ATTR,
   BOTTOM_OVERLAY_GAP,
@@ -43,15 +43,51 @@ describe('clearancePlacement', () => {
 });
 
 describe('bottomOverlay action', () => {
-  afterEach(() => document.body.replaceChildren());
+  // jsdom has no ResizeObserver: a stand-in whose reports the test sends.
+  let observers: FakeResizeObserver[] = [];
+  class FakeResizeObserver {
+    targets = new Set<Element>();
+    constructor(private cb: ResizeObserverCallback) {
+      observers.push(this);
+    }
+    observe(el: Element) {
+      this.targets.add(el);
+    }
+    unobserve(el: Element) {
+      this.targets.delete(el);
+    }
+    disconnect() {
+      this.targets.clear();
+    }
+    /** What the browser does once a watched element changed size (or left). */
+    report(el: Element) {
+      if (!this.targets.has(el)) return;
+      this.cb([{ target: el } as ResizeObserverEntry], this as unknown as ResizeObserver);
+    }
+  }
+  const report = (el: Element) => observers.forEach((o) => o.report(el));
 
-  function overlay(rect: Box): HTMLElement {
+  beforeEach(() => {
+    observers = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    document.body.replaceChildren();
+  });
+
+  /** A bottom overlay whose default (CSS) place is `rect`; `resize` changes its height. */
+  function overlay(rect: Box) {
     const el = document.createElement('div');
-    // jsdom has no layout: report the default place, or the lifted one.
+    let height = rect.bottom - rect.top;
+    // jsdom has no layout: report the default place, or the lifted one. A
+    // bottom-anchored box grows upward; a removed one measures all zeros.
     el.getBoundingClientRect = () => {
-      const lift = el.style.bottom ? window.innerHeight - parseFloat(el.style.bottom) : null;
-      const r =
-        lift === null ? rect : { ...rect, bottom: lift, top: lift - (rect.bottom - rect.top) };
+      if (!el.isConnected) return new DOMRect(0, 0, 0, 0);
+      const bottom = el.style.bottom
+        ? window.innerHeight - parseFloat(el.style.bottom)
+        : rect.bottom;
+      const r = { ...rect, bottom, top: bottom - height };
       return {
         ...r,
         x: r.left,
@@ -61,7 +97,12 @@ describe('bottomOverlay action', () => {
       } as DOMRect;
     };
     document.body.append(el);
-    return el;
+    return Object.assign(el, {
+      resize(h: number) {
+        height = h;
+        report(el);
+      }
+    });
   }
 
   it('the first one keeps its CSS place; the second stacks above it and never moves the first', () => {
@@ -73,17 +114,64 @@ describe('bottomOverlay action', () => {
 
     const second = overlay(box(100, h - 150, 400, 80));
     const b = bottomOverlay(second);
-    expect(second.style.bottom).toBe(`${120 + BOTTOM_OVERLAY_GAP}px`);
+    const stacked = `${120 + BOTTOM_OVERLAY_GAP}px`;
+    expect(second.style.bottom).toBe(stacked);
     expect(first.style.bottom).toBe('');
+    // Observing reports the current size once: nothing moves.
+    report(first);
+    expect(second.style.bottom).toBe(stacked);
 
-    // The first leaving does not drop the second down under the user's pointer.
+    // The first leaving does not drop the second down under the user's
+    // pointer — not even when the browser reports the removed one's (zero) size.
     a.destroy();
     first.remove();
-    window.dispatchEvent(new Event('scroll'));
-    expect(second.style.bottom).toBe(`${120 + BOTTOM_OVERLAY_GAP}px`);
+    report(first);
+    expect(second.style.bottom).toBe(stacked);
+
     // A resize re-places it: now nothing is in the way.
     window.dispatchEvent(new Event('resize'));
     expect(second.style.bottom).toBe('');
     b.destroy();
+  });
+
+  it('a stacked one stays put when the one under it shrinks, and lifts only as far as it must when it grows', () => {
+    const h = window.innerHeight;
+    const under = overlay(box(100, h - 120, 400, 100));
+    bottomOverlay(under);
+    const over = overlay(box(100, h - 150, 400, 80));
+    bottomOverlay(over);
+    expect(over.style.bottom).toBe(`${120 + BOTTOM_OVERLAY_GAP}px`);
+
+    under.resize(60);
+    expect(over.style.bottom).toBe(`${120 + BOTTOM_OVERLAY_GAP}px`);
+    under.resize(100);
+    expect(over.style.bottom).toBe(`${120 + BOTTOM_OVERLAY_GAP}px`);
+    // Grown into it (top now at h - 150): lifted just above, never further.
+    under.resize(130);
+    expect(over.style.bottom).toBe(`${150 + BOTTOM_OVERLAY_GAP}px`);
+  });
+
+  it('an overlay at its default place watches nothing and never moves', () => {
+    const h = window.innerHeight;
+    const first = overlay(box(100, h - 120, 400, 100));
+    bottomOverlay(first);
+    const second = overlay(box(100, h - 150, 400, 80));
+    bottomOverlay(second);
+    second.resize(400);
+    expect(first.style.bottom).toBe('');
+  });
+
+  it('one arriving after the other left takes its own default place in the gap', () => {
+    const h = window.innerHeight;
+    const prompt = overlay(box(100, h - 120, 400, 100));
+    const p = bottomOverlay(prompt);
+    const panel = overlay(box(100, h - 150, 400, 80));
+    bottomOverlay(panel);
+    p.destroy();
+    prompt.remove();
+    const again = overlay(box(100, h - 120, 400, 100));
+    bottomOverlay(again);
+    expect(again.style.bottom).toBe('');
+    expect(panel.style.bottom).toBe(`${120 + BOTTOM_OVERLAY_GAP}px`);
   });
 });

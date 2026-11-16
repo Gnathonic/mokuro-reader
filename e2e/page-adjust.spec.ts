@@ -335,6 +335,52 @@ test('A opens the panel; Escape closes it and never leaves the reader (#363)', a
   await expect.poll(() => page.evaluate(() => location.hash)).not.toBe(readerHash);
 });
 
+test('edit mode: with the panel open, Escape closes the text editor first, then the panel (#363)', async ({
+  page
+}) => {
+  const volume = writeSyntheticVolume('AdjustEdit', 3, GREY);
+  await openReader(page, volume);
+  const readerHash = await page.evaluate(() => location.hash);
+  const panel = page.locator(PANEL);
+  const toolbar = page.locator('[data-edit-toolbar]');
+
+  await page.keyboard.press('e');
+  await expect(toolbar).toBeVisible();
+  await page.keyboard.press('a');
+  await expect(panel).toBeVisible();
+
+  // Editing a text box's words with the panel still up: they type into the
+  // box, not into the reader or the panel.
+  const block = page.locator('.editBlock').first();
+  await block.dblclick();
+  const line = block.locator('[contenteditable]').first();
+  await expect(line).toBeVisible();
+  await line.click();
+  await page.keyboard.press('Control+A');
+  await page.keyboard.type('かきく');
+  await expect(panel).toBeVisible();
+
+  // The first Escape is the editor's own: it closes and keeps the words. The
+  // panel, edit mode and the reader all stay.
+  await page.keyboard.press('Escape');
+  await expect(page.locator('.editBlock.editing')).toHaveCount(0);
+  await expect(block.locator('.line').first()).toHaveText('かきく');
+  await expect(panel).toBeVisible();
+  await expect(toolbar).toBeVisible();
+  expect(await page.evaluate(() => location.hash)).toBe(readerHash);
+
+  // Then one thing per Escape, the latest first — the box's selection, then
+  // the panel — and still edit mode, still the reader.
+  for (let i = 0; i < 3 && (await panel.isVisible()); i++) {
+    await page.keyboard.press('Escape');
+    await expect(toolbar).toBeVisible();
+    expect(await page.evaluate(() => location.hash)).toBe(readerHash);
+  }
+  await expect(panel).toBeHidden();
+  await expect(block.locator('.line').first()).toHaveText('かきく');
+  await expect(toolbar).toBeVisible();
+});
+
 test('night mode reaches the panel: it is page content, not top layer (#363)', async ({ page }) => {
   const volume = writeSyntheticVolume('AdjustNight', 3, GREY);
   await openReader(page, volume);
@@ -405,6 +451,49 @@ const reachable = (page: Page, sel: string) =>
 const apart = (a: { x: number; y: number; width: number; height: number }, b: typeof a) =>
   a.x + a.width <= b.x || b.x + b.width <= a.x || a.y + a.height <= b.y || b.y + b.height <= a.y;
 
+type Rect = { x: number; y: number; width: number; height: number };
+
+/**
+ * Where each of `selectors` is (null when it is gone) at every one of the next
+ * `frames` animation frames. A read right after a change races ahead of
+ * whatever that change sets off — a ResizeObserver reports the frame after —
+ * so "it did not move" is only proven over frames.
+ */
+const framesOf = (page: Page, selectors: string[], frames = 12) =>
+  page.evaluate(
+    async ({ selectors, frames }) => {
+      const out: (Rect | null)[][] = selectors.map(() => []);
+      for (let i = 0; i < frames; i++) {
+        await new Promise((r) => requestAnimationFrame(r));
+        selectors.forEach((sel, j) => {
+          const r = document.querySelector(sel)?.getBoundingClientRect();
+          out[j].push(r ? { x: r.x, y: r.y, width: r.width, height: r.height } : null);
+        });
+      }
+      return out;
+    },
+    { selectors, frames }
+  );
+
+/** `sel`'s box once nothing is still settling: the same over a run of frames. */
+async function settledBox(page: Page, sel: string): Promise<Rect> {
+  const [frames] = await framesOf(page, [sel]);
+  const last = frames[frames.length - 1]!;
+  expect(frames.slice(-4)).toEqual(Array(4).fill(last));
+  return last;
+}
+
+/** Each of `boxes` stays exactly where it is over the next frames. */
+async function expectStill(page: Page, boxes: Record<string, Rect>) {
+  const sels = Object.keys(boxes);
+  const frames = await framesOf(page, sels);
+  sels.forEach((sel, i) =>
+    expect(frames[i], `${sel} moved`).toEqual(Array(frames[i].length).fill(boxes[sel]))
+  );
+}
+
+const PROMPT = '[data-testid="long-pause"]';
+
 for (const vp of [
   { name: 'desktop', width: 1920, height: 1080 },
   { name: 'phone', width: 390, height: 844 }
@@ -425,45 +514,63 @@ for (const vp of [
       });
       const panel = page.locator(PANEL);
       const prompt = page.getByTestId('long-pause');
+      const copy = prompt.locator('p');
 
       // Adjusting a cover past the cap: the prompt arrives while the panel is
       // open, and stacks above it. The panel keeps its place and every one of
       // its controls stays reachable.
       await page.keyboard.press('a');
       await expect(panel).toBeVisible();
-      const panelBox = (await panel.boundingBox())!;
+      const panelBox = await settledBox(page, PANEL);
       await page.clock.fastForward('01:05');
       await expect(prompt).toBeVisible();
-      expect(await panel.boundingBox()).toEqual(panelBox);
-      let promptBox = (await prompt.boundingBox())!;
+      let promptBox = await settledBox(page, PROMPT);
+      await expectStill(page, { [PANEL]: panelBox, [PROMPT]: promptBox });
       expect(apart(panelBox, promptBox)).toBe(true);
       expect(promptBox.y + promptBox.height).toBeLessThanOrEqual(panelBox.y);
       expect(await reachable(page, PANEL)).toBe(true);
-      expect(await reachable(page, '[data-testid="long-pause"]')).toBe(true);
+      expect(await reachable(page, PROMPT)).toBe(true);
       await shot(page, `363-6-${vp.name}-prompt-over-panel`);
 
-      // The panel closing leaves the prompt where it is.
+      // The panel closing leaves the prompt where it is — not just at once,
+      // but over the frames after, when the stacking would re-place it.
       await page.locator(`${PANEL} button[aria-label="Close"]`).click();
       await expect(panel).toBeHidden();
-      expect(await prompt.boundingBox()).toEqual(promptBox);
+      await expectStill(page, { [PROMPT]: promptBox });
 
       // The other order: a prompt already waiting at its own place, then the
       // panel opens — above it; the prompt does not move.
       await prompt.getByRole('button', { name: 'Close', exact: true }).click();
       await expect(prompt).toBeHidden();
       await page.clock.fastForward('01:05');
-      await expect(prompt).toBeVisible();
-      promptBox = (await prompt.boundingBox())!;
+      await expect(copy).toHaveText(/so the timer stopped/);
+      promptBox = await settledBox(page, PROMPT);
       await page.keyboard.press('a');
       await expect(panel).toBeVisible();
-      const lifted = (await panel.boundingBox())!;
-      expect(await prompt.boundingBox()).toEqual(promptBox);
+      const lifted = await settledBox(page, PANEL);
+      await expectStill(page, { [PANEL]: lifted, [PROMPT]: promptBox });
       expect(apart(lifted, promptBox)).toBe(true);
       expect(lifted.y + lifted.height).toBeLessThanOrEqual(promptBox.y);
       expect(lifted.y).toBeGreaterThanOrEqual(0);
       expect(await reachable(page, PANEL)).toBe(true);
-      expect(await reachable(page, '[data-testid="long-pause"]')).toBe(true);
+      expect(await reachable(page, PROMPT)).toBe(true);
       await shot(page, `363-7-${vp.name}-panel-over-prompt`);
+
+      // The prompt turning into its longer "away" copy (more buttons; two
+      // rows on a phone) grows neither it nor moves the panel above it: it
+      // was as tall as that from the start.
+      await page.clock.fastForward('02:05');
+      await expect(copy).toHaveText(/This page was open/);
+      await expectStill(page, { [PANEL]: lifted, [PROMPT]: promptBox });
+      expect(await reachable(page, PANEL)).toBe(true);
+      expect(await reachable(page, PROMPT)).toBe(true);
+      await shot(page, `363-8-${vp.name}-away-under-panel`);
+
+      // The prompt answered, the panel stays where it is (a finger may be on
+      // its slider), and nothing takes the gap below it.
+      await prompt.getByRole('button', { name: 'Count none', exact: true }).click();
+      await expect(prompt).toBeHidden();
+      await expectStill(page, { [PANEL]: lifted });
     } finally {
       await ctx.close();
     }
