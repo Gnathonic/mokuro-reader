@@ -13,6 +13,7 @@ import type {
 } from '../../provider-interface';
 import { isLoginCancelled, LOGIN_CANCELLED, ProviderError } from '../../provider-interface';
 import { isCbzFile, isSidecarFile, isRootConfigFile, isSyncableFile } from '../../syncable-file';
+import { noteSkippedListedFile } from '../../foreign-archives';
 import { isHistoryFileName } from '#lib/reading-history/paths.js';
 import { driveHistoryPath } from './drive-history-path';
 import { tokenManager } from '#lib/util/sync/providers/google-drive/token-manager.js';
@@ -913,7 +914,10 @@ class GoogleDriveProvider implements SyncProvider {
           next.set(item.id, path);
           continue;
         }
-        if (!isSyncableFile(path)) continue;
+        if (!isSyncableFile(path)) {
+          noteSkippedListedFile('google-drive', path);
+          continue;
+        }
         out.push({
           provider: 'google-drive',
           fileId: item.id,

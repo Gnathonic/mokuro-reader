@@ -102,6 +102,72 @@ describe('driveFilesCache', () => {
     ]);
   });
 
+  it('lists an archive by the fold of its name, as every other provider does (R2)', async () => {
+    const at = '2026-03-09T00:00:00.000Z';
+    const file = (id: string, name: string) => ({
+      id,
+      name,
+      mimeType: 'application/octet-stream',
+      parents: ['folder-1'],
+      modifiedTime: at,
+      size: '1'
+    });
+    (driveApiClient.listFiles as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { id: 'folder-1', name: 'Series', mimeType: 'application/vnd.google-apps.folder' },
+      file('a', 'Volume 1.cbz'),
+      file('b', 'Volume 2.CBZ'),
+      file('c', 'Volume 2.MOKURO'),
+      file('d', 'Volume 3.cb​z'),
+      // Not an archive by any spelling: still not listed.
+      file('e', 'Volume 4.cbz.txt')
+    ]);
+
+    await driveFilesCache.fetch();
+
+    expect(
+      driveFilesCache
+        .getAllFiles()
+        .map((f) => f.path)
+        .sort()
+    ).toEqual([
+      'Series/Volume 1.cbz',
+      'Series/Volume 2.CBZ',
+      'Series/Volume 2.MOKURO',
+      'Series/Volume 3.cb​z'
+    ]);
+  });
+
+  it('caches no .cbr, and notes it so a sweep keeps off its files (rule 2, R2)', async () => {
+    const { foreignArchiveNamesIn, resetForeignArchivesForTest } =
+      await import('../../foreign-archives');
+    resetForeignArchivesForTest();
+    const file = (id: string, name: string) => ({
+      id,
+      name,
+      mimeType: 'application/octet-stream',
+      parents: ['folder-1'],
+      modifiedTime: '2026-03-09T00:00:00.000Z',
+      size: '1'
+    });
+    (driveApiClient.listFiles as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      file('a', 'Vol 01.cbz'),
+      file('b', 'Vol 01.5.cbr'),
+      file('c', 'Vol 01.5.mokuro'),
+      // The folder after its files: the note waits for the whole folder map.
+      { id: 'folder-1', name: 'Series', mimeType: 'application/vnd.google-apps.folder' }
+    ]);
+
+    await driveFilesCache.fetch();
+
+    expect(
+      driveFilesCache
+        .getAllFiles()
+        .map((f) => f.path)
+        .sort()
+    ).toEqual(['Series/Vol 01.5.mokuro', 'Series/Vol 01.cbz']);
+    expect(foreignArchiveNamesIn('google-drive', 'Series')).toEqual(['Vol 01.5.cbr']);
+  });
+
   it('names the listed ids of every folder spelled like a series, from its files alone', async () => {
     const FOLDER = 'application/vnd.google-apps.folder';
     const file = (id: string, name: string, parent: string) => ({

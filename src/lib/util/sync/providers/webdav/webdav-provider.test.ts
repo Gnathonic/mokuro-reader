@@ -1478,6 +1478,36 @@ describe('WebDAVProvider listing of reading history', () => {
   });
 });
 
+describe('WebDAVProvider listing of foreign archives', () => {
+  it('lists no .zip, and notes it so a sweep keeps off its files (rule 2, R2)', async () => {
+    const { foreignArchiveNamesIn, resetForeignArchivesForTest } =
+      await import('../../foreign-archives');
+    resetForeignArchivesForTest();
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+    await provider.login({ serverUrl: 'https://host' });
+    const lastmod = 'Mon, 05 Oct 2026 00:00:00 GMT';
+    const file = (name: string) => ({
+      type: 'file',
+      filename: `/mokuro-reader/Series/${name}`,
+      basename: name,
+      lastmod,
+      size: 1
+    });
+    mockClient.getDirectoryContents.mockResolvedValue([
+      file('Vol 01.cbz'),
+      file('Vol 01.5.ZIP'),
+      file('Vol 01.5.mokuro'),
+      file('notes.txt')
+    ]);
+
+    const files = await provider.listCloudVolumes();
+
+    expect(files.map((f) => f.path)).toEqual(['Series/Vol 01.cbz', 'Series/Vol 01.5.mokuro']);
+    expect(foreignArchiveNamesIn('webdav', 'series')).toEqual(['Vol 01.5.ZIP']);
+  });
+});
+
 describe('WebDAVProvider getStatus().historySync (per-user reading history)', () => {
   const PER_USER = ['volume-data.json', 'profiles.json', 'goals.json', 'history/'];
 

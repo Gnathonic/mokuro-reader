@@ -24,6 +24,7 @@ import { setActiveProviderKey, clearActiveProviderKey } from '../../provider-det
 import { isFilesystemProviderSupported } from './feature-detect';
 import { saveRootHandle, loadRootHandle, clearRootHandle } from './handle-store';
 import { splitPathSegments, isSyncableFile, getBasename, getParentPath } from './filesystem-paths';
+import { noteSkippedListedFile } from '../../foreign-archives';
 import { listedPathOn } from '#lib/util/sync/listed-spelling.js';
 
 export class FilesystemProvider implements SyncProvider {
@@ -340,7 +341,10 @@ export class FilesystemProvider implements SyncProvider {
       const root = this.requireRoot();
       const results: CloudFileMetadata[] = [];
       for await (const { path, fileHandle } of this.walkDirectory(root, '')) {
-        if (!isSyncableFile(path)) continue;
+        if (!isSyncableFile(path)) {
+          noteSkippedListedFile('filesystem', path);
+          continue;
+        }
         const file = await fileHandle.getFile();
         results.push({
           provider: 'filesystem',
@@ -445,7 +449,10 @@ export class FilesystemProvider implements SyncProvider {
     try {
       const results: CloudFileMetadata[] = [];
       for await (const { path, fileHandle } of this.walkDirectory(dir, prefix)) {
-        if (!isSyncableFile(path)) continue;
+        if (!isSyncableFile(path)) {
+          noteSkippedListedFile('filesystem', path);
+          continue;
+        }
         const file = await fileHandle.getFile();
         results.push({
           provider: 'filesystem',

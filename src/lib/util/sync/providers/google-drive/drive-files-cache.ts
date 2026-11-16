@@ -5,8 +5,9 @@ import type { CacheAddMetadata, ChangeFeedResult, CloudCache } from '../../cloud
 import { CoalescedCacheStore } from '../../coalesced-cache-store';
 import { replaceFolderInStore } from '../../listing-mutations';
 import type { DriveFileMetadata } from '../../provider-interface';
-import { isRootConfigFile, isSidecarFile } from '../../syncable-file';
+import { isCbzFile, isRootConfigFile, isSidecarFile } from '../../syncable-file';
 import { foldName } from '#lib/util/names/fold.js';
+import { isForeignArchiveFile, noteSkippedListedFile } from '../../foreign-archives';
 import { compareByAge } from '../../folder-deduplicator';
 import type { DriveChange, DriveFile } from './constants';
 import { HISTORY_FOLDER, isHistoryFileName } from '#lib/reading-history/paths.js';
@@ -87,7 +88,9 @@ type FileKind = 'archive' | 'history' | 'sidecar' | 'root-config';
 
 function fileKind(file: { name: string; mimeType?: string }): FileKind | null {
   if (file.mimeType === FOLDER_MIME) return null;
-  if (file.name.endsWith('.cbz')) return 'archive';
+  // By the fold (rule 2, R2), as every other provider lists: `Vol 2.CBZ` and
+  // `Vol 3.cb\u{200B}z` are archives here too.
+  if (isCbzFile(file.name)) return 'archive';
   // Reading history: placed by its full path, never by parent name.
   if (isHistoryFileName(file.name)) return 'history';
   // .mokuro / .mokuro.gz / cover images AND the per-series index
@@ -512,6 +515,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
         const sidecarFiles: DriveFile[] = [];
         const rootConfigFiles: DriveFile[] = [];
         const historyFiles: DriveFile[] = [];
+        const foreignArchives: DriveFile[] = [];
         // id -> name + parent, for paths deeper than one folder (history/<device>/…)
         const folders: FolderMap = new Map();
         const foundFolderNames: string[] = [];
@@ -538,6 +542,12 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
           else if (kind === 'history') historyFiles.push(item);
           else if (kind === 'sidecar') sidecarFiles.push(item);
           else if (kind === 'root-config') rootConfigFiles.push(item);
+          else if (isForeignArchiveFile(item.name)) foreignArchives.push(item);
+        }
+        // Not cached, only noted for the sweeps (`foreign-archives.ts`).
+        for (const item of foreignArchives) {
+          const parentName = item.parents?.[0] && folders.get(item.parents[0])?.name;
+          if (parentName) noteSkippedListedFile('google-drive', `${parentName}/${item.name}`);
         }
 
         // Log warning if duplicates found
@@ -922,7 +932,11 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
       const file = change.file;
       if (!file || isGone(change)) continue;
       const kind = fileKind(file);
-      if (!kind) continue;
+      if (!kind) {
+        const parentName = file.parents?.[0] && known(file.parents[0])?.name;
+        if (parentName) noteSkippedListedFile('google-drive', `${parentName}/${file.name}`);
+        continue;
+      }
       let id = file.parents?.[0];
       for (let depth = kind === 'history' ? 3 : 1; id && depth > 0; depth--) {
         // My Drive itself is no folder the app can read (a 404 under drive.file).

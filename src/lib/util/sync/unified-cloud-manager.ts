@@ -85,6 +85,7 @@ import { adoptCloudSeriesSpellings } from './cloud-spelling-adoption';
 import { recordUploadedPrimarySidecarBlob } from '#lib/catalog/mokuro-upload-record.js';
 import { sha256Hex } from '#lib/catalog/mokuro-hash.js';
 import {
+  FolderNames,
   cbzStemOf,
   cbzStemsOf,
   classifyMokuroSidecar,
@@ -94,6 +95,7 @@ import {
   splitLayerSidecarName,
   stripFoldedSuffix
 } from './syncable-file';
+import { foreignArchiveNamesIn } from './foreign-archives';
 
 /** A managed sidecar whose CONTENT embeds the volume's title/series (by its fold, R2). */
 function isMokuroSidecarPath(path: string): boolean {
@@ -140,10 +142,14 @@ interface VolumeLayerFile {
 
 /**
  * The OCR LAYER files (`<Volume>.<id>.mokuro[.gz]`) among a folder's listing
- * that belong to ONE volume, decided by archive presence exactly as every
- * other site does (`classifyMokuroSidecar`): `Vol 1.5.mokuro` is a layer of
- * `Vol 1` only when `Vol 1.5.cbz` is not listed. Returned with their ids so a
- * rename can rebuild the destination name.
+ * that layer sync SHOWS with ONE volume, decided by archive presence exactly as
+ * every other site does (`classifyMokuroSidecar`): `Vol 1.5.mokuro` is a layer
+ * of `Vol 1` only when `Vol 1.5.cbz` is not listed. Returned with their ids.
+ *
+ * Not what a delete or rename takes when the archive is listed: that is rule
+ * 2's stricter sweep (`volumeCloudFiles`, `FolderNames.volumeFiles`). This
+ * reading is kept for the series-rename gate (is a file some known volume's?)
+ * and for the case below, where no archive is listed to sweep by.
  *
  * When NO listed archive folds to the volume, the volume's own title stands
  * in for it. A backup sends the sidecars before the archive
@@ -203,6 +209,12 @@ function layerFilesOfVolume(
 
 function basenameOfPath(path: string): string {
   return normalizeCloudPath(path).split('/').pop() ?? '';
+}
+
+function parentOfPath(path: string): string {
+  const clean = normalizeCloudPath(path);
+  const slash = clean.lastIndexOf('/');
+  return slash < 0 ? '' : clean.slice(0, slash);
 }
 
 /**
@@ -284,8 +296,23 @@ function normalizeCloudPath(path: string): string {
   return path.replace(/^\/+|\/+$/g, '');
 }
 
-/** The volume-file suffixes a managed file's base is cut before (R2: on the fold). */
-const MANAGED_SUFFIXES = ['.cbz', '.mokuro.gz', '.mokuro', '.jpeg', '.webp', '.jpg'] as const;
+/**
+ * The volume-file suffixes a managed file's base is cut before (R2: on the
+ * fold). `.nocover` is Bunko's (it is never listed to the reader, Bunko sweeps
+ * it with the archive), named here so a rename would carry its suffix.
+ */
+const MANAGED_SUFFIXES = [
+  '.cbz',
+  '.mokuro.gz',
+  '.mokuro',
+  '.jpeg',
+  '.webp',
+  '.jpg',
+  '.nocover'
+] as const;
+
+/** The archive extensions no listing carries (`foreign-archives.ts`). */
+const FOREIGN_ARCHIVE_SUFFIXES = ['.cbr', '.zip', '.rar'] as const;
 
 function stripManagedFileExtension(path: string): string {
   return stripFoldedSuffix(path, MANAGED_SUFFIXES)?.raw ?? path;
@@ -795,9 +822,7 @@ class UnifiedCloudManager {
     if (files.length === 0) return;
 
     const ordered = [...files].sort(
-      (a, b) =>
-        Number(normalizeCloudPath(a.path).endsWith('.cbz')) -
-        Number(normalizeCloudPath(b.path).endsWith('.cbz'))
+      (a, b) => Number(isCbzFile(a.path)) - Number(isCbzFile(b.path))
     );
 
     const cache = cacheManager.getCache(provider.type);
@@ -922,34 +947,108 @@ class UnifiedCloudManager {
    * `getSweepableCloudFilesForVolume` instead.
    */
   getManagedCloudFilesForVolume(seriesTitle: string, volumeTitle: string): CloudFileMetadata[] {
-    // Both halves resolve the same way the folder does: byte-exact first, and a
-    // folded match only when nothing is spelled exactly right. A backend that
-    // decomposes a folder name decomposes the FILENAMES too, so a byte-wise
-    // lookup finds nothing to delete or move there — a silent no-op the UI
-    // reports as success. The exact-first order is what keeps that from widening
-    // anything: with the file the caller named present, a sibling that merely
-    // folds the same way is somebody else's backup and is never touched.
+    return this.volumeCloudFiles(seriesTitle, volumeTitle).files;
+  }
+
+  /**
+   * One volume's listed files, and which of them are its OCR layers.
+   *
+   * WHICH archive the caller's title names resolves the way the folder does:
+   * byte-exact first, and a folded match (R1) only when nothing is spelled
+   * exactly right, the R6 pick of several (`pickSpelling`). A backend that
+   * decomposes a folder name decomposes the filenames too, so a byte-wise
+   * lookup alone would find nothing to delete or move there.
+   *
+   * WHAT goes with that archive is sidecar names rule 2's sweep
+   * (`FolderNames.volumeFiles`, Bunko's `sweep_set`), asked of the folder's
+   * listed names plus the `.cbr`/`.zip`/`.rar` archives the listing passed
+   * over (`foreign-archives.ts`): its primary, cover and layers in every
+   * spelling the fold joins with its stem when it is alone of its fold, exact
+   * spellings only in a fold group (R6), and never another archive's file —
+   * `Vol 01.5.mokuro` stays beside `Vol 01.5.zip` although it reads as layer
+   * `5` of `Vol 01`.
+   *
+   * With NO archive listed (a backup whose archive PUT failed after its
+   * sidecars went up) the title stands in for it: its files spelled exactly
+   * like it, else the R6 pick of those that fold alike, and the layer files
+   * placed by the local title (`layerFilesOfVolume`).
+   */
+  private volumeCloudFiles(
+    seriesTitle: string,
+    volumeTitle: string
+  ): { files: CloudFileMetadata[]; layers: VolumeLayerFile[] } {
     const folderTitle = this.resolveCloudFolderTitle(seriesTitle);
     const files = this.getCloudVolumesBySeries(folderTitle);
-
+    const folderPath = normalizeCloudPath(folderTitle);
     const basePath = normalizeCloudPath(`${folderTitle}/${volumeTitle}`);
-    const withLayers = (group: CloudFileMetadata[], baseName: string): CloudFileMetadata[] => {
-      // The volume's OCR layer files ride with it: moved on rename, removed
-      // on delete. They are never in `group` — their stripped base is
-      // `<title>.<id>`, not `<title>` — so they are joined here by
-      // classification against the folder's archives.
-      const layers = layerFilesOfVolume(files, baseName).map((l) => l.file);
-      return layers.length > 0 ? [...group, ...layers] : group;
-    };
-    const exact = files.filter(
-      (file) => stripManagedFileExtension(normalizeCloudPath(file.path)) === basePath
-    );
-    if (exact.length > 0) return withLayers(exact, volumeTitle);
+    const providerType = this.getActiveProvider()?.type;
+    const foreign = providerType ? foreignArchiveNamesIn(providerType, folderPath) : [];
 
     const key = normalizeVolumeTitleKey(volumeTitle);
-    if (!key) return exact;
+    const archives = files.filter((file) => {
+      const path = normalizeCloudPath(file.path);
+      if (!isCbzFile(path) || foldName(parentOfPath(path)) !== foldName(folderPath)) return false;
+      return (
+        stripManagedFileExtension(path) === basePath ||
+        (!!key && normalizeVolumeTitleKey(cbzStemOf(basenameOfPath(path)) ?? '') === key)
+      );
+    });
+    const exactArchive = archives.find(
+      (file) => stripManagedFileExtension(normalizeCloudPath(file.path)) === basePath
+    );
+    const archiveName = exactArchive
+      ? basenameOfPath(exactArchive.path)
+      : pickSpelling(
+          archives.map((file) => basenameOfPath(file.path)),
+          `${volumeTitle}.cbz`
+        );
+    if (archiveName !== undefined) {
+      const archive = (exactArchive ??
+        archives.find((f) => basenameOfPath(f.path) === archiveName))!;
+      const dir = parentOfPath(normalizeCloudPath(archive.path));
+      const inDir = files.filter((file) => parentOfPath(normalizeCloudPath(file.path)) === dir);
+      const folder = new FolderNames([
+        ...inDir.map((file) => basenameOfPath(file.path)),
+        ...foreign
+      ]);
+      const owned = new Map(folder.volumeFiles(archiveName).map(({ name, file }) => [name, file]));
+      const out: CloudFileMetadata[] = [];
+      const layers: VolumeLayerFile[] = [];
+      for (const file of inDir) {
+        const name = basenameOfPath(file.path);
+        // Every listed copy of the archive itself (a store may list two).
+        if (name === archiveName) {
+          out.push(file);
+          continue;
+        }
+        const kind = owned.get(name);
+        if (!kind) continue;
+        out.push(file);
+        if (kind.kind === 'layer') layers.push({ file, layerId: kind.layerId, gz: kind.gz });
+      }
+      return { files: out, layers };
+    }
+
+    // No archive listed. A name a listed `.cbr`/`.zip`/`.rar` gives a stem to
+    // is that volume's, never this one's (R2).
+    const foreignStems = new Set(
+      foreign.map((name) => stripFoldedSuffix(name, FOREIGN_ARCHIVE_SUFFIXES)?.fold)
+    );
+    const notForeign = (file: CloudFileMetadata) =>
+      !foreignStems.has(managedBaseFold(basenameOfPath(file.path)));
+    const localLayers = layerFilesOfVolume(files, volumeTitle).filter((l) => notForeign(l.file));
+    const withLayers = (group: CloudFileMetadata[]) => ({
+      files: [...group, ...localLayers.map((l) => l.file)],
+      layers: localLayers
+    });
+    const exact = files.filter(
+      (file) =>
+        notForeign(file) && stripManagedFileExtension(normalizeCloudPath(file.path)) === basePath
+    );
+    if (exact.length > 0 || !key) return withLayers(exact);
     const byBase = new Map<string, CloudFileMetadata[]>();
     for (const file of files) {
+      if (!notForeign(file)) continue;
       const base = stripManagedFileExtension(normalizeCloudPath(file.path));
       const name = base.slice(base.lastIndexOf('/') + 1);
       if (normalizeVolumeTitleKey(name) !== key) continue;
@@ -957,13 +1056,10 @@ class UnifiedCloudManager {
       if (group) group.push(file);
       else byBase.set(base, [file]);
     }
-    if (byBase.size === 0) return exact;
-    // Still ONE volume's files: of several spellings the R6 pick (one that
-    // folds like the title, else the code-point-smallest), ordered rather than
-    // first-seen so it cannot depend on listing order (same rule as
-    // `resolveCloudFolderTitle`).
-    const base = pickSpelling(byBase.keys(), basePath)!;
-    return withLayers(byBase.get(base)!, base.slice(base.lastIndexOf('/') + 1));
+    if (byBase.size === 0) return withLayers([]);
+    // Still ONE volume's files: of several spellings the R6 pick, ordered
+    // rather than first-seen so it cannot depend on listing order.
+    return withLayers(byBase.get(pickSpelling(byBase.keys(), basePath)!)!);
   }
 
   /**
@@ -980,15 +1076,8 @@ class UnifiedCloudManager {
     volumeTitle: string,
     volumeUuid?: string
   ): Promise<CloudFileMetadata[]> {
-    const managed = this.getManagedCloudFilesForVolume(seriesTitle, volumeTitle);
+    const { files: managed, layers } = this.volumeCloudFiles(seriesTitle, volumeTitle);
     const folderTitle = this.resolveCloudFolderTitle(seriesTitle);
-    // The same classification `getManagedCloudFilesForVolume` joined them by
-    // (it folds the title, so the caller's spelling finds the cloud's), kept
-    // to the files that view actually returned.
-    const layers = layerFilesOfVolume(
-      this.getCloudVolumesBySeries(folderTitle),
-      volumeTitle
-    ).filter((l) => managed.includes(l.file));
     if (layers.length === 0) return managed;
     const swept = managed.filter((file) => !layers.some((l) => l.file === file));
 
@@ -1190,10 +1279,7 @@ class UnifiedCloudManager {
     // rename (attachment is by filename) and are MOVED like the archive and
     // cover — never regenerated, never deleted as "the stale .mokuro".
     const layerDestinations = new Map<CloudFileMetadata, string>();
-    for (const layer of layerFilesOfVolume(
-      this.getCloudVolumesBySeries(oldSeriesTitle),
-      oldVolumeTitle
-    )) {
+    for (const layer of this.volumeCloudFiles(oldSeriesTitle, oldVolumeTitle).layers) {
       if (!managedFiles.includes(layer.file)) continue;
       layerDestinations.set(
         layer.file,
@@ -1203,6 +1289,31 @@ class UnifiedCloudManager {
     const isLayerFile = (file: CloudFileMetadata) => layerDestinations.has(file);
     const isPrimaryMokuro = (file: CloudFileMetadata) =>
       isMokuroSidecarPath(file.path) && !isLayerFile(file);
+    // Alone of its fold, the archive's sweep takes every spelling the fold
+    // joins with its stem (`Straße.webp` and `STRASSE.webp`), and two of them
+    // would move onto ONE new name: the second move would replace or refuse
+    // over the first. One moves — spelled like the archive, else the
+    // code-point-smallest — and the others stay where they are, untouched.
+    const archiveStem = cbzStemOf(
+      basenameOfPath(managedFiles.find((file) => isCbzFile(file.path))?.path ?? '')
+    );
+    const moveOrder = (files: CloudFileMetadata[]) =>
+      [...files].sort((a, b) => {
+        const exact = (f: CloudFileMetadata) =>
+          archiveStem !== null && basenameOfPath(f.path).startsWith(`${archiveStem}.`) ? 0 : 1;
+        return exact(a) - exact(b) || compareCodePoints(a.path, b.path);
+      });
+    const claimed = new Set<string>();
+    const claim = (file: CloudFileMetadata, destination: string): boolean => {
+      if (!claimed.has(destination)) {
+        claimed.add(destination);
+        return true;
+      }
+      console.warn(
+        `[cloud] leaving '${file.path}' where it is: another spelling of it moves to '${destination}'`
+      );
+      return false;
+    };
 
     // Regenerate the fresh .mokuro FIRST (no remote mutation yet), built with
     // the new names (overrides — the DB still holds the old ones until this
@@ -1353,9 +1464,11 @@ class UnifiedCloudManager {
         );
       }
     } else {
-      for (const file of managedFiles) {
+      for (const file of moveOrder(managedFiles)) {
         if (!isPrimaryMokuro(file)) continue;
-        await this.moveFile(provider, file, `${newBasePath}${managedExtensionOf(file.path)}`);
+        const destination = `${newBasePath}${managedExtensionOf(file.path)}`;
+        if (!claim(file, destination)) continue;
+        await this.moveFile(provider, file, destination);
         changed++;
       }
     }
@@ -1366,20 +1479,26 @@ class UnifiedCloudManager {
     //    error-swallowing here: a file moved by a prior attempt is simply
     //    absent from the old path after the fresh fetch, so it never
     //    re-enters these loops.
-    for (const file of managedFiles) {
+    for (const file of moveOrder(managedFiles)) {
       if (!isLayerFile(file)) continue;
-      await this.moveFile(provider, file, layerDestinations.get(file)!);
+      const destination = layerDestinations.get(file)!;
+      if (!claim(file, destination)) continue;
+      await this.moveFile(provider, file, destination);
       changed++;
     }
     const movedByName = managedFiles.filter(
       (file) => !isLayerFile(file) && !isMokuroSidecarPath(file.path)
     );
     const archivesLast = [
-      ...movedByName.filter((file) => !isCbzFile(file.path)),
+      ...moveOrder(movedByName.filter((file) => !isCbzFile(file.path))),
       ...movedByName.filter((file) => isCbzFile(file.path))
     ];
     for (const file of archivesLast) {
-      await this.moveFile(provider, file, `${newBasePath}${managedExtensionOf(file.path)}`);
+      const destination = `${newBasePath}${managedExtensionOf(file.path)}`;
+      // Two listed copies of the archive itself are the store's business
+      // (dedup), as before: both move.
+      if (!isCbzFile(file.path) && !claim(file, destination)) continue;
+      await this.moveFile(provider, file, destination);
       changed++;
     }
 

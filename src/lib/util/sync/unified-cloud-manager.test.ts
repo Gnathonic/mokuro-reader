@@ -2,6 +2,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { normalizeVolumeTitleKey } from '#lib/metadata/series-key.js';
 import { unifiedSyncService } from './unified-sync-service';
 import type { CloudFileMetadata } from './provider-interface';
+import vendoredSidecarNames from '#lib/interop/contract/sidecar-names.json';
+import { compareCodePoints } from '#lib/util/names/fold.js';
+import { cbzStemOf, isCbzFile, isSyncableFile, splitLayerSidecarName } from './syncable-file';
+import { noteSkippedListedFile, resetForeignArchivesForTest } from './foreign-archives';
 
 const fetchAll = vi.fn();
 const getBySeries = vi.fn();
@@ -568,7 +572,7 @@ describe('UnifiedCloudManager rename operations', () => {
     ]);
   });
 
-  it('a layer spelled like NEITHER of two folded-alike archives has ONE owner, whatever the listing order', async () => {
+  it('a layer spelled like NEITHER of two folded-alike archives goes with neither, whatever the listing order', async () => {
     const file = (path: string): CloudFileMetadata => ({
       provider: 'webdav',
       fileId: path,
@@ -581,13 +585,170 @@ describe('UnifiedCloudManager rename operations', () => {
     const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     const managed = (volume: string) =>
       unifiedCloudManager.getManagedCloudFilesForVolume('S', volume).map((f) => f.path);
-    // The same owner layer sync files it under (`layerOwnerArchive`): the
-    // code-point-smallest of the archives that fold alike (R6) — never both volumes.
-    expect(managed('VOL 3')).toEqual(['S/VOL 3.cbz', 'S/vol 3.hayai.mokuro']);
+    // Layer sync SHOWS it with the code-point-smallest (`layerOwnerArchive`),
+    // but a sweep takes exact spellings only in a fold group (R6): deleting or
+    // renaming either volume leaves it where it is.
+    expect(managed('VOL 3')).toEqual(['S/VOL 3.cbz']);
     expect(managed('Vol 3')).toEqual(['S/Vol 3.cbz']);
     files = [...files].reverse();
-    expect(managed('VOL 3')).toEqual(['S/VOL 3.cbz', 'S/vol 3.hayai.mokuro']);
+    expect(managed('VOL 3')).toEqual(['S/VOL 3.cbz']);
     expect(managed('Vol 3')).toEqual(['S/Vol 3.cbz']);
+  });
+
+  describe("rule 2's sweep vectors through the real delete/rename views", () => {
+    const file = (path: string): CloudFileMetadata => ({
+      provider: 'webdav',
+      fileId: path,
+      path,
+      modifiedTime: 't',
+      size: 1
+    });
+    /**
+     * `folder` as the cloud manager sees it: every name in the listing (as fed),
+     * or as the providers really list it — the `.cbr`/`.zip`/`.rar` and
+     * `.nocover` files dropped (`isSyncableFile`), the foreign archives noted
+     * for the sweeps (`foreign-archives.ts`).
+     */
+    function serve(folder: string[], mode: 'fed' | 'listed'): string[] {
+      resetForeignArchivesForTest();
+      const listed = mode === 'fed' ? folder : folder.filter((name) => isSyncableFile(`S/${name}`));
+      if (mode === 'listed') {
+        for (const name of folder) {
+          if (!isSyncableFile(`S/${name}`)) noteSkippedListedFile('webdav', `S/${name}`);
+        }
+      }
+      const files = listed.map((name) => file(`S/${name}`));
+      getBySeries.mockImplementation((s: string) =>
+        files.filter((f) => f.path.startsWith(`${s}/`))
+      );
+      getActiveProvider.mockReturnValue(makeRenameProvider());
+      // Every layer-shaped file is vouched for by a synced row of its id, so
+      // the sweepable set is the rule's set and nothing narrower.
+      layerRows.mockResolvedValue(
+        files.flatMap((f) => {
+          const split = splitLayerSidecarName(f.path.split('/').pop()!);
+          return split ? [stampedLayer('uuid-v', split.layerId, f)] : [];
+        })
+      );
+      return listed;
+    }
+    const sorted = (names: string[]) => [...names].sort(compareCodePoints);
+    /** The paths a provider mock was called with, in call order. */
+    const calledPaths = (mock: { mock: { calls: unknown[] } }) =>
+      (mock.mock.calls as [CloudFileMetadata][]).map(([f]) => f.path);
+
+    for (const mode of ['fed', 'listed'] as const) {
+      it.each(vendoredSidecarNames.sweep.map((v) => [JSON.stringify(v.archive), v] as const))(
+        `deleting %s takes the rule's sweep (${mode})`,
+        async (_, { archive, folder, expect: want, why }) => {
+          const listed = serve(folder, mode);
+          const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
+          const stem = cbzStemOf(archive)!;
+          const expected = sorted([archive, ...want.filter((name) => listed.includes(name))]);
+          const names = (got: CloudFileMetadata[]) => sorted(got.map((f) => f.path.slice(2)));
+          expect(names(unifiedCloudManager.getManagedCloudFilesForVolume('S', stem)), why).toEqual(
+            expected
+          );
+          expect(
+            names(await unifiedCloudManager.getSweepableCloudFilesForVolume('S', stem, 'uuid-v')),
+            why
+          ).toEqual(expected);
+        }
+      );
+
+      it.each(vendoredSidecarNames.owner.map((v) => [JSON.stringify(v.name), v] as const))(
+        `%s goes with its sweep archive and no other (${mode})`,
+        async (_, { name, folder, sweep, why }) => {
+          // `folder` lists what is beside `name`.
+          serve([...folder, name], mode);
+          const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
+          for (const archive of folder.filter((n) => isCbzFile(n))) {
+            const taken = (
+              await unifiedCloudManager.getSweepableCloudFilesForVolume(
+                'S',
+                cbzStemOf(archive)!,
+                'uuid-v'
+              )
+            ).some((f) => f.path === `S/${name}`);
+            expect(taken, `${why}: ${archive}`).toBe(sweep === archive);
+          }
+        }
+      );
+    }
+
+    it("deleting Vol 01 leaves the .zip volume's main, though layer sync stamped it as layer 5", async () => {
+      // The listing drops `Vol 01.5.zip`; the listing's note of it is what
+      // keeps its main out of the sweep.
+      serve(['Vol 01.cbz', 'Vol 01.5.zip', 'Vol 01.5.mokuro', 'Vol 01.mokuro'], 'listed');
+      const provider = makeRenameProvider();
+      getActiveProvider.mockReturnValue(provider);
+      getCache.mockReturnValue(loadedCache());
+      const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
+      await unifiedCloudManager.deleteManagedVolume('S', 'Vol 01', 'uuid-v');
+      expect(calledPaths(provider.deleteFile)).toEqual(['S/Vol 01.mokuro', 'S/Vol 01.cbz']);
+    });
+
+    it('renaming a lone Straße.cbz carries the files only the fold joins with it', async () => {
+      serve(['Straße.cbz', 'STRASSE.mokuro', 'STRASSE.webp', 'strasse.EDIT.mokuro'], 'listed');
+      const provider = makeRenameProvider();
+      getActiveProvider.mockReturnValue(provider);
+      getCache.mockReturnValue(loadedCache());
+      generateSidecars.mockResolvedValue({
+        mokuro: { filename: 'Neu.mokuro', blob: new Blob(['{}']) }
+      });
+      const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
+      await unifiedCloudManager.renameVolume('S', 'Straße', 'S', 'Neu', 'uuid-v');
+      const moves = provider.renameFile.mock.calls.map(
+        ([f, to]) => `${(f as CloudFileMetadata).path} -> ${to}`
+      );
+      expect(moves).toEqual([
+        'S/strasse.EDIT.mokuro -> S/Neu.edit.mokuro',
+        'S/STRASSE.webp -> S/Neu.webp',
+        'S/Straße.cbz -> S/Neu.cbz'
+      ]);
+      // The main is rebuilt at the new name, and the old one goes: no OCR is
+      // left under the old name to bring the old title back.
+      expect(
+        (provider.uploadFile.mock.calls as unknown as [string][]).map(([path]) => path)
+      ).toEqual(['S/Neu.mokuro']);
+      expect(calledPaths(provider.deleteFile)).toEqual(['S/STRASSE.mokuro']);
+    });
+  });
+
+  it('two spellings the fold joins never move onto one new name: one moves, the other stays', async () => {
+    const cache = loadedCache();
+    const provider = makeRenameProvider();
+    const file = (path: string): CloudFileMetadata => ({
+      provider: 'webdav',
+      fileId: path,
+      path,
+      modifiedTime: 't',
+      size: 1
+    });
+    const files = [
+      file('S/Straße.cbz'),
+      file('S/STRASSE.webp'),
+      file('S/Straße.webp'),
+      file('S/STRASSE.gcv.mokuro'),
+      file('S/strasse.gcv.mokuro')
+    ];
+    layerRows.mockResolvedValue([stampedLayer('uuid-1', 'gcv', files[3])]);
+    getActiveProvider.mockReturnValue(provider);
+    getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
+    getCache.mockReturnValue(cache);
+    generateSidecars.mockResolvedValue({ mokuro: null });
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
+    await unifiedCloudManager.renameVolume('S', 'Straße', 'S', 'Neu', 'uuid-1');
+    expect(
+      provider.renameFile.mock.calls.map(([f, to]) => `${(f as CloudFileMetadata).path} -> ${to}`)
+    ).toEqual([
+      // Neither layer is spelled like the archive: the code-point-smallest.
+      'S/STRASSE.gcv.mokuro -> S/Neu.gcv.mokuro',
+      // The cover spelled like the archive.
+      'S/Straße.webp -> S/Neu.webp',
+      'S/Straße.cbz -> S/Neu.cbz'
+    ]);
+    expect(provider.deleteFile).not.toHaveBeenCalled();
   });
 
   it('a rename MOVES the layer files to the new name and never deletes them', async () => {

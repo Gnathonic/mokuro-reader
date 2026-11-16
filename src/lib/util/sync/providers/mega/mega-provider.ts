@@ -24,6 +24,7 @@ import {
   QUEUE_FILE_NAME,
   SERIES_QUEUE_FILE_NAME
 } from '../../syncable-file';
+import { isForeignArchiveFile, noteSkippedListedFile } from '../../foreign-archives';
 import { foldName } from '#lib/util/names/fold.js';
 import {
   ControlNodeCache,
@@ -1408,8 +1409,10 @@ export class MegaProvider implements SyncProvider {
         const isSidecar = isSidecarFile(name);
         const isJson = isRootConfigFile(name);
         const isHistory = isHistoryFileName(name);
+        // Not listed, only noted for the sweeps (`foreign-archives.ts`).
+        const isForeignArchive = isForeignArchiveFile(name);
 
-        if (!isCbz && !isSidecar && !isJson && !isHistory) continue;
+        if (!isCbz && !isSidecar && !isJson && !isHistory && !isForeignArchive) continue;
 
         // Deleted (still in storage.files) or in the Rubbish Bin — including a
         // whole mokuro-reader folder moved there, which the walk below would
@@ -1451,6 +1454,10 @@ export class MegaProvider implements SyncProvider {
           // A history name only counts at history/<device>/<file>: a stray
           // `device.json` in a series folder is not ours.
           if (isHistory && !isCbz && !isSidecar && !isHistoryFilePath(path)) continue;
+          if (isForeignArchive && !isCbz && !isSidecar && !isJson && !isHistory) {
+            noteSkippedListedFile('mega', path);
+            continue;
+          }
 
           // Get file metadata
           const fileId = (file as any).nodeId || (file as any).id || '';

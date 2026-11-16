@@ -44,6 +44,7 @@ export const MARKER_SNAPSHOT = {
   dedup: true,
   curated: true,
   took_over_from: null as string | null,
+  sidecar_rule: 2,
   per_user_files: ['volume-data.json', 'profiles.json', 'goals.json', 'positions.json', 'history/']
 };
 

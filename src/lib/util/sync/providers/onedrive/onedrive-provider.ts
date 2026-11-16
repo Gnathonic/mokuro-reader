@@ -28,6 +28,7 @@ import {
 import { oneDriveRevision } from '../../core/providers/onedrive-core';
 import { getCloudProviderCore } from '../../core/cloud-provider-core-registry';
 import { isSyncableFile } from '../../syncable-file';
+import { noteSkippedListedFile } from '../../foreign-archives';
 import {
   ControlNodeCache,
   controlReadKey,
@@ -393,7 +394,10 @@ export class OneDriveProvider implements SyncProvider {
         await this.walkInto(token, childPath, results);
       } else if (item.file) {
         const relative = childPath.replace(`${ONEDRIVE_CONFIG.MOKURO_FOLDER}/`, '');
-        if (!isSyncableFile(relative)) continue;
+        if (!isSyncableFile(relative)) {
+          noteSkippedListedFile('onedrive', relative);
+          continue;
+        }
         results.push({
           provider: 'onedrive',
           fileId: item.id,

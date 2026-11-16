@@ -396,6 +396,21 @@ export function layerOwnerArchive(
   return best;
 }
 
+/**
+ * A volume's cover: Bunko's `.webp`, and the reader-only image covers
+ * (`.jpg`/`.jpeg`, R2: matched on the fold too). Bunko never lists the latter
+ * as covers, so its vectors never name one.
+ */
+const COVER_SUFFIXES = ['.webp', '.jpeg', '.jpg'] as const;
+
+function stripCover(name: string): { raw: string; fold: string } | null {
+  for (const suffix of COVER_SUFFIXES) {
+    const cut = stripFolded(name, suffix);
+    if (cut) return cut;
+  }
+  return null;
+}
+
 /** One file of a volume, as {@link FolderNames.volumeFiles} finds it; a layer's id is folded. */
 export type VolumeFileKind =
   | { kind: 'primary'; gz: boolean }
@@ -476,7 +491,7 @@ export class FolderNames {
     if (mokuro) {
       cut = { raw: mokuro.base, fold: mokuro.fold };
       file = { kind: 'primary', gz: mokuro.gz };
-    } else if ((cut = stripFolded(name, '.webp'))) {
+    } else if ((cut = stripCover(name))) {
       file = { kind: 'cover' };
     } else if ((cut = stripFolded(name, '.nocover'))) {
       file = { kind: 'nocover' };
@@ -525,7 +540,7 @@ export class FolderNames {
   private ownerStem(name: string): { stem: string; fold: string } | null {
     const read = readSidecar(name, this.stems);
     if (read) return { stem: read.stem, fold: read.fold };
-    for (const suffix of ['.webp', '.nocover']) {
+    for (const suffix of [...COVER_SUFFIXES, '.nocover']) {
       const cut = stripFolded(name, suffix);
       if (cut) return this.stems.has(cut.fold) ? { stem: cut.raw, fold: cut.fold } : null;
     }

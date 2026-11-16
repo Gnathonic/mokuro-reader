@@ -45,6 +45,7 @@ import {
   stripFoldedSuffix
 } from '../../syncable-file';
 import { foldName } from '#lib/util/names/fold.js';
+import { noteSkippedListedFile } from '../../foreign-archives';
 import { controlReadKey, controlSetEtag, isPathSafeFolderName } from '../../control-file-read';
 import { withCloudBunkoStatus } from '#lib/catalog/cloud-bunko-marker.js';
 import { bunkoSupportsHistory } from './bunko-version';
@@ -1451,6 +1452,8 @@ export class WebDAVProvider implements SyncProvider {
                 size: item.size || 0,
                 ...etagFields(item.etag)
               });
+            } else {
+              noteSkippedListedFile('webdav', relativePath);
             }
           }
         }
@@ -1508,6 +1511,8 @@ export class WebDAVProvider implements SyncProvider {
             size: item.size || 0,
             ...etagFields(item.etag)
           });
+        } else {
+          noteSkippedListedFile('webdav', relativePath);
         }
       }
     }
@@ -1914,7 +1919,10 @@ export class WebDAVProvider implements SyncProvider {
     const take = (item: Item) => {
       if (item.type !== 'file') return;
       const relativePath = item.filename.replace(MOKURO_FOLDER + '/', '');
-      if (!isSyncableFile(relativePath)) return;
+      if (!isSyncableFile(relativePath)) {
+        noteSkippedListedFile('webdav', relativePath);
+        return;
+      }
       out.push({
         provider: 'webdav',
         fileId: item.filename,
