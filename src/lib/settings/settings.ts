@@ -175,8 +175,9 @@ export type Settings = {
    */
   edgeButtonWidth: number;
   /**
-   * Tap-to-turn OUTSIDE the page image (#54): taps and clicks on the
-   * background beside or below the page (the letterbox) turn it. Off for
+   * Tap-to-turn OUTSIDE the page image (#54): taps and clicks anywhere on
+   * the background around the page (beside, above or below it, out to the
+   * screen's edge) turn it. Off for
    * devices with physical page-turn buttons, where a tap on empty space (e.g.
    * dismissing a dictionary popup) must not move the page. Each region has
    * exactly one control: this one never reaches onto the image, and

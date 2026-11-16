@@ -7,8 +7,8 @@
    * Tap-to-turn (#54) as ONE group: two controls, one region each, never
    * overlapping (`PageTurnZones.svelte`).
    *
-   * - "Tap beside or below the page" (`tapOutsideImageToTurn`): the
-   *   background outside the page image.
+   * - "Tap outside the page" (`tapOutsideImageToTurn`): ALL of the
+   *   background outside the page image — beside, above and below it.
    * - "Page edge zone" (`edgeButtonWidth`, 0 = off): a strip on the page
    *   image's own left / right edge — on desktop also down the screen's edge,
    *   wherever the page is under it.
@@ -24,8 +24,8 @@
   <div class="space-y-3">
     <SettingToggle
       key="tapOutsideImageToTurn"
-      text="Tap beside or below the page"
-      description="Taps on the empty background turn the page. Turn off to tap there safely, e.g. to close a dictionary popup."
+      text="Tap outside the page"
+      description="Taps on the empty background around the page turn it. Turn off to tap there safely, e.g. to close a dictionary popup."
     />
     <div>
       <Label for="page-edge-zone" class="mb-1 text-gray-900 dark:text-white">

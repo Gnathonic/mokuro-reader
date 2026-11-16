@@ -13,10 +13,13 @@ vi.mock('#lib/settings/index.js', async () => {
 });
 
 import PageTurnZones from '../PageTurnZones.svelte';
+import { BACKGROUND_ZONES } from '#lib/reader/page-turn-zones.js';
 
 const BACKGROUND = [
   'Previous page (left background)',
   'Next page (right background)',
+  'Previous page (above, left)',
+  'Next page (above, right)',
   'Previous page (below, left)',
   'Next page (below, right)'
 ];
@@ -54,13 +57,20 @@ describe('PageTurnZones — one region, one control (#54)', () => {
       edgeButtonWidth: 40
     });
     const [left, right] = getAllByRole('button');
-    expect(left.className).toContain('-left-full');
-    expect(left.className).toContain('w-full');
-    expect(right.className).toContain('-right-full');
-    for (const b of getAllByRole('button').slice(0, 4)) {
+    // The side columns end exactly at the spread's edge…
+    expect(left.style.right).toBe('100%');
+    expect(right.style.left).toBe('100%');
+    // …and the bands above / below start exactly at its top / bottom.
+    const bands = getAllByRole('button').slice(2, 6);
+    expect(bands.map((b) => b.style.bottom || `top ${b.style.top}`)).toEqual([
+      '100%',
+      '100%',
+      'top 100%',
+      'top 100%'
+    ]);
+    for (const b of getAllByRole('button').slice(0, 6)) {
       expect(b.style.marginLeft).toBe('');
       expect(b.style.marginRight).toBe('');
-      expect(b.style.width).toBe('');
     }
   });
 
@@ -84,8 +94,8 @@ describe('PageTurnZones — one region, one control (#54)', () => {
     const buttons = getAllByRole('button');
     expect(labels(buttons)).toEqual(BACKGROUND);
     for (const b of buttons) await fireEvent.mouseUp(b);
-    expect(onLeft).toHaveBeenCalledTimes(2);
-    expect(onRight).toHaveBeenCalledTimes(2);
+    expect(onLeft).toHaveBeenCalledTimes(3);
+    expect(onRight).toHaveBeenCalledTimes(3);
   });
 
   it('toggle off: the background is inert, the page edges still turn', async () => {
@@ -95,12 +105,16 @@ describe('PageTurnZones — one region, one control (#54)', () => {
     });
     expect(labels(getAllByRole('button'))).toEqual(PAGE_EDGE);
     const zones = [...container.querySelectorAll<HTMLElement>('[data-page-turn-zone]')];
-    expect(zones.map((z) => z.className)).toEqual([
-      'fixed -left-full z-10 h-full w-full',
-      'fixed -right-full z-10 h-full w-full',
-      'fixed top-full -left-full z-10 h-screen w-[150%]',
-      'fixed top-full -right-full z-10 h-screen w-[150%]'
-    ]);
+    // The same boxes as the buttons, so a gesture starts in the same places.
+    const cssText = (style: string) => {
+      const el = document.createElement('div');
+      el.setAttribute('style', style);
+      return el.style.cssText;
+    };
+    expect(zones.map((z) => z.style.cssText)).toEqual(
+      BACKGROUND_ZONES.map((z) => cssText(z.style))
+    );
+    expect(zones[0].style.right).toBe('100%');
     for (const z of zones) {
       expect(z.getAttribute('aria-hidden')).toBe('true');
       await fireEvent.mouseDown(z);
@@ -125,7 +139,7 @@ describe('PageTurnZones — one region, one control (#54)', () => {
       edgeButtonWidth: 0
     });
     expect(queryAllByRole('button')).toHaveLength(0);
-    expect(container.querySelectorAll('[data-page-turn-zone]')).toHaveLength(4);
+    expect(container.querySelectorAll('[data-page-turn-zone]')).toHaveLength(6);
   });
 
   it.each([
@@ -147,11 +161,11 @@ describe('PageTurnZones — one region, one control (#54)', () => {
       const seen: string[] = [];
       for (const type of types) wrapper.addEventListener(type, () => seen.push(type));
       const zones = wrapper.querySelectorAll(selector);
-      expect(zones).toHaveLength(4);
+      expect(zones).toHaveLength(6);
       for (const z of zones) {
         for (const type of types) z.dispatchEvent(new Event(type, { bubbles: true }));
       }
-      expect(seen).toHaveLength(20);
+      expect(seen).toHaveLength(30);
       wrapper.remove();
     }
   );
@@ -161,14 +175,14 @@ describe('PageTurnZones — one region, one control (#54)', () => {
       tapOutsideImageToTurn: true,
       edgeButtonWidth: 40
     });
-    expect(queryAllByRole('button')).toHaveLength(6);
+    expect(queryAllByRole('button')).toHaveLength(8);
     store.current.set({ tapOutsideImageToTurn: false, edgeButtonWidth: 40 });
     await Promise.resolve();
     expect(labels(queryAllByRole('button'))).toEqual(PAGE_EDGE);
     store.current.set({ tapOutsideImageToTurn: false, edgeButtonWidth: 0 });
     await Promise.resolve();
     expect(queryAllByRole('button')).toHaveLength(0);
-    expect(container.querySelectorAll('[data-page-turn-zone]')).toHaveLength(4);
+    expect(container.querySelectorAll('[data-page-turn-zone]')).toHaveLength(6);
   });
 });
 

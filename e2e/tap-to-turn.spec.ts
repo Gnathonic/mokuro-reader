@@ -8,15 +8,18 @@ import { writeSyntheticVolume, type SyntheticVolume } from './helpers/synthetic-
  * - The page IMAGE's own left / right edge: `edgeButtonWidth` px (the slider,
  *   0 = off). On desktop the same control also runs down the screen's edge,
  *   but only where the page is under it (a page zoomed past the screen).
- * - OUTSIDE the image — the background beside and below the page:
- *   `tapOutsideImageToTurn` (the toggle). Off, those zones stay as inert boxes
- *   INSIDE the paged viewport's wrapper, where its gesture tracker, wheel
- *   listener and `touch-action: none` live, so a swipe, wheel or ctrl+wheel
- *   zoom that starts beside the page still works.
+ * - OUTSIDE the image — ALL of the background, beside, above and below the
+ *   page, out to the screen's edge: `tapOutsideImageToTurn` (the toggle).
+ *   Off, those zones stay as inert boxes INSIDE the paged viewport's
+ *   wrapper, where its gesture tracker, wheel listener and
+ *   `touch-action: none` live, so a swipe, wheel or ctrl+wheel zoom that
+ *   starts beside the page still works.
  *
  * The synthetic pages are 600×900 portraits: fit to a 1920×1080 screen they
  * leave wide margins either side; fit to a tall 800×1400 screen they leave a
- * band below the page, where the bottom zones live.
+ * band below the page; on a 2560×1080 screen, or a phone in landscape, the
+ * margin is wider than the page; on a phone in portrait the page is centred
+ * with background above and below.
  *
  * Every zone is driven both ways a reader hits it — a mouse click and a
  * touch tap. RTL (the default): the LEFT zones turn forward.
@@ -398,6 +401,141 @@ test.describe('tap to turn pages: one region, one control (#54)', () => {
         await expectNoTurn(page, () => page.mouse.click(point.x, point.y));
         await expectNoTurn(page, () => page.touchscreen.tap(point.x, point.y));
       }
+    });
+  });
+
+  /** Is the document still unscrolled? The far-reaching zones must add no scroll. */
+  async function expectUnscrolled(page: Page) {
+    expect(
+      await page.evaluate(() => [
+        window.scrollX,
+        window.scrollY,
+        document.documentElement.scrollLeft,
+        document.documentElement.scrollTop
+      ])
+    ).toEqual([0, 0, 0, 0]);
+  }
+
+  test.describe('the whole background, out to the screen edge (wide screen)', () => {
+    // A 600×900 page fit to 2560×1080 leaves ~920 px of background either side
+    // — more than one page-width.
+    test.use({ viewport: { width: 2560, height: 1080 } });
+    const OUTER_LEFT = [
+      { x: 3, y: 540 },
+      { x: 30, y: 540 },
+      { x: 3, y: 3 },
+      { x: 30, y: 1076 }
+    ];
+    const OUTER_RIGHT = { x: 2556, y: 540 };
+
+    test('toggle on: the outer background turns with the slider at 0 or at 40', async ({
+      page
+    }) => {
+      await setup(page, { mobile: false, tapOutsideImageToTurn: true, edgeButtonWidth: 0 });
+      const rect = await pageRect(page);
+      expect(rect.left).toBeGreaterThan(rect.width + 100);
+      for (const point of OUTER_LEFT) expect(await targetAt(page, point)).toEqual(BUTTON);
+
+      let shown = 0;
+      for (const point of OUTER_LEFT) {
+        shown++;
+        await expectTurnTo(page, () => page.mouse.click(point.x, point.y), [shown]);
+      }
+      await expectTurnTo(page, () => page.mouse.click(OUTER_RIGHT.x, OUTER_RIGHT.y), [3]);
+
+      // The slider adds its screen strip over the same background: same result.
+      await setSettings(page, { edgeButtonWidth: 40 });
+      await expect.poll(() => targetAt(page, OUTER_LEFT[0])).toEqual(SCREEN_STRIP);
+      // Past the 40 px strip it is the background zone itself.
+      const pastStrip = { x: 60, y: 540 };
+      expect(await targetAt(page, pastStrip)).toEqual(BUTTON);
+      // (Six pages: alternate sides so the volume never runs out.)
+      await expectTurnTo(page, () => page.mouse.click(OUTER_LEFT[0].x, OUTER_LEFT[0].y), [4]);
+      await expectTurnTo(page, () => page.mouse.click(OUTER_RIGHT.x, OUTER_RIGHT.y), [3]);
+      await expectTurnTo(page, () => page.mouse.click(pastStrip.x, pastStrip.y), [4]);
+      await expectUnscrolled(page);
+    });
+
+    test('toggle off: the outer background never turns, slider at 0 or at 40', async ({ page }) => {
+      await setup(page, { mobile: false, tapOutsideImageToTurn: false, edgeButtonWidth: 0 });
+      for (const point of OUTER_LEFT) expect(await targetAt(page, point)).toEqual(INERT_ZONE);
+      for (const point of [...OUTER_LEFT, OUTER_RIGHT]) {
+        await expectNoTurn(page, () => page.mouse.click(point.x, point.y));
+      }
+      await setSettings(page, { edgeButtonWidth: 40 });
+      await expect.poll(() => targetAt(page, OUTER_LEFT[0])).toEqual(SCREEN_STRIP);
+      for (const point of [...OUTER_LEFT, OUTER_RIGHT]) {
+        await expectNoTurn(page, () => page.mouse.click(point.x, point.y));
+      }
+      await expectUnscrolled(page);
+    });
+  });
+
+  test.describe('phone, Mobile on', () => {
+    test.use({ hasTouch: true });
+
+    test.describe('portrait: above and below the page', () => {
+      test.use({ viewport: { width: 412, height: 915 } });
+
+      test('toggle on: a tap above or below the page turns it', async ({ page }) => {
+        await setup(page, { mobile: true });
+        const r = await pageRect(page);
+        // The page is centred: there is background above it as well as below.
+        expect(r.top).toBeGreaterThan(60);
+        expect(r.bottom).toBeLessThan(915 - 60);
+        const above = { left: { x: 60, y: r.top - 30 }, right: { x: 350, y: r.top - 30 } };
+        const below = { left: { x: 60, y: r.bottom + 30 }, right: { x: 350, y: r.bottom + 30 } };
+        const corner = { x: 4, y: 4 };
+        for (const point of [above.left, above.right, below.left, corner]) {
+          expect(await targetAt(page, point)).toEqual(BUTTON);
+        }
+
+        await expectTurnTo(page, () => page.touchscreen.tap(above.left.x, above.left.y), [1]);
+        await expectTurnTo(page, () => page.touchscreen.tap(corner.x, corner.y), [2]);
+        await expectTurnTo(page, () => page.touchscreen.tap(above.right.x, above.right.y), [1]);
+        await expectTurnTo(page, () => page.touchscreen.tap(below.left.x, below.left.y), [2]);
+        await expectTurnTo(page, () => page.touchscreen.tap(below.right.x, below.right.y), [1]);
+        await expectUnscrolled(page);
+      });
+
+      test('toggle off: above and below the page are inert', async ({ page }) => {
+        await setup(page, { mobile: true, tapOutsideImageToTurn: false });
+        const r = await pageRect(page);
+        const points = [
+          { x: 206, y: r.top - 30 },
+          { x: 206, y: r.bottom + 30 }
+        ];
+        for (const point of points) {
+          expect(await targetAt(page, point)).toEqual(INERT_ZONE);
+          await expectNoTurn(page, () => page.touchscreen.tap(point.x, point.y));
+        }
+      });
+    });
+
+    test.describe('landscape: out to the screen edge', () => {
+      test.use({ viewport: { width: 915, height: 412 } });
+
+      test('toggle on: a tap at the outermost background turns it', async ({ page }) => {
+        await setup(page, { mobile: true });
+        const r = await pageRect(page);
+        // The margin either side is wider than the page itself.
+        expect(r.left).toBeGreaterThan(r.width);
+        for (const x of [4, 10, 30]) {
+          expect(await targetAt(page, { x, y: 206 })).toEqual(BUTTON);
+        }
+        await expectTurnTo(page, () => page.touchscreen.tap(10, 206), [1]);
+        await expectTurnTo(page, () => page.touchscreen.tap(30, 206), [2]);
+        await expectTurnTo(page, () => page.touchscreen.tap(905, 206), [1]);
+        await expectTurnTo(page, () => page.touchscreen.tap(911, 400), [0]);
+      });
+
+      test('toggle off: the outermost background is inert', async ({ page }) => {
+        await setup(page, { mobile: true, tapOutsideImageToTurn: false });
+        for (const x of [10, 905]) {
+          expect(await targetAt(page, { x, y: 206 })).toEqual(INERT_ZONE);
+          await expectNoTurn(page, () => page.touchscreen.tap(x, 206));
+        }
+      });
     });
   });
 });

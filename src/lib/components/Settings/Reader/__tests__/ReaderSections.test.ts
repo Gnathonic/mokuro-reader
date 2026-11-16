@@ -83,14 +83,14 @@ describe('Tap to turn pages — one group, one region per control (#54)', () => 
     const { getByRole } = render(PageTurnSettings);
     const heading = getByRole('heading', { name: 'Tap to turn pages' });
     const group = heading.parentElement!;
-    expect(within(group).getByLabelText(/Tap beside or below the page/)).toBeTruthy();
+    expect(within(group).getByLabelText(/Tap outside the page/)).toBeTruthy();
     expect(within(group).getByLabelText(/Page edge zone/)).toBeTruthy();
   });
 
   it('the toggle reads and writes tapOutsideImageToTurn', async () => {
     use({ tapOutsideImageToTurn: false });
     const { getByLabelText } = render(PageTurnSettings);
-    const toggle = getByLabelText(/Tap beside or below the page/) as HTMLInputElement;
+    const toggle = getByLabelText(/Tap outside the page/) as HTMLInputElement;
     expect(toggle.checked).toBe(false);
     await fireEvent.click(toggle);
     expect(mocks.updateSetting).toHaveBeenCalledWith('tapOutsideImageToTurn', true);

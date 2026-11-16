@@ -145,10 +145,15 @@ regions that never overlap, each governed by exactly one profile setting:
   screen's left/right edge, outside the viewport, for a page zoomed past the
   screen; a release there turns only where the page is under the pointer
   (`screenStripTurns`, hit-tested against `#manga-panel`) — over the
-  background it is the other region.
-- **Outside the image** — `tapOutsideImageToTurn` (default on): the
-  background beside the page and the band below it, flush with the page.
-  Off, these zones STAY as handler-less, `aria-hidden`
+  background it does what the background zone under it would.
+- **Outside the image** — `tapOutsideImageToTurn` (default on): ALL of the
+  background around the spread — a full-height column either side and the
+  bands above and below it split at its middle (`BACKGROUND_ZONES` in
+  `page-turn-zones.ts`), flush with the page and reaching
+  `ZONE_REACH_PX` camera px out, so they meet the screen's edge at any zoom
+  the reader shows a page at. A desktop screen-edge strip over the
+  background turns only when this is on, so the slider never changes what a
+  background press does. Off, these zones STAY as handler-less, `aria-hidden`
   `[data-page-turn-zone]` boxes. They are children of PagedViewport's camera
   wrapper that overflow it into the margins, and the wrapper is where the
   gesture tracker, the wheel listener and `touch-action: none` live — without
