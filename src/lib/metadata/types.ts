@@ -117,7 +117,8 @@ export interface SeriesTotals {
  * WHY A SECOND KEY AT ALL. The primary key is `normalizeSeriesKey`, which folds
  * case and whitespace but not unicode FORM — and half the lookups in the app
  * arrive holding a name that came off a filesystem, so they must match on
- * `normalizeVolumeTitleKey` (the same fold plus NFC) instead. Every one of those
+ * `normalizeVolumeTitleKey` (fold v2's series key: full case folding, NFC,
+ * default-ignorables dropped) instead. Every one of those
  * sites used to answer by reading the WHOLE table and folding each row in JS;
  * with this key they are `.where('folded_key').equals(k)` index reads. The one
  * that hurt most ran per series published (`hasPublishableFacts`).

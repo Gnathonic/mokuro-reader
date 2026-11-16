@@ -161,7 +161,7 @@ describe('the v4 upgrade (layer pages move to their own table)', () => {
     const upgraded = new CatalogDexieV3(NAME);
     try {
       await upgraded.open();
-      expect(upgraded.verno).toBe(4);
+      expect(upgraded.verno).toBe(MOKURO_DB_SCHEMA[MOKURO_DB_SCHEMA.length - 1].version);
       const metas = await upgraded.volume_ocr_layers.toArray();
       expect(metas.map((m) => `${m.volume_uuid}/${m.layer_id}`).sort()).toEqual([
         'v1/gcv',
@@ -203,7 +203,7 @@ describe('the v4 upgrade (layer pages move to their own table)', () => {
     const upgraded = new CatalogDexieV3(NAME);
     try {
       await upgraded.open();
-      expect(upgraded.verno).toBe(4);
+      expect(upgraded.verno).toBe(MOKURO_DB_SCHEMA[MOKURO_DB_SCHEMA.length - 1].version);
       expect(await upgraded.volume_ocr_layers.count()).toBe(0);
       expect(await upgraded.volume_ocr_layer_pages.count()).toBe(0);
       expect((await upgraded.volumes.get('v1'))?.volume_title).toBe('Vol 1');

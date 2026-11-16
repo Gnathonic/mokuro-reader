@@ -1,5 +1,6 @@
 import type Dexie from 'dexie';
 import type { Transaction } from 'dexie';
+import { normalizeVolumeTitleKey } from '$lib/metadata/series-key';
 
 /**
  * THE schema for the `mokuro_v3` database — declared once, as data, because
@@ -26,10 +27,11 @@ import type { Transaction } from 'dexie';
  * remaining way back in — someone re-introducing a hand-written
  * `.version(n).stores({...})` ladder next to one of the connections.
  *
- * This module deliberately imports NOTHING at runtime (`import type` is erased),
- * so the Worker can take the schema without dragging in the main-thread graph
- * `db-v3.ts` carries — `$app/environment`, the progress tracker, the thumbnail
- * generator.
+ * This module deliberately imports nothing at runtime (`import type` is erased)
+ * but the pure name fold the v5 upgrade re-stamps keys with
+ * (`series-key.ts` → `$lib/util/names/fold`, no store, no DOM), so the Worker
+ * can take the schema without dragging in the main-thread graph `db-v3.ts`
+ * carries — `$app/environment`, the progress tracker, the thumbnail generator.
  */
 export const MOKURO_DB_NAME = 'mokuro_v3';
 
@@ -66,6 +68,24 @@ async function moveLayerPagesToOwnTable(tx: Transaction): Promise<void> {
   }
 }
 
+/**
+ * v4 → v5: re-stamp `series_metadata.folded_key` with fold v2's series key
+ * (`normalizeVolumeTitleKey` is now `seriesKey`: full case folding, the
+ * default-ignorable code points dropped, NFC on the reader's own UCD 17.0.0
+ * tables). The key is DERIVED from `series_title`, so the upgrade loses
+ * nothing: every row is kept, only its index entry moves. Keys first, then one
+ * row at a time, as the v4 step does.
+ */
+async function restampFoldedKeys(tx: Transaction): Promise<void> {
+  const table = tx.table('series_metadata');
+  for (const key of await table.toCollection().primaryKeys()) {
+    const row = await table.get(key);
+    if (!row || typeof row.series_title !== 'string') continue;
+    const folded = normalizeVolumeTitleKey(row.series_title);
+    if (row.folded_key !== folded) await table.put({ ...row, folded_key: folded });
+  }
+}
+
 export const MOKURO_DB_SCHEMA: readonly MokuroSchemaVersion[] = [
   // v1: the shipped schema — three tables, thumbnails inlined in volumes.
   // This is the only version any released build has written, so it must stay
@@ -91,7 +111,7 @@ export const MOKURO_DB_SCHEMA: readonly MokuroSchemaVersion[] = [
   // it is cached whole rather than shredded into a row per series.
   //
   // `series_metadata`'s `folded_key` is a DERIVED secondary key —
-  // `normalizeVolumeTitleKey(series_title)`, the primary key's fold plus NFC.
+  // `normalizeVolumeTitleKey(series_title)` (fold v2's series key since v5).
   // Names that arrive off a filesystem can be decomposed while the record was
   // keyed off a composed title, so the sites that match a cloud FOLDER against a
   // record cannot use the primary key; without this index each of them answered
@@ -170,6 +190,24 @@ export const MOKURO_DB_SCHEMA: readonly MokuroSchemaVersion[] = [
       volume_ocr_layer_pages: '[volume_uuid+layer_id], volume_uuid'
     },
     upgrade: moveLayerPagesToOwnTable
+  },
+  // v5: the same stores. `folded_key` becomes fold v2's series key (sidecar
+  // names rule 2), which v4 databases — 1.10.0 shipped v4 — hold the old
+  // NFC-and-lowercase fold of; only a version bump runs the re-stamp.
+  {
+    version: 5,
+    stores: {
+      volumes: 'volume_uuid, series_uuid, series_title, ocr_edited_at',
+      volume_ocr: 'volume_uuid',
+      volume_files: 'volume_uuid',
+      series_metadata: 'series_key, folded_key',
+      series_index: 'series_key',
+      catalog_index: 'id',
+      cloud_covers: '[account_scope+path], cached_at',
+      volume_ocr_layers: '[volume_uuid+layer_id], volume_uuid',
+      volume_ocr_layer_pages: '[volume_uuid+layer_id], volume_uuid'
+    },
+    upgrade: restampFoldedKeys
   }
 ];
 
