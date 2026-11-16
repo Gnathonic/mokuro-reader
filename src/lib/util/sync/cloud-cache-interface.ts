@@ -122,6 +122,14 @@ export interface CloudCache<T = any> {
   getAll(path: string): T[];
 
   /**
+   * The path a write of `path` goes to (sidecar names rule 2, R9): every
+   * segment onto the listed spelling of its fold, so a write never creates a
+   * second spelling of a listed entry (`listed-spelling.ts`). Optional for a
+   * cache that cannot list; absent means the path is written as given.
+   */
+  listedPath?(path: string): string;
+
+  /**
    * Get all files for a specific series
    * @param seriesTitle Series title to filter by
    */

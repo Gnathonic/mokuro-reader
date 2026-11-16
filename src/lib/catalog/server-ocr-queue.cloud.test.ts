@@ -31,6 +31,7 @@ const fetchAllCloudVolumes = vi.hoisted(() => vi.fn(async () => {}));
 vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: {
     resolveCloudFolderTitle: (title: string) => title,
+    resolveCloudVolumeTitle: (_folder: string, title: string) => title,
     getCloudVolumesBySeries: () => [{}],
     refreshSeriesFolder,
     fetchAllCloudVolumes

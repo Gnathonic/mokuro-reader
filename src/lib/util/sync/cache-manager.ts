@@ -172,6 +172,14 @@ class CacheManager {
   }
 
   /**
+   * The path a write of `path` goes to on the active provider: the listed
+   * spelling of every segment's fold (`CloudCache.listedPath`, R9).
+   */
+  listedPath(path: string): string {
+    return this.activeCache?.listedPath?.(path) ?? path;
+  }
+
+  /**
    * Get all files for a series from the active provider
    * @param seriesTitle Series title to filter by
    */

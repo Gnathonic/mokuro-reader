@@ -39,12 +39,16 @@ import { classifyWriteError, type WriteErrorKind } from './webdav-errors';
 import { CANNOT_RENAME_MESSAGE, OWNERSHIP_REFRESH_MAX_AGE_MS } from '../../account-capabilities';
 import {
   isBestEffortMetadataPath,
+  isCbzFile,
   isReservedLayerSidecarPath,
-  isSyncableFile
+  isSyncableFile,
+  stripFoldedSuffix
 } from '../../syncable-file';
+import { foldName } from '#lib/util/names/fold.js';
 import { controlReadKey, controlSetEtag, isPathSafeFolderName } from '../../control-file-read';
 import { withCloudBunkoStatus } from '#lib/catalog/cloud-bunko-marker.js';
 import { bunkoSupportsHistory } from './bunko-version';
+import { listedPathOn } from '#lib/util/sync/listed-spelling.js';
 
 interface WebDAVCredentials {
   serverUrl: string;
@@ -1517,6 +1521,9 @@ export class WebDAVProvider implements SyncProvider {
     description?: string,
     onProgress?: (loaded: number, total: number) => void
   ): Promise<UploadFileResult> {
+    // Onto the listed spelling of the path's fold: never a second spelling of
+    // a listed entry (sidecar names rule 2, R9; `listed-spelling.ts`).
+    path = listedPathOn(webdavCache, path);
     if (!this.isAuthenticated() || !this.client) {
       throw new ProviderError('Not authenticated', 'webdav', 'NOT_AUTHENTICATED', true);
     }
@@ -2278,21 +2285,16 @@ export class WebDAVProvider implements SyncProvider {
     const seriesPrefix = `${normalizedSeriesTitle}/`;
     const seriesFiles = allFiles.filter((file) => file.path.startsWith(seriesPrefix));
 
-    const getBasePath = (path: string): string => {
-      const lower = path.toLowerCase();
-      if (lower.endsWith('.cbz')) return path.slice(0, -4);
-      if (lower.endsWith('.mokuro.gz')) return path.slice(0, -10);
-      if (lower.endsWith('.mokuro')) return path.slice(0, -7);
-      if (lower.endsWith('.jpeg')) return path.slice(0, -5);
-      if (lower.endsWith('.webp')) return path.slice(0, -5);
-      if (lower.endsWith('.jpg')) return path.slice(0, -4);
-      return path;
-    };
+    // A volume's files by the fold of their base (R1, R2): `VOL 1.mokuro` goes
+    // with `Vol 1.cbz`.
+    const getBasePath = (path: string): string =>
+      stripFoldedSuffix(path, ['.cbz', '.mokuro.gz', '.mokuro', '.jpeg', '.webp', '.jpg'])?.fold ??
+      foldName(path);
 
     const archives: CloudFileMetadata[] = [];
     const nonArchivesByBase = new Map<string, CloudFileMetadata[]>();
     for (const file of seriesFiles) {
-      if (file.path.toLowerCase().endsWith('.cbz')) {
+      if (isCbzFile(file.path)) {
         archives.push(file);
         continue;
       }

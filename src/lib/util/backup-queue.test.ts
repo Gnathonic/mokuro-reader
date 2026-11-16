@@ -56,6 +56,7 @@ const {
     // `processBackup`'s upload-success path.
     getActiveProvider: vi.fn(() => null as unknown),
     resolveCloudFolderTitle: vi.fn((title: string) => title),
+    resolveCloudVolumeTitle: (_folder: string, title: string) => title,
     capturedTasks,
     addTaskMock: vi.fn((task: Record<string, any>) => {
       capturedTasks.push(task);
@@ -71,6 +72,7 @@ vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
     getDefaultProvider: () => null,
     // Identity, as the real one is for a series the cloud does not hold.
     resolveCloudFolderTitle: (title: string) => resolveCloudFolderTitle(title),
+    resolveCloudVolumeTitle: (_folder: string, title: string) => title,
     // Queueing a volume kicks off `processQueue` in the background. Without
     // this the drain throws asynchronously, which vitest reports as an
     // unhandled rejection and turns into a non-zero exit while every test

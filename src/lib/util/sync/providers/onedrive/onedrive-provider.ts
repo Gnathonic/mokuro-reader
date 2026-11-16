@@ -35,6 +35,7 @@ import {
   readControlNodes
 } from '../../control-file-read';
 import { withCloudBunkoStatus } from '#lib/catalog/cloud-bunko-marker.js';
+import { listedPathOn } from '#lib/util/sync/listed-spelling.js';
 
 /** Worth retrying later; a full drive (507) is not, so it is excluded. */
 const RETRYABLE_MESSAGE = /network|timed out|\b429\b|\b5(?!07)\d\d\b/i;
@@ -338,6 +339,9 @@ export class OneDriveProvider implements SyncProvider {
     _description?: string,
     onProgress?: (loaded: number, total: number) => void
   ): Promise<UploadFileResult> {
+    // Onto the listed spelling of the path's fold: never a second spelling of
+    // a listed entry (sidecar names rule 2, R9; `listed-spelling.ts`).
+    path = listedPathOn(onedriveCache, path);
     if (!this.isAuthenticated()) {
       throw new ProviderError('Not authenticated', 'onedrive', 'NOT_AUTHENTICATED', true);
     }

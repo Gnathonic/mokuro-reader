@@ -4,6 +4,7 @@ import type { CloudFileMetadata } from '../../provider-interface';
 import { CoalescedCacheStore } from '../../coalesced-cache-store';
 import { addMutations, removeMutations, replaceFolderInStore } from '../../listing-mutations';
 import { onedriveProvider } from './onedrive-provider';
+import { listedCopies, listedEntry, resolveListedPath } from '#lib/util/sync/listed-spelling.js';
 
 class OneDriveCacheManager implements CloudCache<CloudFileMetadata> {
   // State split from emission: `read()` is synchronous and never lagged,
@@ -69,21 +70,22 @@ class OneDriveCacheManager implements CloudCache<CloudFileMetadata> {
   }
 
   has(path: string): boolean {
-    const current = this.cache.read();
-    const seriesTitle = path.split('/')[0];
-    return current.get(seriesTitle)?.some((f) => f.path === path) || false;
+    // Any spelling of the path's fold is that entry (R1: `listed-spelling.ts`).
+    return listedEntry(this.cache.read(), path, this.cache.revision()) !== null;
   }
 
   get(path: string): CloudFileMetadata | null {
-    const current = this.cache.read();
-    const seriesTitle = path.split('/')[0];
-    return current.get(seriesTitle)?.find((f) => f.path === path) || null;
+    // The exact spelling, else the listed one of that fold (R6 among several).
+    return listedEntry(this.cache.read(), path, this.cache.revision());
   }
 
   getAll(path: string): CloudFileMetadata[] {
-    const current = this.cache.read();
-    const seriesTitle = path.split('/')[0];
-    return current.get(seriesTitle)?.filter((f) => f.path === path) || [];
+    // Every copy of the entry, in every spelling of its fold: the exact first.
+    return listedCopies(this.cache.read(), path, this.cache.revision());
+  }
+
+  listedPath(path: string): string {
+    return resolveListedPath(this.cache.read(), path, this.cache.revision());
   }
 
   getBySeries(seriesTitle: string): CloudFileMetadata[] {
@@ -122,6 +124,12 @@ class OneDriveCacheManager implements CloudCache<CloudFileMetadata> {
   }
 
   add(path: string, metadata: CacheAddMetadata<CloudFileMetadata>): void {
+    // Where the write went: the listed spelling (the provider resolved it so).
+    const listed = this.listedPath(path);
+    if (listed !== path) {
+      path = listed;
+      metadata = { ...metadata, path: listed };
+    }
     this.cache.update(...addMutations(path, metadata));
   }
 

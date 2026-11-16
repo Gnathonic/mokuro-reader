@@ -1024,6 +1024,30 @@ describe('MegaProvider listing — nodes MEGA no longer shows', () => {
     expect(library.mkdir).toHaveBeenCalledWith('Ippo', expect.any(Function));
   });
 
+  it('writes onto the listed spelling of a name, never a second spelling (rule 2, R9)', async () => {
+    const tree = megaTree();
+    const { library, folder } = seriesLibrary(tree, tree.root, 'Ippo');
+    tree.add('Ippo-mokuro', 'IPPO 01.mokuro', folder);
+    const provider = await loginWithTree(tree);
+    const listed = ['Ippo/Ippo 01.cbz', 'Ippo/IPPO 01.mokuro', 'Ippo/series.json'];
+    const { resolveListedPath } = await import('#lib/util/sync/listed-spelling.js');
+    (megaCache as any).listedPath = (path: string) =>
+      resolveListedPath(new Map([['Ippo', listed.map((p) => ({ path: p }))]]), path);
+    try {
+      // The folder by its fold even without the cache: no `ippo/` beside `Ippo/`.
+      await provider.uploadFile('ippo/Ippo 01.mokuro', new Uint8Array([1]));
+      await provider.uploadFile('IPPO/Ippo 03.cbz', new Uint8Array([1]));
+    } finally {
+      delete (megaCache as any).listedPath;
+    }
+
+    expect(library.mkdir).not.toHaveBeenCalled();
+    expect(folder.upload.mock.calls.map((c: any[]) => c[0].name)).toEqual([
+      'IPPO 01.mokuro',
+      'Ippo 03.cbz'
+    ]);
+  });
+
   it('keeps deleted and trashed folders out of the dedup pass', async () => {
     const tree = megaTree();
     seriesLibrary(tree, tree.trash, 'Trashed');

@@ -37,7 +37,7 @@ import { scheduleSeriesFileWrite } from '#lib/metadata/series-file-sync.js';
 import { dropStrandedMetadataOnlyRow } from '#lib/catalog/stranded-rows.js';
 import { isMetadataOnly, needsDownload } from '#lib/catalog/volume-state.js';
 import { recordArchiveSize } from '#lib/catalog/archive-size.js';
-import { classifyMokuroSidecar } from './sync/syncable-file';
+import { classifyMokuroSidecar, isCbzFile, stripFoldedSuffix } from './sync/syncable-file';
 import { foldName, splitAtDots } from './names/fold';
 import { attachLayerToVolume, readLayerFile } from '#lib/reader/edit/layer-import.js';
 import { pullLayersForVolume } from '#lib/metadata/layer-sync.js';
@@ -248,7 +248,7 @@ export function queueVolumesFromCloudFiles(
   cloudFiles: import('./sync/provider-interface').CloudFileMetadata[]
 ): void {
   const placeholders: VolumeMetadata[] = cloudFiles
-    .filter((file) => file.path.toLowerCase().endsWith('.cbz'))
+    .filter((file) => isCbzFile(file.path))
     .map((file) => {
       // Look up file in cache to get proper path with parent folder
       // The cache has the full path (e.g., "SeriesName/Volume01.cbz")
@@ -626,12 +626,14 @@ function getSidecarCandidatesForPlaceholder(placeholder: VolumeMetadata): string
   const cloudPath =
     (placeholder as VolumeMetadata & { cloudPath?: string }).cloudPath ||
     `${placeholder.series_title}/${placeholder.volume_title}.cbz`;
-  const noExt = cloudPath.replace(/\.(cbz|zip|cbr|rar|7z)$/i, '');
+  const noExt =
+    stripFoldedSuffix(cloudPath, ['.cbz', '.zip', '.cbr', '.rar', '.7z'])?.raw ?? cloudPath;
   return [`${noExt}.mokuro`, `${noExt}.mokuro.gz`, `${noExt}.webp`];
 }
 
+/** A path as two spellings of one entry share it (R1: the one name fold). */
 function normalizePathKey(value: string): string {
-  return normalizeFilename(value).toLowerCase();
+  return foldName(normalizeFilename(value));
 }
 
 function basename(path: string): string {

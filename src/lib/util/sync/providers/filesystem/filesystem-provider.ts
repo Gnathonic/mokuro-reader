@@ -24,6 +24,7 @@ import { setActiveProviderKey, clearActiveProviderKey } from '../../provider-det
 import { isFilesystemProviderSupported } from './feature-detect';
 import { saveRootHandle, loadRootHandle, clearRootHandle } from './handle-store';
 import { splitPathSegments, isSyncableFile, getBasename, getParentPath } from './filesystem-paths';
+import { listedPathOn } from '#lib/util/sync/listed-spelling.js';
 
 export class FilesystemProvider implements SyncProvider {
   readonly type = 'filesystem' as const;
@@ -362,6 +363,9 @@ export class FilesystemProvider implements SyncProvider {
     _description?: string,
     onProgress?: (loaded: number, total: number) => void
   ): Promise<UploadFileResult> {
+    // Onto the listed spelling of the path's fold: never a second spelling of
+    // a listed entry (sidecar names rule 2, R9; `listed-spelling.ts`).
+    path = listedPathOn(filesystemCache, path);
     try {
       this.requireRoot();
       const fileHandle = await this.resolveFileHandle(path, { create: true });

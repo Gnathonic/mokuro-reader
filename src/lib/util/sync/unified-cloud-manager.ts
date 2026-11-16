@@ -17,7 +17,7 @@ import { providerManager } from './provider-manager';
 import { generateVolumeSidecarsFromDb } from '#lib/util/compress-volume.js';
 import { isMetadataOnly } from '#lib/catalog/volume-state.js';
 import { volumesForFoldedSeriesTitle } from '#lib/catalog/volumes-by-series.js';
-import { naturalSort } from '#lib/util/natural-sort.js';
+import { compareCodePoints, foldName } from '#lib/util/names/fold.js';
 import { db } from '#lib/catalog/db.js';
 import { getLayerMeta } from '#lib/catalog/layer-store.js';
 import type { VolumeMetadata, VolumeOcrLayer } from '#lib/types/index.js';
@@ -85,17 +85,44 @@ import { adoptCloudSeriesSpellings } from './cloud-spelling-adoption';
 import { recordUploadedPrimarySidecarBlob } from '#lib/catalog/mokuro-upload-record.js';
 import { sha256Hex } from '#lib/catalog/mokuro-hash.js';
 import {
+  cbzStemOf,
   cbzStemsOf,
   classifyMokuroSidecar,
   isCbzFile,
+  isMokuroFile,
   layerOwnerArchive,
-  splitLayerSidecarName
+  splitLayerSidecarName,
+  stripFoldedSuffix
 } from './syncable-file';
 
-/** A managed sidecar whose CONTENT embeds the volume's title/series. */
+/** A managed sidecar whose CONTENT embeds the volume's title/series (by its fold, R2). */
 function isMokuroSidecarPath(path: string): boolean {
-  const lower = normalizeCloudPath(path).toLowerCase();
-  return lower.endsWith('.mokuro') || lower.endsWith('.mokuro.gz');
+  return isMokuroFile(normalizeCloudPath(path));
+}
+
+/**
+ * Of several spellings `names` of one folded title, the one `wanted` names:
+ * the exact spelling, else one that folds like it (R1), else the
+ * code-point-smallest (R6, never UTF-16 or natural order), so every device and
+ * Bunko pick the same. Undefined for an empty list.
+ */
+function pickSpelling(names: Iterable<string>, wanted: string): string | undefined {
+  const folded = foldName(wanted);
+  let best: string | undefined;
+  let bestFolds = false;
+  for (const name of names) {
+    if (name === wanted) return name;
+    const folds = foldName(name) === folded;
+    if (
+      best === undefined ||
+      (folds && !bestFolds) ||
+      (folds === bestFolds && compareCodePoints(name, best) < 0)
+    ) {
+      best = name;
+      bestFolds = folds;
+    }
+  }
+  return best;
 }
 
 /** One listed layer file of a volume, with the id a rename rebuilds its name from. */
@@ -136,18 +163,21 @@ function layerFilesOfVolume(
   const names = folderFiles.map((f) => basenameOfPath(f.path));
   const stems = cbzStemsOf(names);
   // Archive stems as spelled: a layer whose stem is EXACTLY another archive's
-  // belongs to that volume, however it folds (sidecar names rule v1 #6).
-  const spelled = new Set(names.filter(isCbzFile).map((name) => name.slice(0, -4)));
+  // belongs to that volume (sidecar names rule 2, R6).
+  const spelled = new Set(
+    names.map((name) => cbzStemOf(name)).filter((stem): stem is string => stem !== null)
+  );
   const key = normalizeVolumeTitleKey(volumeBaseName);
   // The volume's OWN archive as the cloud spells it. Callers pass the DB title,
   // which may differ from the listing (decomposed, another case); measured
   // against that, the volume's own layers would read as another archive's and
   // a rename would delete them as "the stale .mokuro". Same pick as
   // `getManagedCloudFilesForVolume` and layer sync's `ownArchiveOfRow`: exact
-  // first, else the naturalSort-first folded match.
-  const own = spelled.has(volumeBaseName)
-    ? volumeBaseName
-    : [...spelled].filter((stem) => normalizeVolumeTitleKey(stem) === key).sort(naturalSort)[0];
+  // first, else the R6 pick of the folded matches (`pickSpelling`).
+  const own = pickSpelling(
+    [...spelled].filter((stem) => normalizeVolumeTitleKey(stem) === key),
+    volumeBaseName
+  );
   const out: VolumeLayerFile[] = [];
   if (own === undefined) {
     for (const file of folderFiles) {
@@ -254,15 +284,16 @@ function normalizeCloudPath(path: string): string {
   return path.replace(/^\/+|\/+$/g, '');
 }
 
+/** The volume-file suffixes a managed file's base is cut before (R2: on the fold). */
+const MANAGED_SUFFIXES = ['.cbz', '.mokuro.gz', '.mokuro', '.jpeg', '.webp', '.jpg'] as const;
+
 function stripManagedFileExtension(path: string): string {
-  const lower = path.toLowerCase();
-  if (lower.endsWith('.cbz')) return path.slice(0, -4);
-  if (lower.endsWith('.mokuro.gz')) return path.slice(0, -10);
-  if (lower.endsWith('.mokuro')) return path.slice(0, -7);
-  if (lower.endsWith('.jpeg')) return path.slice(0, -5);
-  if (lower.endsWith('.webp')) return path.slice(0, -5);
-  if (lower.endsWith('.jpg')) return path.slice(0, -4);
-  return path;
+  return stripFoldedSuffix(path, MANAGED_SUFFIXES)?.raw ?? path;
+}
+
+/** The fold of a managed file's base: two spellings of one volume's files share it (R1). */
+function managedBaseFold(path: string): string {
+  return stripFoldedSuffix(path, MANAGED_SUFFIXES)?.fold ?? foldName(path);
 }
 
 /**
@@ -846,7 +877,7 @@ class UnifiedCloudManager {
       // still find the sidecar it is cleaning up after.
       const folderTitle = this.resolveCloudFolderTitle(seriesTitle);
       const stillHasArchive = this.getCloudVolumesBySeries(folderTitle).some((file) =>
-        normalizeCloudPath(file.path).toLowerCase().endsWith('.cbz')
+        isCbzFile(normalizeCloudPath(file.path))
       );
       if (stillHasArchive) return;
 
@@ -927,11 +958,11 @@ class UnifiedCloudManager {
       else byBase.set(base, [file]);
     }
     if (byBase.size === 0) return exact;
-    // Still ONE volume's files, as the contract says: two filenames that fold
-    // alike are two volumes, and the pick between them is ordered rather than
+    // Still ONE volume's files: of several spellings the R6 pick (one that
+    // folds like the title, else the code-point-smallest), ordered rather than
     // first-seen so it cannot depend on listing order (same rule as
     // `resolveCloudFolderTitle`).
-    const base = [...byBase.keys()].sort(naturalSort)[0];
+    const base = pickSpelling(byBase.keys(), basePath)!;
     return withLayers(byBase.get(base)!, base.slice(base.lastIndexOf('/') + 1));
   }
 
@@ -1508,8 +1539,10 @@ class UnifiedCloudManager {
       // metadata-persistence data update (metadata surviving volume deletion,
       // see PR #201). Until then we fail loudly and ask the user to download
       // the missing volumes first.
+      // By fold (R1): the per-volume rename finds `VOL 1.cbz` for a local
+      // `Vol 1`, so that file is a known volume's, not a cloud-only one.
       const knownBases = new Set(
-        volumes.map((v) => normalizeCloudPath(`${oldFolderTitle}/${v.volumeTitle}`))
+        volumes.map((v) => foldName(normalizeCloudPath(`${oldFolderTitle}/${v.volumeTitle}`)))
       );
       // A layer file (`<Volume>.<id>.mokuro`) strips to `<Volume>.<id>`, which
       // names no volume: placed by the folder's archives — or, with its
@@ -1525,7 +1558,7 @@ class UnifiedCloudManager {
             // the new title below, so it must not read as a cloud-only volume.
             .filter((file) => !isSeriesFilePath(file.path) && !knownLayerFiles.has(file))
             .map((file) => stripManagedFileExtension(normalizeCloudPath(file.path)))
-            .filter((base) => !knownBases.has(base))
+            .filter((base) => !knownBases.has(foldName(base)))
         )
       ];
       if (cloudOnlyBases.length > 0) {
@@ -1555,11 +1588,11 @@ class UnifiedCloudManager {
           if (!row || !isMetadataOnly(row)) return false;
           // Image-only volumes have no sidecar to regenerate — they move fine.
           if (!row.mokuro_version?.trim()) return false;
-          const base = normalizeCloudPath(`${oldFolderTitle}/${volume.volumeTitle}`);
+          const base = foldName(normalizeCloudPath(`${oldFolderTitle}/${volume.volumeTitle}`));
           return existingFiles.some(
             (file) =>
               isMokuroSidecarPath(file.path) &&
-              stripManagedFileExtension(normalizeCloudPath(file.path)) === base
+              managedBaseFold(normalizeCloudPath(file.path)) === base
           );
         })
         .map((volume) => volume.volumeTitle);
@@ -1777,9 +1810,8 @@ class UnifiedCloudManager {
     const titles = new Set<string>();
     for (const file of this.getCloudVolumesBySeries(seriesTitle)) {
       const path = normalizeCloudPath(file.path);
-      if (!path.toLowerCase().endsWith('.cbz')) continue;
-      const basename = path.split('/').pop();
-      if (basename) titles.add(basename.slice(0, -4));
+      const stem = cbzStemOf(path.split('/').pop() ?? '');
+      if (stem !== null) titles.add(stem);
     }
     return titles;
   }
@@ -1812,7 +1844,32 @@ class UnifiedCloudManager {
 
     const key = normalizeVolumeTitleKey(seriesTitle);
     if (!key) return seriesTitle;
-    return index.foldedFolders.get(key)?.[0] ?? seriesTitle;
+    const folders = index.foldedFolders.get(key);
+    return (folders && pickSpelling(folders, seriesTitle)) ?? seriesTitle;
+  }
+
+  /**
+   * The volume title the cloud spells this volume's files with, in the folder
+   * `folderTitle` (the listing's spelling, `resolveCloudFolderTitle`): the
+   * title itself when nothing listed there folds like it, else the listed
+   * spelling of its archive, primary sidecar or cover (R1, R6: an archive
+   * first). A backup writes the volume's files under it, so a folder holding
+   * `VOL 1.mokuro` gets `VOL 1.cbz` beside it, never a second spelling `Vol 1.*`
+   * (sidecar names rule 2, R9).
+   */
+  resolveCloudVolumeTitle(folderTitle: string, volumeTitle: string): string {
+    const folded = foldName(volumeTitle);
+    const archives: string[] = [];
+    const others: string[] = [];
+    for (const file of this.getCloudVolumesBySeries(folderTitle)) {
+      const path = normalizeCloudPath(file.path);
+      const name = path.slice(path.lastIndexOf('/') + 1);
+      if (path.slice(0, path.lastIndexOf('/')) !== normalizeCloudPath(folderTitle)) continue;
+      const cut = stripFoldedSuffix(name, MANAGED_SUFFIXES);
+      if (!cut || cut.fold !== folded) continue;
+      (cut.suffix === '.cbz' ? archives : others).push(cut.raw);
+    }
+    return pickSpelling(archives, volumeTitle) ?? pickSpelling(others, volumeTitle) ?? volumeTitle;
   }
 
   /** The {@link listingFolderIndex} of the cache revision it was built from. */
@@ -1853,7 +1910,7 @@ class UnifiedCloudManager {
         if (!folders) foldedFolders.set(folderKey, [parts[0]]);
         else if (!folders.includes(parts[0])) folders.push(parts[0]);
       }
-      if (path.toLowerCase().endsWith('.cbz')) {
+      if (isCbzFile(path)) {
         const base = stripManagedFileExtension(path);
         const name = base.slice(base.lastIndexOf('/') + 1);
         const archiveKey = `${folderKey}\n${normalizeVolumeTitleKey(name)}`;
@@ -1866,7 +1923,8 @@ class UnifiedCloudManager {
     // case-sensitive backend). Neither is more correct, but the pick must be
     // stable across listings — alternating would publish half an index to each —
     // so it is ordered, not first-seen.
-    for (const folders of foldedFolders.values()) folders.sort(naturalSort);
+    // Code-point order (R6): the pick among them is `pickSpelling`'s.
+    for (const folders of foldedFolders.values()) folders.sort(compareCodePoints);
 
     this.folderIndex = { revision, firstSegments, foldedFolders, foldedArchives };
     return this.folderIndex;
@@ -2318,7 +2376,7 @@ class UnifiedCloudManager {
     for (const file of this.getAllCloudVolumes()) {
       const parts = normalizeCloudPath(file.path).split('/');
       if (parts.length !== 2) continue;
-      if (!parts[1].toLowerCase().endsWith('.cbz')) continue;
+      if (!isCbzFile(parts[1])) continue;
       titles.add(parts[0]);
     }
     return titles;
@@ -2509,7 +2567,7 @@ class UnifiedCloudManager {
       // old folder's copy itself (see `cleanupSeriesFileIfFolderEmptied`).
       if (this.getActiveProvider()?.getStatus().serverCompilesMetadata === true) return;
       const oldFolderStillHasArchive = this.getCloudVolumesBySeries(oldFolderTitle).some((file) =>
-        normalizeCloudPath(file.path).toLowerCase().endsWith('.cbz')
+        isCbzFile(normalizeCloudPath(file.path))
       );
       if (staleFile && (outcome === 'written' || !oldFolderStillHasArchive)) {
         await this.deleteFileIdempotent(staleFile);
@@ -2562,12 +2620,13 @@ class UnifiedCloudManager {
 
     const archives: CloudFileMetadata[] = [];
     const nonArchivesByBase = new Map<string, CloudFileMetadata[]>();
+    // Keyed by the base's fold (R1): `VOL 1.mokuro` goes with `Vol 1.cbz`.
     for (const file of seriesVolumes) {
-      if (file.path.toLowerCase().endsWith('.cbz')) {
+      if (isCbzFile(file.path)) {
         archives.push(file);
         continue;
       }
-      const base = stripManagedFileExtension(file.path);
+      const base = managedBaseFold(file.path);
       const existing = nonArchivesByBase.get(base);
       if (existing) {
         existing.push(file);
@@ -2579,7 +2638,7 @@ class UnifiedCloudManager {
     const orderedSeriesVolumes: CloudFileMetadata[] = [];
     for (const archive of archives) {
       orderedSeriesVolumes.push(archive);
-      const base = stripManagedFileExtension(archive.path);
+      const base = managedBaseFold(archive.path);
       const related = nonArchivesByBase.get(base);
       if (related && related.length > 0) {
         orderedSeriesVolumes.push(...related);
@@ -2593,9 +2652,9 @@ class UnifiedCloudManager {
     // The counts are VOLUMES, not files: a volume is its archive, and its
     // `.mokuro`, layer files (`<stem>.<layer>.mokuro`) and thumbnail belong to
     // it. Files no archive claims (`series.json`) are not volumes.
-    const archiveBases = archives.map((archive) => stripManagedFileExtension(archive.path));
+    const archiveBases = archives.map((archive) => managedBaseFold(archive.path));
     const volumeOf = (file: CloudFileMetadata): string | null => {
-      const base = stripManagedFileExtension(file.path);
+      const base = managedBaseFold(file.path);
       let owner: string | null = null;
       for (const archiveBase of archiveBases) {
         if (base === archiveBase) return archiveBase;
@@ -2693,7 +2752,7 @@ class UnifiedCloudManager {
     if (seriesTitle.includes('/') || volumeTitle.includes('/')) {
       return (
         this.getManagedCloudFilesForVolume(seriesTitle, volumeTitle).find((file) =>
-          normalizeCloudPath(file.path).toLowerCase().endsWith('.cbz')
+          isCbzFile(normalizeCloudPath(file.path))
         ) ?? null
       );
     }
@@ -2719,12 +2778,11 @@ class UnifiedCloudManager {
       (file) => stripManagedFileExtension(normalizeCloudPath(file.path)) === basePath
     );
     if (exactName) return exactName;
-    return [...inFolder].sort((a, b) =>
-      naturalSort(
-        stripManagedFileExtension(normalizeCloudPath(a.path)),
-        stripManagedFileExtension(normalizeCloudPath(b.path))
-      )
-    )[0];
+    // R6: one that folds like the title, else the code-point-smallest.
+    const byBase = new Map(
+      inFolder.map((file) => [stripManagedFileExtension(normalizeCloudPath(file.path)), file])
+    );
+    return byBase.get(pickSpelling(byBase.keys(), basePath)!)!;
   }
 
   /**

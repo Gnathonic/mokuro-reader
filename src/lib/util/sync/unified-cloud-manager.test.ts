@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { normalizeVolumeTitleKey } from '#lib/metadata/series-key.js';
-import { naturalSort } from '#lib/util/natural-sort.js';
 import { unifiedSyncService } from './unified-sync-service';
 import type { CloudFileMetadata } from './provider-interface';
 
@@ -583,7 +582,7 @@ describe('UnifiedCloudManager rename operations', () => {
     const managed = (volume: string) =>
       unifiedCloudManager.getManagedCloudFilesForVolume('S', volume).map((f) => f.path);
     // The same owner layer sync files it under (`layerOwnerArchive`): the
-    // naturalSort-first of the archives that fold alike — never both volumes.
+    // code-point-smallest of the archives that fold alike (R6) — never both volumes.
     expect(managed('VOL 3')).toEqual(['S/VOL 3.cbz', 'S/vol 3.hayai.mokuro']);
     expect(managed('Vol 3')).toEqual(['S/Vol 3.cbz']);
     files = [...files].reverse();
@@ -4932,21 +4931,20 @@ describe('folded lookups read a per-listing index, not the whole listing per cal
 
     // The exact filename inside the resolved folder wins over one that merely folds alike.
     expect(unifiedCloudManager.getCloudFile('one piece', 'Vol 1')).toBe(exactName);
-    // No exact filename: the ordered pick among those folding alike.
-    expect(unifiedCloudManager.getCloudFile('one piece', 'VOL 1')).toBe(
-      [exactName, foldedName].sort((a, b) => naturalSort(a.path, b.path))[0]
-    );
+    // No exact filename: the R6 pick among those folding alike (code points).
+    expect(unifiedCloudManager.getCloudFile('one piece', 'VOL 1')).toBe(exactName);
     // An archive deeper in the folder is still the folder's.
     expect(unifiedCloudManager.getCloudFile('one piece', 'Vol 2')).toBe(nested);
     expect(getBySeries).not.toHaveBeenCalled();
   });
 
   it('a folded hit searches only the folder the series resolves to', async () => {
-    // Two folders fold alike: the ordered pick is the series' folder, so an
-    // archive that exists only in the other one is not this series' backup —
-    // exactly what the unindexed lookup answered.
-    const picked = ['One Piece', 'ONE  PIECE'].sort(naturalSort)[0];
-    const other = picked === 'One Piece' ? 'ONE  PIECE' : 'One Piece';
+    // Two folders fold alike: the R6 pick (one spelled like the title's fold,
+    // else the code-point-smallest) is the series' folder, so an archive that
+    // exists only in the other one is not this series' backup — exactly what
+    // the unindexed lookup answered.
+    const picked = 'One Piece';
+    const other = 'ONE  PIECE';
     const inPicked = cloudFile(`${picked}/Vol 1.cbz`);
     const inOther = cloudFile(`${other}/Vol 2.cbz`);
     listing([inPicked, inOther]);
@@ -4991,9 +4989,12 @@ describe('folded lookups read a per-listing index, not the whole listing per cal
     ]);
     const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     expect(unifiedCloudManager.resolveCloudFolderTitle('one piece')).toBe('one piece');
-    expect(unifiedCloudManager.resolveCloudFolderTitle('One piece')).toBe(
-      ['ONE  PIECE', 'One Piece', 'one piece'].sort(naturalSort)[0]
-    );
+    // R6: of the spellings that fold like the title (`One Piece`, `one piece`;
+    // `ONE  PIECE` only joins it by the series key), the code-point-smallest.
+    expect(unifiedCloudManager.resolveCloudFolderTitle('One piece')).toBe('One Piece');
+    expect(unifiedCloudManager.resolveCloudFolderTitle('ONE PIECE')).toBe('One Piece');
+    // Only the series key joins it: the code-point-smallest of every spelling.
+    expect(unifiedCloudManager.resolveCloudFolderTitle('one   piece')).toBe('ONE  PIECE');
     // A folder holding only deeper paths is still a folder of that exact name.
     expect(unifiedCloudManager.resolveCloudFolderTitle('Nested')).toBe('Nested');
   });

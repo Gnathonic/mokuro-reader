@@ -38,6 +38,7 @@ import {
 } from './series-queue';
 import { WatchSchedule, type WatchGroup, type WatchLook } from './series-queue-watch';
 import { SERIES_QUEUE_FILE_NAME } from '#lib/util/sync/syncable-file.js';
+import { isSeriesFilePath } from '#lib/metadata/series-file.js';
 import {
   isVolumeShown,
   queueStatusStore,
@@ -1453,7 +1454,7 @@ function pullMoved(result: SeriesFolderRefresh, stems: readonly PullStem[]): boo
   const keys = stems.map((s) => normalizeVolumeTitleKey(s.stem));
   return result.changed.some((path) => {
     const name = basenameOf(path);
-    if (name.toLowerCase() === 'series.json') return true;
+    if (isSeriesFilePath(name)) return true;
     return keys.some((key) => isSidecarOf(name, key));
   });
 }

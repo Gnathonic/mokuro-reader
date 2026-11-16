@@ -1,7 +1,11 @@
 import type { CloudFileMetadata } from '#lib/util/sync/provider-interface.js';
 import { isArchiveSize, type CloudSidecarStamp } from './series-file';
 import { normalizeVolumeTitleKey } from './series-key';
-import { cbzStemsOf, classifyMokuroSidecar } from '#lib/util/sync/syncable-file.js';
+import {
+  cbzStemsOf,
+  classifyMokuroSidecar,
+  stripFoldedSuffix
+} from '#lib/util/sync/syncable-file.js';
 
 /**
  * The freshness half of `series-backfill.ts`: turning a cloud folder listing
@@ -26,7 +30,8 @@ import { cbzStemsOf, classifyMokuroSidecar } from '#lib/util/sync/syncable-file.
  */
 
 /** The extensions a per-volume cover sidecar can have (mirrors `placeholders.ts`). */
-const COVER_EXT_REGEX = /\.(webp|jpe?g)$/i;
+/** Cover sidecar suffixes, matched on the fold (R2). */
+const COVER_SUFFIXES = ['.webp', '.jpeg', '.jpg'] as const;
 
 /**
  * Would a file with this NAME be recognized as a cover sidecar by the listing
@@ -37,7 +42,7 @@ const COVER_EXT_REGEX = /\.(webp|jpe?g)$/i;
  * lookup — an orphan the next listing still reports as "cover missing".
  */
 export function hasCoverSidecarExtension(name: string): boolean {
-  return COVER_EXT_REGEX.test(name);
+  return stripFoldedSuffix(name, COVER_SUFFIXES) !== null;
 }
 
 /** Convert an ISO 8601 timestamp to epoch seconds, truncated (never rounded). */
@@ -88,18 +93,12 @@ export function groupSeriesSidecarFiles(
     // sidecar and must not stamp (or shadow) it — `layer-sync.ts` owns those.
     if (classifyMokuroSidecar(name, cbzStems).kind === 'layer') continue;
 
-    if (/\.mokuro\.gz$/i.test(name)) {
-      stem = name.slice(0, -'.mokuro.gz'.length);
-      kind = 'mokuro-gz';
-    } else if (/\.mokuro$/i.test(name)) {
-      stem = name.slice(0, -'.mokuro'.length);
-      kind = 'mokuro';
-    } else {
-      const match = name.match(COVER_EXT_REGEX);
-      if (match) {
-        stem = name.slice(0, -match[0].length);
-        kind = 'cover';
-      }
+    // Suffixes by the fold, the stem cut at the same dot (R2).
+    const cut = stripFoldedSuffix(name, ['.mokuro.gz', '.mokuro', ...COVER_SUFFIXES]);
+    if (cut) {
+      stem = cut.raw;
+      kind =
+        cut.suffix === '.mokuro.gz' ? 'mokuro-gz' : cut.suffix === '.mokuro' ? 'mokuro' : 'cover';
     }
     if (!stem || !kind) continue;
 
@@ -108,7 +107,7 @@ export function groupSeriesSidecarFiles(
     const entry = groups.get(key) ?? {};
 
     if (kind === 'cover') {
-      const isWebp = name.toLowerCase().endsWith('.webp');
+      const isWebp = cut?.suffix === '.webp';
       if (!entry.cover || isWebp) entry.cover = file;
     } else if (!entry.mokuro || kind === 'mokuro') {
       // Plain `.mokuro` wins over `.mokuro.gz` when both are present.

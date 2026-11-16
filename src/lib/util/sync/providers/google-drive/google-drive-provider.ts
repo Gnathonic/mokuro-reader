@@ -52,6 +52,8 @@ import {
   withDriveRetry,
   type DriveFailureKind
 } from '../../core/providers/drive-http';
+import { foldName } from '#lib/util/names/fold.js';
+import { listedPathOn } from '#lib/util/sync/listed-spelling.js';
 
 /** How long a resolved list of `mokuro-reader` root ids is trusted by `readControlFile`. */
 const CONTROL_ROOTS_TTL_MS = 10 * 60 * 1000;
@@ -707,6 +709,9 @@ class GoogleDriveProvider implements SyncProvider {
     description?: string,
     onProgress?: (loaded: number, total: number) => void
   ): Promise<UploadFileResult> {
+    // Onto the listed spelling of the path's fold: never a second spelling of
+    // a listed entry (sidecar names rule 2, R9; `listed-spelling.ts`).
+    path = listedPathOn(driveFilesCache, path);
     if (!this.isAuthenticated()) {
       throw new ProviderError('Not authenticated', 'google-drive', 'NOT_AUTHENTICATED', true);
     }
@@ -1058,7 +1063,12 @@ class GoogleDriveProvider implements SyncProvider {
         ? await this.ensureSeriesFolder(newSeriesTitle)
         : await this.ensureReaderFolder();
 
-      const existingTargetId = await findFile(newFileName, targetFolderId);
+      // Any listed spelling of the target's fold is the target (R1); the file
+      // itself is not, so a case-only rename goes ahead.
+      const existingTargetId =
+        (await findFile(newFileName, targetFolderId)) ??
+        driveFilesCache.getAll(normalizedNewPath).find((f) => f.fileId !== file.fileId)?.fileId ??
+        null;
       if (existingTargetId && existingTargetId !== file.fileId) {
         throw new ProviderError(
           `Target file already exists at '${normalizedNewPath}'`,
@@ -1601,10 +1611,12 @@ class GoogleDriveProvider implements SyncProvider {
    *
    * So the exact query stays as the FAST path — one cheap indexed query, the
    * normal answer — and a miss falls back to listing the parent's folders and
-   * comparing NFC-folded. That fallback costs one query per parent and only
-   * runs when the alternative was to create a duplicate. Case is deliberately
-   * NOT folded: cloud storage is case-sensitive, and `Berserk/` and
-   * `berserk/` really are two folders.
+   * comparing by the one name fold (`foldName`: case folded, NFC, the
+   * default-ignorables dropped). That fallback costs one query per parent and
+   * only runs when the alternative was to create a duplicate. Case IS folded:
+   * the library is case-insensitive and case-preserving on every store
+   * (sidecar names rule 2, R1), so `berserk/` is the listed `Berserk/` and a
+   * write never mints the second spelling a case-sensitive Drive would allow.
    */
   private async listFoldersNamed(
     parentId: string,
@@ -1620,12 +1632,12 @@ class GoogleDriveProvider implements SyncProvider {
     );
     if (exact.length > 0) return exact;
 
-    const wanted = folderName.normalize('NFC');
+    const wanted = foldName(folderName);
     const all = await driveApiClient.listFiles(folderClause, fields);
-    const matches = all.filter((folder) => (folder.name ?? '').normalize('NFC') === wanted);
+    const matches = all.filter((folder) => foldName(folder.name ?? '') === wanted);
     if (matches.length > 0) {
       console.log(
-        `[GoogleDrive] '${folderName}' is stored under a different unicode form; reusing the existing folder`
+        `[GoogleDrive] '${folderName}' is listed under another spelling; reusing the existing folder`
       );
     }
     return matches;

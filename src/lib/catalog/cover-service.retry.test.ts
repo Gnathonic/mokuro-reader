@@ -34,6 +34,7 @@ vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: {
     getActiveProvider: vi.fn(() => null),
     resolveCloudFolderTitle: vi.fn((t: string) => t),
+    resolveCloudVolumeTitle: (_folder: string, title: string) => title,
     getCloudVolumesBySeries: vi.fn(() => [])
   }
 }));

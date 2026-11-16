@@ -111,6 +111,7 @@ vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
       getStatus: () => ({ isAuthenticated: true, accountScope: 'webdav:perf-contracts' })
     }),
     resolveCloudFolderTitle: (title: string) => title,
+    resolveCloudVolumeTitle: (_folder: string, title: string) => title,
     getCloudVolumesBySeries: () => [] as unknown[],
     getAllCloudVolumes: () => cloudListing.files
   }

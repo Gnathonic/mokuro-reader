@@ -19,7 +19,8 @@ import {
 import { downloadQueue } from '#lib/util/download-queue.js';
 import { cacheManager } from './cache-manager';
 import { uploadCacheEntry } from './cloud-cache-interface';
-import { isCbzFile } from './syncable-file';
+import { cbzStemOf, isCbzFile, stripFoldedSuffix } from './syncable-file';
+import { compareCodePoints } from '#lib/util/names/fold.js';
 import { accountCanAddToSeries } from './account-capabilities';
 import type { CloudFileMetadata, ProviderType, SyncProvider } from './provider-interface';
 import { unifiedCloudManager } from './unified-cloud-manager';
@@ -438,7 +439,7 @@ export async function sweepInstalledVolumesForSidecarBackfill(
       if (bucket) bucket.push(file);
       else folderFiles.set(folderKey, [file]);
       if (isCbzFile(parts[1])) {
-        const stem = normalizeVolumeTitleKey(parts[1].replace(/\.cbz$/i, ''));
+        const stem = normalizeVolumeTitleKey(cbzStemOf(parts[1]) ?? parts[1]);
         const stems = folderArchiveStems.get(folderKey) ?? new Set<string>();
         stems.add(stem);
         folderArchiveStems.set(folderKey, stems);
@@ -937,10 +938,17 @@ function deriveSidecarGap(volume: VolumeMetadata): SidecarGap | null {
   if (!accountCanAddToSeries(status, folderTitle)) return null;
   const folderListing = unifiedCloudManager.getCloudVolumesBySeries(folderTitle);
   const volumeKey = normalizeVolumeTitleKey(volume.volume_title);
-  const archive = folderListing.find((file) => {
-    const name = basename(file.path);
-    return isCbzFile(name) && normalizeVolumeTitleKey(name.replace(/\.cbz$/i, '')) === volumeKey;
-  });
+  // R6 among several: the title's exact spelling, else the code-point-smallest.
+  const archive = folderListing
+    .filter((file) => {
+      const stem = cbzStemOf(basename(file.path));
+      return stem !== null && normalizeVolumeTitleKey(stem) === volumeKey;
+    })
+    .sort((a, b) => {
+      const ax = cbzStemOf(basename(a.path)) === volume.volume_title;
+      const bx = cbzStemOf(basename(b.path)) === volume.volume_title;
+      return ax !== bx ? (ax ? -1 : 1) : compareCodePoints(a.path, b.path);
+    })[0];
   // No archive (or no folder): out of scope, silently — see the module doc.
   if (!archive) return null;
 
@@ -953,7 +961,12 @@ function deriveSidecarGap(volume: VolumeMetadata): SidecarGap | null {
   // spelling: the two fold alike (that is how they matched) but can differ in
   // case or unicode form, and the cover/mokuro pairing on every reader is by
   // the listed path.
-  return { folderTitle, archiveStem: archive.path.replace(/\.cbz$/i, ''), wantsMokuro, wantsCover };
+  return {
+    folderTitle,
+    archiveStem: stripFoldedSuffix(archive.path, ['.cbz'])?.raw ?? archive.path,
+    wantsMokuro,
+    wantsCover
+  };
 }
 
 async function uploadMissingSidecars(feed: SidecarUploadFeed): Promise<void> {

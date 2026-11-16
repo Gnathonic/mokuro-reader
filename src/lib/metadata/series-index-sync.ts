@@ -14,6 +14,7 @@ import {
 import { isSeriesFilePath, parseSeriesFileWithReport, type SeriesFile } from './series-file';
 import { normalizeSeriesKey } from './series-key';
 import { upsertFromSeriesFile } from './store';
+import { isCbzFile } from '#lib/util/sync/syncable-file.js';
 
 /**
  * The read half of the `series.json` index: after every cloud listing, re-read
@@ -95,7 +96,7 @@ function collectFolders(
         ) {
           folder.sidecar = file;
         }
-      } else if (parts[1].toLowerCase().endsWith('.cbz')) {
+      } else if (isCbzFile(parts[1])) {
         folder.hasArchive = true;
       }
     }

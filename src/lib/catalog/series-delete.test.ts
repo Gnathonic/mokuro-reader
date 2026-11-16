@@ -23,6 +23,7 @@ const {
   fetchAllCloudVolumes: vi.fn(async () => {}),
   getCloudVolumesBySeries: vi.fn((_series: string) => [] as unknown[]),
   resolveCloudFolderTitle: vi.fn((series: string) => series),
+  resolveCloudVolumeTitle: (_folder: string, title: string) => title,
   providerStatus: {
     value: {
       hasAnyAuthenticated: false,

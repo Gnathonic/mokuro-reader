@@ -44,6 +44,7 @@ import {
 } from './mega-session';
 import { megaGatewayOption } from '../../cloud-test-hooks';
 import { cancelProviderUploads } from '../../upload-cancellation';
+import { listedPathOn } from '#lib/util/sync/listed-spelling.js';
 
 /**
  * How long an explicit logout waits for MEGA to end the session server-side
@@ -194,6 +195,18 @@ function seriesFolderNameOf(folder: any): string | null {
   if (!folder?.directory || typeof folder.name !== 'string' || folder.name === '') return null;
   const root = folder.parent;
   return root?.directory && root.name === MOKURO_FOLDER ? folder.name : null;
+}
+
+/**
+ * The folder of `children` named `name`: the oldest spelled exactly so, else
+ * the oldest of those whose name folds like it (R1). Null when none does.
+ */
+function pickFolderNamed(children: any[], name: string): any | null {
+  const folders = children.filter((f: any) => f?.directory && typeof f.name === 'string');
+  const exact = folders.filter((f: any) => f.name === name);
+  if (exact.length > 0) return exact.sort(compareByAge)[0];
+  const wanted = foldName(name);
+  return folders.filter((f: any) => foldName(f.name) === wanted).sort(compareByAge)[0] ?? null;
 }
 
 /** How often a dead server-change poll is retried (1 s, 2 s, 4 s, …) before waiting for the next load. */
@@ -1272,11 +1285,14 @@ export class MegaProvider implements SyncProvider {
     });
   }
 
-  /** The live subfolder `name` of `folder` — the oldest, as the deduplicator keeps it. */
+  /**
+   * The live subfolder `name` of `folder` — the oldest, as the deduplicator
+   * keeps it: spelled exactly so, else spelled any way that folds like it (R1:
+   * `one piece/` is `One Piece/`), so a write never mints a second spelling.
+   */
   private async findSubfolder(folder: any, name: string): Promise<any | null> {
     const children = await this.childrenOfNode(folder);
-    const matches = children.filter((f: any) => f.name === name && f.directory);
-    return matches.sort(compareByAge)[0] ?? null;
+    return pickFolderNamed(children, name);
   }
 
   private createFolder(name: string): Promise<any> {
@@ -1600,6 +1616,9 @@ export class MegaProvider implements SyncProvider {
     description?: string,
     onProgress?: (loaded: number, total: number) => void
   ): Promise<UploadFileResult> {
+    // Onto the listed spelling of the path's fold: never a second spelling of
+    // a listed entry (sidecar names rule 2, R9; `listed-spelling.ts`).
+    path = listedPathOn(megaCache, path);
     if (!this.isAuthenticated()) {
       throw new ProviderError('Not authenticated', 'mega', 'NOT_AUTHENTICATED', true);
     }
@@ -1810,9 +1829,12 @@ export class MegaProvider implements SyncProvider {
       throw new ProviderError('Not authenticated', 'mega', 'NOT_AUTHENTICATED', true);
     }
     const nodes = Object.values(this.storage?.files || {}) as any[];
+    // Every copy of the entry, in every spelling of its fold (R1, R8).
+    const wanted = foldName(name);
     const copies = nodes.filter(
       (node) =>
-        node.name === name &&
+        typeof node.name === 'string' &&
+        foldName(node.name) === wanted &&
         !node.directory &&
         node.parent?.name === MOKURO_FOLDER &&
         node.parent?.directory &&
@@ -2008,10 +2030,13 @@ export class MegaProvider implements SyncProvider {
             : mokuroFolder;
 
           const targetChildren = await this.childrenOfNode(targetFolder);
+          // Any spelling of the target's fold is the target (R1); the file
+          // itself is not, so a case-only rename goes ahead.
           const existingTarget = targetChildren.find(
             (child: any) =>
               !child.directory &&
-              child.name === newFileName &&
+              typeof child.name === 'string' &&
+              foldName(child.name) === foldName(newFileName) &&
               child !== megaFile &&
               child.nodeId !== megaFile.nodeId &&
               child.id !== megaFile.id
@@ -2123,7 +2148,8 @@ export class MegaProvider implements SyncProvider {
           const conflictingFolder = targetChildren.find(
             (child: any) =>
               child.directory &&
-              child.name === newFolderName &&
+              typeof child.name === 'string' &&
+              foldName(child.name) === foldName(newFolderName) &&
               child !== sourceFolder &&
               child.nodeId !== sourceFolder.nodeId &&
               child.id !== sourceFolder.id
@@ -2215,7 +2241,7 @@ export class MegaProvider implements SyncProvider {
     try {
       const mokuroFolder = await this.ensureMokuroFolder();
       const children = await this.childrenOfNode(mokuroFolder);
-      const target = children.find((f: any) => f.directory && f.name === normalized);
+      const target = pickFolderNamed(children, normalized);
       if (!target?.nodeId) return;
 
       const remaining = await this.serverFolderContentCount(target.nodeId);
@@ -2251,7 +2277,7 @@ export class MegaProvider implements SyncProvider {
 
           // Find the series folder
           const children = await this.childrenOfNode(mokuroFolder);
-          const seriesFolder = children.find((f: any) => f.name === seriesTitle && f.directory);
+          const seriesFolder = pickFolderNamed(children, seriesTitle);
 
           if (!seriesFolder) {
             console.log(`Series folder '${seriesTitle}' not found in MEGA`);

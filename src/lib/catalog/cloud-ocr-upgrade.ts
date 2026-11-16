@@ -56,6 +56,7 @@ let processing = false;
  * cloud-manager graph.
  */
 import { buildPageCharCounts } from './page-char-counts';
+import { foldName } from '#lib/util/names/fold.js';
 export { buildPageCharCounts };
 
 /**
@@ -64,14 +65,16 @@ export { buildPageCharCounts };
  * matched sidecar) and needs the identical gunzip-and-rename handling.
  */
 export async function decodeMokuroSidecar(sidecarPath: string, blob: Blob): Promise<File | null> {
-  if (sidecarPath.toLowerCase().endsWith('.mokuro')) {
+  // By the fold (R2): `Vol 1.MOKURO` is a `.mokuro` too.
+  const folded = foldName(sidecarPath);
+  if (folded.endsWith('.mokuro')) {
     console.log('[Cloud OCR Upgrade] Decoding plain mokuro sidecar:', sidecarPath, blob.size);
     return new File([blob], sidecarPath.split('/').pop() || sidecarPath, {
       type: 'application/json'
     });
   }
 
-  if (!sidecarPath.toLowerCase().endsWith('.mokuro.gz')) {
+  if (!folded.endsWith('.mokuro.gz')) {
     return null;
   }
 

@@ -15,6 +15,7 @@ import {
   cloudBunkoMergesDuplicates,
   refreshCloudBunkoMarker
 } from '#lib/catalog/cloud-bunko-marker.js';
+import { listedCopies, listedEntry, resolveListedPath } from '#lib/util/sync/listed-spelling.js';
 
 /**
  * In-memory representation of Google Drive's mokuro-reader folder state
@@ -148,7 +149,7 @@ function placeFile(
       const series = parentName && parentName !== READER_FOLDER ? parentName : null;
       return series
         ? { key: series, entry: entry(`${series}/${file.name}`) }
-        : { key: file.name.toLowerCase(), entry: entry(file.name) };
+        : { key: foldName(file.name), entry: entry(file.name) };
     }
   }
 }
@@ -541,7 +542,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
 
         // Log warning if duplicates found
         const volumeDataCount = rootConfigFiles.filter(
-          (file) => file.name.toLowerCase() === GOOGLE_DRIVE_CONFIG.FILE_NAMES.VOLUME_DATA
+          (file) => foldName(file.name) === GOOGLE_DRIVE_CONFIG.FILE_NAMES.VOLUME_DATA
         ).length;
         if (volumeDataCount > 1) {
           console.warn(
@@ -1333,12 +1334,8 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
    * @param path Full path like "SeriesTitle/VolumeTitle.cbz"
    */
   has(path: string): boolean {
-    const currentCache = this.cache.read();
-
-    // Extract series title from path and find within that series
-    const seriesTitle = path.split('/')[0];
-    const seriesFiles = currentCache.get(seriesTitle);
-    return seriesFiles?.some((f) => f.path === path) || false;
+    // Any spelling of the path's fold is that entry (R1: `listed-spelling.ts`).
+    return listedEntry(this.cache.read(), path, this.cache.revision()) !== null;
   }
 
   /**
@@ -1346,12 +1343,8 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
    * @param path Full path like "SeriesTitle/VolumeTitle.cbz"
    */
   get(path: string): DriveFileMetadata | null {
-    const currentCache = this.cache.read();
-
-    // Extract series title from path and find within that series
-    const seriesTitle = path.split('/')[0];
-    const seriesFiles = currentCache.get(seriesTitle);
-    return seriesFiles?.find((f) => f.path === path) || null;
+    // The exact spelling, else the listed one of that fold (R6 among several).
+    return listedEntry(this.cache.read(), path, this.cache.revision());
   }
 
   /**
@@ -1359,12 +1352,12 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
    * @param path Full path like "SeriesTitle/VolumeTitle.cbz"
    */
   getAll(path: string): DriveFileMetadata[] {
-    const currentCache = this.cache.read();
+    // Every copy of the entry, in every spelling of its fold: the exact first.
+    return listedCopies(this.cache.read(), path, this.cache.revision());
+  }
 
-    // Extract series title from path and find all matches within that series
-    const seriesTitle = path.split('/')[0];
-    const seriesFiles = currentCache.get(seriesTitle);
-    return seriesFiles?.filter((f) => f.path === path) || [];
+  listedPath(path: string): string {
+    return resolveListedPath(this.cache.read(), path, this.cache.revision());
   }
 
   /**
@@ -1424,6 +1417,12 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
    * @param metadata File metadata
    */
   add(path: string, metadata: CacheAddMetadata<DriveFileMetadata>): void {
+    // Where the write went: the listed spelling (the provider resolved it so).
+    const listed = this.listedPath(path);
+    if (listed !== path) {
+      path = listed;
+      metadata = { ...metadata, path: listed };
+    }
     // Parse path to get series and volume title
     const parts = path.split('/');
     if (parts.length >= 2) {
@@ -1443,11 +1442,11 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
     // the next full account listing, and every sync in between saw the cloud as
     // absent and re-uploaded identical bytes.
     //
-    // Keyed by the LOWERCASED basename, matching how the fetch keys root config
-    // files (`file.name.toLowerCase()`); `get()` keys off `path.split('/')[0]`,
-    // and callers pass the already-lowercase literal basename.
+    // Keyed by the FOLDED basename, matching how the fetch keys root config
+    // files (`foldName(file.name)`); lookups find every spelling of the fold
+    // (`listed-spelling.ts`).
     if (parts.length === 1 && parts[0]) {
-      this.addDriveFile(parts[0].toLowerCase(), parts[0], metadata);
+      this.addDriveFile(foldName(parts[0]), parts[0], metadata);
     }
   }
 

@@ -278,7 +278,8 @@ export function queueVolumeForBackup(
   const queueItem: BackupQueueItem = {
     volumeUuid: volume.volume_uuid,
     seriesTitle,
-    volumeTitle: volume.volume_title,
+    // The listing's spelling of the volume's files, when it holds any (R9).
+    volumeTitle: unifiedCloudManager.resolveCloudVolumeTitle(seriesTitle, volume.volume_title),
     provider: targetProvider.type,
     uploadConcurrencyLimit: targetProvider.uploadConcurrencyLimit,
     volumeMetadata: volume,

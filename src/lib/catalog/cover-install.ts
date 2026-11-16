@@ -13,6 +13,7 @@ import { isArchiveSize } from '#lib/metadata/series-file.js';
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from '#lib/metadata/series-key.js';
 import type { CloudFileMetadata } from '#lib/util/sync/provider-interface.js';
 import { unifiedCloudManager } from '#lib/util/sync/unified-cloud-manager.js';
+import { stripFoldedSuffix } from '#lib/util/sync/syncable-file.js';
 
 /**
  * The running pass per normalized series key, plus whether a joiner arrived
@@ -38,7 +39,7 @@ function coverKey(seriesTitle: string, volumeTitle: string): string {
   return `${normalizeVolumeTitleKey(seriesTitle)}/${normalizeVolumeTitleKey(volumeTitle)}`;
 }
 
-/** Re-key the listing's cover index (lowercased base paths) onto {@link coverKey}. */
+/** Re-key the listing's cover index (folded base paths) onto {@link coverKey}. */
 function foldCoverIndex(index: Map<string, CoverSidecarInfo>): Map<string, CoverSidecarInfo> {
   const folded = new Map<string, CoverSidecarInfo>();
   for (const [basePath, info] of index) {
@@ -72,8 +73,9 @@ function foldCoverIndex(index: Map<string, CoverSidecarInfo>): Map<string, Cover
 function foldArchiveIndex(files: Iterable<CloudFileMetadata>): Map<string, string> {
   const folded = new Map<string, string>();
   for (const file of files) {
-    if (!file.path.toLowerCase().endsWith('.cbz')) continue;
-    const withoutExt = file.path.slice(0, -'.cbz'.length);
+    // By the fold (R2): `VOL 1.CBZ` is an archive, its stem cut at the same dot.
+    const withoutExt = stripFoldedSuffix(file.path, ['.cbz'])?.raw;
+    if (withoutExt === undefined) continue;
     const cut = withoutExt.lastIndexOf('/');
     if (cut < 0) continue; // Not `<Series>/<Volume>.cbz`: nothing a row can be paired with.
     const key = coverKey(withoutExt.slice(0, cut), withoutExt.slice(cut + 1));

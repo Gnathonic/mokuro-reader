@@ -12,6 +12,8 @@ import {
 } from '#lib/metadata/series-file.js';
 import type { SeriesIndexRecord } from '#lib/metadata/series-index.js';
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from '#lib/metadata/series-key.js';
+import { foldName } from '#lib/util/names/fold.js';
+import { cbzStemOf, isCbzFile, stripFoldedSuffix } from '#lib/util/sync/syncable-file.js';
 
 /**
  * The identity of one archive across the sources that spell it differently: a
@@ -33,7 +35,8 @@ function cloudArchiveKey(path: string): string {
   const trimmed = path.replace(/^\/+|\/+$/g, '');
   const cut = trimmed.lastIndexOf('/');
   if (cut < 0) return '';
-  return archiveKey(trimmed.slice(0, cut), trimmed.slice(cut + 1).replace(/\.cbz$/i, ''));
+  const name = trimmed.slice(cut + 1);
+  return archiveKey(trimmed.slice(0, cut), cbzStemOf(name) ?? name);
 }
 
 /**
@@ -70,11 +73,9 @@ function parseCloudPath(
   if (parts.length !== 2) return null;
 
   const folderName = parts[0];
-  const volumeWithExt = parts[1];
-  if (!volumeWithExt.toLowerCase().endsWith('.cbz')) return null;
-
-  // Remove .cbz extension
-  const volumeTitle = volumeWithExt.replace(/\.cbz$/i, '');
+  // A `.cbz` by its fold (R2), the title cut at the same dot.
+  const volumeTitle = cbzStemOf(parts[1]);
+  if (volumeTitle === null) return null;
 
   // Prefer verified series title from description over folder name
   const seriesTitle = extractSeriesTitleFromDescription(description) || folderName;
@@ -118,7 +119,14 @@ function* allListedFiles(
 }
 
 /** The extensions a per-volume cover sidecar can have. */
-const COVER_EXT_REGEX = /\.(webp|jpe?g)$/i;
+/** Cover sidecar suffixes, matched on the fold (R2). */
+const COVER_SUFFIXES = ['.webp', '.jpeg', '.jpg'] as const;
+
+/** `<base>` and suffix of a cover sidecar path (`.webp`, `.jpg`, `.jpeg` by the fold), else null. */
+function coverCut(path: string): { raw: string; fold: string; webp: boolean } | null {
+  const cut = stripFoldedSuffix(path, COVER_SUFFIXES);
+  return cut && { raw: cut.raw, fold: cut.fold, webp: cut.suffix === '.webp' };
+}
 
 /** One listed cover sidecar's identity plus its listing stamp (bytes + ISO mtime). */
 export interface CoverSidecarInfo {
@@ -147,10 +155,11 @@ export function indexCoverSidecarsByBasePath(
   const index = new Map<string, CoverSidecarInfo>();
   for (const file of files) {
     if (isSeriesFilePath(file.path)) continue;
-    const match = file.path.match(COVER_EXT_REGEX);
-    if (!match) continue;
-    const key = file.path.slice(0, -match[0].length).toLowerCase();
-    const isWebp = match[1].toLowerCase() === 'webp';
+    const cover = coverCut(file.path);
+    if (!cover) continue;
+    // Keyed by the fold of the base path (R1): `VOL 1.webp` is `Vol 1`'s.
+    const key = cover.fold;
+    const isWebp = cover.webp;
     if (!index.has(key) || isWebp) {
       index.set(key, {
         fileId: file.fileId,
@@ -166,9 +175,8 @@ export function indexCoverSidecarsByBasePath(
 /** {@link archiveKey} for a listed cover sidecar (`<Series>/<Volume>.webp|.jpg|.jpeg`). */
 function cloudCoverArchiveKey(path: string): string {
   const trimmed = path.replace(/^\/+|\/+$/g, '');
-  const match = trimmed.match(COVER_EXT_REGEX);
-  if (!match) return '';
-  const withoutExt = trimmed.slice(0, -match[0].length);
+  const withoutExt = coverCut(trimmed)?.raw;
+  if (withoutExt === undefined) return '';
   const cut = withoutExt.lastIndexOf('/');
   if (cut < 0) return '';
   return archiveKey(withoutExt.slice(0, cut), withoutExt.slice(cut + 1));
@@ -189,11 +197,11 @@ export function indexCoverFilesByArchiveKey(
   const index = new Map<string, CloudVolumeWithProvider>();
   for (const file of allListedFiles(cloudFilesMap)) {
     if (isSeriesFilePath(file.path)) continue;
-    const match = file.path.match(COVER_EXT_REGEX);
-    if (!match) continue;
+    const cover = coverCut(file.path);
+    if (!cover) continue;
     const key = cloudCoverArchiveKey(file.path);
     if (!key) continue;
-    const isWebp = match[1].toLowerCase() === 'webp';
+    const isWebp = cover.webp;
     if (!index.has(key) || isWebp) index.set(key, file);
   }
   return index;
@@ -312,7 +320,7 @@ export function generatePlaceholders(
   const localVolumeByPath = new Map<string, VolumeMetadata>();
   const localImageOnlyByVolumeTitle = new Map<string, VolumeMetadata[]>();
   for (const vol of localVolumes) {
-    const key = `${vol.series_title}/${vol.volume_title}.cbz`.toLowerCase();
+    const key = foldName(`${vol.series_title}/${vol.volume_title}.cbz`);
     if (!vol.isPlaceholder && !localVolumeByPath.has(key)) {
       localVolumeByPath.set(key, vol);
     }
@@ -320,7 +328,7 @@ export function generatePlaceholders(
     const currentMokuroVersion =
       typeof vol.mokuro_version === 'string' ? vol.mokuro_version.trim() : '';
     if (!vol.isPlaceholder && currentMokuroVersion === '') {
-      const titleKey = vol.volume_title.toLowerCase();
+      const titleKey = foldName(vol.volume_title);
       const existing = localImageOnlyByVolumeTitle.get(titleKey) || [];
       existing.push(vol);
       localImageOnlyByVolumeTitle.set(titleKey, existing);
@@ -330,18 +338,18 @@ export function generatePlaceholders(
   // Create a map of series titles to their UUIDs from local volumes
   const seriesTitleToUuid = new Map<string, string>();
   for (const vol of localVolumes) {
-    const lowerTitle = vol.series_title.toLowerCase();
+    const lowerTitle = foldName(vol.series_title);
     if (!seriesTitleToUuid.has(lowerTitle)) {
       seriesTitleToUuid.set(lowerTitle, vol.series_uuid);
     }
   }
 
-  // basePath (lowercased) -> cover sidecar info, from the shared indexer.
+  // basePath (folded) -> cover sidecar info, from the shared indexer.
   const thumbnailMap = indexCoverSidecarsByBasePath(allListedFiles(cloudFilesMap));
 
   // Flatten Map values into a single array, keeping sidecars out of the cbz bucket
   const cloudFiles: CloudVolumeWithProvider[] = [];
-  const mokuroMap = new Map<string, CloudVolumeWithProvider>(); // basePath -> sidecar metadata
+  const mokuroMap = new Map<string, CloudVolumeWithProvider>(); // folded basePath -> sidecar metadata
   for (const files of cloudFilesMap.values()) {
     for (const file of files) {
       // The per-series index is a sidecar of the FOLDER, not of any volume:
@@ -349,17 +357,16 @@ export function generatePlaceholders(
       // be an undownloadable "series.json" volume in the catalog).
       if (isSeriesFilePath(file.path)) continue;
       // Covers are already indexed above; they are not archives either.
-      if (COVER_EXT_REGEX.test(file.path)) continue;
-      const lowerPath = file.path.toLowerCase();
-      if (lowerPath.endsWith('.mokuro.gz')) {
-        const basePath = file.path.replace(/\.mokuro\.gz$/i, '');
+      if (coverCut(file.path)) continue;
+      // By the fold (R1, R2): `VOL 1.mokuro` is `Vol 1.cbz`'s primary.
+      const mokuro = stripFoldedSuffix(file.path, ['.mokuro.gz', '.mokuro']);
+      if (mokuro?.suffix === '.mokuro.gz') {
         // Prefer plain .mokuro over .mokuro.gz when both exist.
-        if (!mokuroMap.has(basePath)) {
-          mokuroMap.set(basePath, file);
+        if (!mokuroMap.has(mokuro.fold)) {
+          mokuroMap.set(mokuro.fold, file);
         }
-      } else if (lowerPath.endsWith('.mokuro')) {
-        const basePath = file.path.replace(/\.mokuro$/i, '');
-        mokuroMap.set(basePath, file);
+      } else if (mokuro) {
+        mokuroMap.set(mokuro.fold, file);
       } else {
         cloudFiles.push(file);
       }
@@ -380,7 +387,7 @@ export function generatePlaceholders(
     // Use existing series UUID if we have local volumes with this series title
     // Otherwise generate a deterministic UUID for a new series
     const seriesUuid =
-      seriesTitleToUuid.get(parsed.seriesTitle.toLowerCase()) ||
+      seriesTitleToUuid.get(foldName(parsed.seriesTitle)) ||
       generateDeterministicUUID(parsed.seriesTitle);
 
     const indexEntry = findIndexEntry(indexMap, parsed.folderName, parsed.volumeTitle);
@@ -406,7 +413,7 @@ export function generatePlaceholders(
       }
       emittedUuids.add(placeholder.volume_uuid);
 
-      const basePath = cloudFile.path.replace(/\.cbz$/i, '').toLowerCase();
+      const basePath = stripFoldedSuffix(cloudFile.path, ['.cbz'])?.fold ?? '';
       const thumbnailInfo = thumbnailMap.get(basePath);
       if (thumbnailInfo) {
         placeholder.cloudThumbnailFileId = thumbnailInfo.fileId;
@@ -433,13 +440,13 @@ export function generatePlaceholders(
     const parsed = parseCloudPath(cloudFile.path, cloudFile.description);
     if (!parsed) continue;
 
-    const cloudPathKey = cloudFile.path.toLowerCase();
+    const cloudPathKey = foldName(cloudFile.path);
     let localVolume = localVolumeByPath.get(cloudPathKey);
     if (!localVolume) {
       // Fallback only when series title also matches; never pair by volume title alone.
-      const candidates = localImageOnlyByVolumeTitle.get(parsed.volumeTitle.toLowerCase()) || [];
+      const candidates = localImageOnlyByVolumeTitle.get(foldName(parsed.volumeTitle)) || [];
       const seriesMatches = candidates.filter(
-        (candidate) => candidate.series_title.toLowerCase() === parsed.seriesTitle.toLowerCase()
+        (candidate) => foldName(candidate.series_title) === foldName(parsed.seriesTitle)
       );
       if (seriesMatches.length === 1) {
         localVolume = seriesMatches[0];
@@ -460,7 +467,7 @@ export function generatePlaceholders(
       typeof localVolume.mokuro_version === 'string' ? localVolume.mokuro_version.trim() : '';
     if (currentMokuroVersion !== '') continue;
 
-    const basePath = cloudFile.path.replace(/\.cbz$/i, '');
+    const basePath = stripFoldedSuffix(cloudFile.path, ['.cbz'])?.fold ?? '';
     const remoteMokuro = mokuroMap.get(basePath);
     if (remoteMokuro) {
       console.log(
@@ -528,7 +535,7 @@ export function indexCloudFilesByPath(
   const index = new Map<string, CloudVolumeWithProvider>();
   for (const files of cloudFilesMap.values()) {
     for (const file of files) {
-      if (!file.path.toLowerCase().endsWith('.cbz')) continue;
+      if (!isCbzFile(file.path)) continue;
       const key = cloudArchiveKey(file.path);
       if (key) index.set(key, file);
     }
@@ -557,7 +564,7 @@ export function indexCloudFilesByUuid(
     if (!indexMap.has(normalizeSeriesKey(folderName))) continue;
 
     for (const file of files) {
-      if (!file.path.toLowerCase().endsWith('.cbz')) continue;
+      if (!isCbzFile(file.path)) continue;
       const parsed = parseCloudPath(file.path, file.description);
       if (!parsed) continue;
 

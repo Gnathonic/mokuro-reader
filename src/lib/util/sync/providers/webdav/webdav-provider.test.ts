@@ -937,6 +937,29 @@ describe('WebDAVProvider staged, verified PUTs (X-Mokuro-Put)', () => {
     expect((await provider.getWorkerUploadCredentials()).webdavPutVerified).toBe(false);
   });
 
+  it('writes onto the listed spelling of the path (rule 2, R9)', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+    await provider.login({ serverUrl: 'https://host', username: 'u', password: 'pw' });
+    const { webdavCache } = await import('./webdav-cache');
+    const { resolveListedPath } = await import('#lib/util/sync/listed-spelling.js');
+    const listed = [{ path: 'One Piece/VOL 1.cbz' }, { path: 'One Piece/VOL 1.mokuro' }];
+    (webdavCache as any).listedPath = (path: string) =>
+      resolveListedPath(new Map([['One Piece', listed]]), path);
+    mockCore.uploadFile.mockResolvedValue({ fileId: '/x' });
+    try {
+      await provider.uploadFile('one piece/Vol 1.mokuro', new Blob(['x']));
+      await provider.uploadFile('one piece/Vol 2.cbz', new Blob(['x']));
+    } finally {
+      delete (webdavCache as any).listedPath;
+    }
+    const calls = mockCore.uploadFile.mock.calls.slice(-2).map((c: any[]) => c[0]);
+    expect(calls.map((c: any) => `${c.seriesTitle}/${c.filename}`)).toEqual([
+      'One Piece/VOL 1.mokuro',
+      'One Piece/Vol 2.cbz'
+    ]);
+  });
+
   it('notePutVerified records it for the connected server (worker-driven uploads)', async () => {
     const provider = await freshProvider();
     identityMock.mockResolvedValue({ kind: 'unsupported' });

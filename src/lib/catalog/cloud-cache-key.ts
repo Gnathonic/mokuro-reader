@@ -1,11 +1,14 @@
 import { unifiedCloudManager } from '#lib/util/sync/unified-cloud-manager.js';
 
 /**
- * Cloud paths as a cache key. Folded exactly as far as identity allows and no
- * further: leading/duplicate separators are noise from different providers'
- * listing shapes, and NFD vs NFC is the same filename on a decomposing
- * filesystem — but CASE is meaningful, because cloud storage is case-sensitive
- * and two files can legitimately differ only in case.
+ * Cloud paths as a cache key for PROVIDER OBJECTS (the cover bytes a listed
+ * file had), not for library entries: leading/duplicate separators are noise
+ * from different providers' listing shapes, and NFD vs NFC is the same file on
+ * a decomposing filesystem. Case stays: on a case-sensitive store two spellings
+ * of one entry (a fold group, sidecar names rule 2 R6) are still two objects
+ * with their own bytes, and this cache must not hand one the other's. Which
+ * names are one ENTRY is `foldName`'s question (`listed-spelling.ts`), never
+ * this key's.
  */
 export function normalizeCachePath(path: string): string {
   return path
