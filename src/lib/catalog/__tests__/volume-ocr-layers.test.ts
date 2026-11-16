@@ -230,3 +230,57 @@ describe('the v4 upgrade (layer pages move to their own table)', () => {
     }
   });
 });
+
+describe('the v5 upgrade (folded_key becomes fold v2’s series key)', () => {
+  const NAME = 'mokuro_v3_fold_v2_upgrade_test';
+
+  afterEach(async () => {
+    await Dexie.delete(NAME);
+  });
+
+  it('re-stamps every series_metadata row’s folded_key and keeps every row', async () => {
+    const old = new Dexie(NAME);
+    for (const step of MOKURO_DB_SCHEMA) {
+      if (step.version <= 4) old.version(step.version).stores(step.stores);
+    }
+    // What 1.10.0 (v4) stamped: NFC, trimmed, whitespace collapsed, lowercased.
+    const v4Key = (title: string) =>
+      title.normalize('NFC').trim().replace(/\s+/g, ' ').toLowerCase();
+    const titles = ['Straße', 'STRASSE', 'Café Ole', '  Dr   Stone ', 'Zero​Width', 'ΟΔΟΣ'];
+    await old.table('series_metadata').bulkPut(
+      titles.map((series_title, i) => ({
+        series_key: `k${i}`,
+        series_title,
+        folded_key: v4Key(series_title),
+        note: `row ${i}`
+      }))
+    );
+    old.close();
+
+    const upgraded = new CatalogDexieV3(NAME);
+    try {
+      await upgraded.open();
+      expect(upgraded.verno).toBe(5);
+      const rows = await upgraded.series_metadata.toArray();
+      expect(rows).toHaveLength(titles.length);
+      const byKey = new Map(
+        rows.map((r) => [r.series_key, r as unknown as Record<string, unknown>])
+      );
+      expect(byKey.get('k0')?.folded_key).toBe('strasse');
+      expect(byKey.get('k1')?.folded_key).toBe('strasse');
+      expect(byKey.get('k2')?.folded_key).toBe('café ole');
+      expect(byKey.get('k3')?.folded_key).toBe('dr stone');
+      expect(byKey.get('k4')?.folded_key).toBe('zerowidth');
+      expect(byKey.get('k5')?.folded_key).toBe('οδοσ');
+      // Nothing but the derived key moved.
+      for (const [i, title] of titles.entries()) {
+        expect(byKey.get(`k${i}`)).toMatchObject({ series_title: title, note: `row ${i}` });
+      }
+      // The index answers the new key: `STRASSE` finds the owned `Straße`.
+      const hits = await upgraded.series_metadata.where('folded_key').equals('strasse').toArray();
+      expect(hits.map((r) => r.series_key).sort()).toEqual(['k0', 'k1']);
+    } finally {
+      upgraded.close();
+    }
+  });
+});

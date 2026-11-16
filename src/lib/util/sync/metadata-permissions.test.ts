@@ -91,6 +91,14 @@ describe('canEditSeriesMetadata', () => {
     expect(canEditSeriesMetadata(composed)).toEqual({ allowed: true });
   });
 
+  it('matches by fold v2’s series key, as Bunko keys its owner records (STRASSE is the owned Straße)', () => {
+    setPermissions('webdav', { scope: 'owned', ownedSeries: ['Straße', 'Dr  Stone'] });
+    expect(canEditSeriesMetadata('STRASSE')).toEqual({ allowed: true });
+    expect(canEditSeriesMetadata('Dr Stone')).toEqual({ allowed: true });
+    expect(canEditSeriesMetadata('Stra\u200bsse')).toEqual({ allowed: true });
+    expect(canEditSeriesMetadata('Strasbourg')).toMatchObject({ allowed: false });
+  });
+
   it('treats scope "owned" with no ownedSeries as owning nothing', () => {
     setPermissions('webdav', { scope: 'owned' });
     expect(canEditSeriesMetadata('One Piece').allowed).toBe(false);
