@@ -1,16 +1,16 @@
-import { getItems } from '$lib/upload';
+import { getItems } from '#lib/upload/index.js';
 import { IMAGE_EXTENSIONS } from './types';
-import { normalizeFilename } from '$lib/util';
+import { normalizeFilename } from '#lib/util/index.js';
 import {
   decrementPoolUsers,
   getFileProcessingPool,
   incrementPoolUsers
-} from '$lib/util/file-processing-pool';
-import { generateUUID } from '$lib/util/uuid';
-import { mayBeImageType } from '$lib/util/image-content-type';
-import { RASTER_FORMAT_NAMES, toRasterImageFile } from '$lib/util/raster-image';
-import { assertNoRedirectEscape } from '$lib/util/link-safety';
-import type { FetchedLayerFile } from '$lib/metadata/layer-sync';
+} from '#lib/util/file-processing-pool.js';
+import { generateUUID } from '#lib/util/uuid.js';
+import { mayBeImageType } from '#lib/util/image-content-type.js';
+import { RASTER_FORMAT_NAMES, toRasterImageFile } from '#lib/util/raster-image.js';
+import { assertNoRedirectEscape } from '#lib/util/link-safety.js';
+import type { FetchedLayerFile } from '#lib/metadata/layer-sync.js';
 import {
   confineManifestToOrigins,
   fetchVolumeManifest,

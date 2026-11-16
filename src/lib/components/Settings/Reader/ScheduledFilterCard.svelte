@@ -4,7 +4,7 @@
     updateSetting,
     updateScheduleSetting,
     type ScheduleSettingKey
-  } from '$lib/settings';
+  } from '#lib/settings/index.js';
   import { Toggle, Label } from 'flowbite-svelte';
   import TimePicker from '../TimePicker.svelte';
 

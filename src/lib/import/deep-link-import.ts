@@ -1,5 +1,5 @@
-import { db } from '$lib/catalog/db';
-import type { VolumeMetadata } from '$lib/types';
+import { db } from '#lib/catalog/db.js';
+import type { VolumeMetadata } from '#lib/types/index.js';
 import { pickCoverTarget } from './cover-sidecar';
 import type { HtmlDownloadResult } from './html-download-provider';
 import { importArchiveWithOptionalMokuro } from './import-service';
@@ -23,7 +23,7 @@ async function rememberPendingOcr(
   const manifest = downloaded.manifest;
   if (!target || !manifest || !downloaded.manifestUrl || manifest.pending.length === 0) return;
   try {
-    const { queueUrlForArchive, watchServerOcr } = await import('$lib/catalog/server-ocr-queue');
+    const { queueUrlForArchive, watchServerOcr } = await import('#lib/catalog/server-ocr-queue.js');
     const queueUrl = queueUrlForArchive(manifest.archive.url);
     if (!queueUrl) return;
     // The queue file names the volume as the server does (folder / archive
@@ -121,7 +121,7 @@ export async function importDeepLinkedArchive(
     return target;
   }
   // Loaded on demand: the layer importer drags the sync provider stack along.
-  const { importFetchedLayers } = await import('$lib/metadata/layer-sync');
+  const { importFetchedLayers } = await import('#lib/metadata/layer-sync.js');
   const attached = await importFetchedLayers(
     target.volume_uuid,
     DEEP_LINK_LAYER_SOURCE,

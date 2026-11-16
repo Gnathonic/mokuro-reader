@@ -6,9 +6,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
 
-vi.mock('$app/environment', () => ({ browser: true, dev: false, building: false }));
-vi.mock('$lib/util/snackbar', () => ({ showSnackbar: vi.fn() }));
-vi.mock('$lib/util/user-gesture', () => ({ onNextUserGesture: vi.fn(() => () => {}) }));
+vi.mock('$app/env', () => ({ browser: true, dev: false, building: false }));
+vi.mock('#lib/util/snackbar.js', () => ({ showSnackbar: vi.fn() }));
+vi.mock('#lib/util/user-gesture.js', () => ({ onNextUserGesture: vi.fn(() => () => {}) }));
 vi.mock('../../provider-manager', () => ({ providerManager: { updateStatus: vi.fn() } }));
 vi.mock('../../unified-cloud-manager', () => ({
   unifiedCloudManager: {

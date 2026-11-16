@@ -10,12 +10,12 @@ const { requestCover, isCoverFetchTarget } = vi.hoisted(() => ({
   requestCover: vi.fn(),
   isCoverFetchTarget: vi.fn(() => true)
 }));
-vi.mock('$lib/catalog/cover-service', () => ({ requestCover, isCoverFetchTarget }));
+vi.mock('#lib/catalog/cover-service.js', () => ({ requestCover, isCoverFetchTarget }));
 
 import { tick } from 'svelte';
 import PlaceholderThumbnail from '../PlaceholderThumbnail.svelte';
-import { installIntersectionObserverStub } from '$lib/catalog/__tests__/intersection-observer-stub';
-import type { VolumeMetadata } from '$lib/types';
+import { installIntersectionObserverStub } from '#lib/catalog/__tests__/intersection-observer-stub.js';
+import type { VolumeMetadata } from '#lib/types/index.js';
 
 function volume(uuid: string, overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
   return {

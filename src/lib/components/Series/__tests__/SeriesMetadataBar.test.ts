@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from '@testing-library/svelte';
-import { createEmptySeriesMetadata } from '$lib/metadata/types';
+import { createEmptySeriesMetadata } from '#lib/metadata/types.js';
 
 // vi.hoisted: `vi.mock` factories are hoisted above all other top-level code
 // (including plain `const` declarations and — per this repo's established
@@ -58,19 +58,19 @@ const {
     }))
   };
 });
-vi.mock('$lib/metadata/store', () => ({ seriesMetadataMap }));
-vi.mock('$lib/settings/settings', () => ({ preferredTitleLanguage, catalogSettings }));
-vi.mock('$lib/metadata/anilist-auth', () => ({ anilistConnected }));
-vi.mock('$lib/settings/volume-data', () => ({ volumes: volumesData }));
-vi.mock('$lib/settings/series-data', () => ({
+vi.mock('#lib/metadata/store.js', () => ({ seriesMetadataMap }));
+vi.mock('#lib/settings/settings.js', () => ({ preferredTitleLanguage, catalogSettings }));
+vi.mock('#lib/metadata/anilist-auth.js', () => ({ anilistConnected }));
+vi.mock('#lib/settings/volume-data.js', () => ({ volumes: volumesData }));
+vi.mock('#lib/settings/series-data.js', () => ({
   seriesReadingState,
   readingStateFor: (states: Record<string, any>, key: string) =>
     states[key] ?? { read_count: 0, lastUpdated: new Date(0).toISOString() }
 }));
-vi.mock('$lib/metadata/progress-tracker', () => ({ computeLocalPassState }));
+vi.mock('#lib/metadata/progress-tracker.js', () => ({ computeLocalPassState }));
 
 import SeriesMetadataBar from '../SeriesMetadataBar.svelte';
-import type { VolumeMetadata } from '$lib/types';
+import type { VolumeMetadata } from '#lib/types/index.js';
 
 function volume(title: string, isPlaceholder = false): VolumeMetadata {
   return {

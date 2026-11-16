@@ -5,9 +5,19 @@ import svelte from 'eslint-plugin-svelte';
 import svelteParser from 'svelte-eslint-parser';
 import prettier from 'eslint-config-prettier';
 
-/** @type {import('eslint').Linter.FlatConfig[]} */
+/** @type {import('eslint').Linter.Config[]} */
 export default [
   js.configs.recommended,
+  // ESLint 10 added these to js.configs.recommended. Both stay off so the
+  // major bump changes no lint verdicts; adopting them is a separate cleanup.
+  // no-useless-assignment does not understand Svelte runes — it flags writes
+  // to `$bindable` props (QuickAccess `open = false`), which reach the parent.
+  {
+    rules: {
+      'no-useless-assignment': 'off',
+      'preserve-caught-error': 'off'
+    }
+  },
   {
     files: ['**/*.{js,mjs,cjs,ts,mts}'],
     languageOptions: {

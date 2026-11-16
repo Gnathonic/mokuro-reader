@@ -13,7 +13,7 @@
  * Cloud sync of layers (`<Volume Title>.<id>.mokuro` beside the
  * archive) lives in a later PR; nothing here touches a provider.
  */
-import { db } from '$lib/catalog/db';
+import { db } from '#lib/catalog/db.js';
 import {
   deleteLayerRows,
   getLayerMeta,
@@ -24,12 +24,17 @@ import {
   listLayerMetas,
   putLayerWithPages,
   updateLayerMeta
-} from '$lib/catalog/layer-store';
-import { buildPageCharCounts } from '$lib/catalog/cloud-ocr-upgrade';
-import { isVolumeInstalled } from '$lib/catalog/volume-state';
-import { buildLayerMokuroMetadata } from '$lib/util/mokuro-metadata';
-import { LAYER_ID_RE, layerSidecarName } from '$lib/util/sync/syncable-file';
-import type { Page, VolumeOcrLayer, VolumeOcrLayerKind, VolumeOcrLayerWithPages } from '$lib/types';
+} from '#lib/catalog/layer-store.js';
+import { buildPageCharCounts } from '#lib/catalog/cloud-ocr-upgrade.js';
+import { isVolumeInstalled } from '#lib/catalog/volume-state.js';
+import { buildLayerMokuroMetadata } from '#lib/util/mokuro-metadata.js';
+import { LAYER_ID_RE, layerSidecarName } from '#lib/util/sync/syncable-file.js';
+import type {
+  Page,
+  VolumeOcrLayer,
+  VolumeOcrLayerKind,
+  VolumeOcrLayerWithPages
+} from '#lib/types/index.js';
 import {
   EDIT_LAYER_ID,
   isCuratedLayerId,

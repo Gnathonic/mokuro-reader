@@ -1,4 +1,4 @@
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 import type {
   SyncProvider,
   ProviderCredentials,
@@ -34,7 +34,7 @@ import {
   isTransientAuthRefreshError,
   registerWorkerAuthRefresher,
   TransientAuthRefreshError
-} from '$lib/util/worker-auth-refresh';
+} from '#lib/util/worker-auth-refresh.js';
 import { classifyWriteError, type WriteErrorKind } from './webdav-errors';
 import { CANNOT_RENAME_MESSAGE, OWNERSHIP_REFRESH_MAX_AGE_MS } from '../../account-capabilities';
 import {
@@ -43,7 +43,7 @@ import {
   isSyncableFile
 } from '../../syncable-file';
 import { controlReadKey, controlSetEtag, isPathSafeFolderName } from '../../control-file-read';
-import { withCloudBunkoStatus } from '$lib/catalog/cloud-bunko-marker';
+import { withCloudBunkoStatus } from '#lib/catalog/cloud-bunko-marker.js';
 import { bunkoSupportsHistory } from './bunko-version';
 
 interface WebDAVCredentials {
@@ -507,7 +507,7 @@ export class WebDAVProvider implements SyncProvider {
         return 'refused';
       case 'rate-limited':
         this.reissueBlockedUntil = Date.now() + REISSUE_RATE_LIMIT_COOLDOWN_MS;
-        import('$lib/util/snackbar')
+        import('#lib/util/snackbar.js')
           .then(({ showSnackbar }) =>
             showSnackbar('WebDAV: too many failed attempts - try again later')
           )

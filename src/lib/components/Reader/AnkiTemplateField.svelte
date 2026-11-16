@@ -1,7 +1,7 @@
 <script lang="ts">
   import { ChevronRightOutline } from 'flowbite-svelte-icons';
   import { slide } from 'svelte/transition';
-  import { fieldHtmlToPreviewText } from '$lib/anki-connect/field-html';
+  import { fieldHtmlToPreviewText } from '#lib/anki-connect/field-html.js';
 
   type TemplateButton = {
     readonly template: string;

@@ -7,7 +7,7 @@ import {
   tokenLabel,
   tokenNeedsRenewal
 } from './bunko-token';
-import { describeContract, loadBunkoFixture } from '$lib/interop/contract';
+import { describeContract, loadBunkoFixture } from '#lib/interop/contract.js';
 
 const ENDPOINT = 'https://host/login/api/token';
 

@@ -1,11 +1,11 @@
 <script lang="ts">
   import { Accordion, AccordionItem, Button, Dropzone, Modal, Spinner } from 'flowbite-svelte';
   import { UploadSolid } from 'flowbite-svelte-icons';
-  import { importFiles, isImporting } from '$lib/import';
-  import { scanFiles } from '$lib/upload';
+  import { importFiles, isImporting } from '#lib/import/index.js';
+  import { scanFiles } from '#lib/upload/index.js';
   import { onMount } from 'svelte';
-  import { formatBytes } from '$lib/util/upload';
-  import { toClipboard } from '$lib/util';
+  import { formatBytes } from '#lib/util/upload.js';
+  import { toClipboard } from '#lib/util/index.js';
 
   interface Props {
     open?: boolean;

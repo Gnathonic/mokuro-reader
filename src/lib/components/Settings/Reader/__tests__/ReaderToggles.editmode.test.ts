@@ -13,7 +13,7 @@ const settingsStore = vi.hoisted(() => {
   };
 });
 
-vi.mock('$lib/settings', async () => {
+vi.mock('#lib/settings/index.js', async () => {
   const { writable, readable } = await import('svelte/store');
   const store = writable<Record<string, unknown>>({
     defaultFullscreen: false,
@@ -55,7 +55,7 @@ vi.mock('../ScheduledFilterCard.svelte', async () => {
 });
 
 import ReaderToggles from '../ReaderToggles.svelte';
-import { editModeActive, editModeRequest, setEditModeActive } from '$lib/reader/edit/edit-mode';
+import { editModeActive, editModeRequest, setEditModeActive } from '#lib/reader/edit/edit-mode.js';
 
 afterEach(() => {
   cleanup();
@@ -111,7 +111,7 @@ describe('ReaderToggles — reading timer', () => {
 
 describe('ReaderToggles — page keys scroll tall pages (#283)', () => {
   it('lists the toggle next to the other input toggles and writes the setting', async () => {
-    const { updateSetting } = await import('$lib/settings');
+    const { updateSetting } = await import('#lib/settings/index.js');
     vi.mocked(updateSetting).mockClear();
     settingsStore.get().update((s) => ({ ...s, continuousScroll: false }));
     const { getByLabelText } = render(ReaderToggles);

@@ -1,15 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import 'fake-indexeddb/auto';
 
-vi.mock('$lib/catalog/db', async () => {
+vi.mock('#lib/catalog/db.js', async () => {
   const { CatalogDexieV3 } =
-    await vi.importActual<typeof import('$lib/catalog/db-v3')>('$lib/catalog/db-v3');
+    await vi.importActual<typeof import('#lib/catalog/db-v3.js')>('#lib/catalog/db-v3.js');
   return { db: new CatalogDexieV3('mokuro_v3_layer_import_test') };
 });
-vi.mock('$lib/util/sync/sidecar-backfill', () => ({ noteOcrEdited: vi.fn() }));
+vi.mock('#lib/util/sync/sidecar-backfill.js', () => ({ noteOcrEdited: vi.fn() }));
 
-import { db } from '$lib/catalog/db';
-import { clearAllLayers, getLayerWithPages, putLayerWithPages } from '$lib/catalog/layer-store';
+import { db } from '#lib/catalog/db.js';
+import { clearAllLayers, getLayerWithPages, putLayerWithPages } from '#lib/catalog/layer-store.js';
 import {
   applyStashedLayersFor,
   attachLayerFile,

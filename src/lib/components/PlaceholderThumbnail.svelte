@@ -1,9 +1,9 @@
 <script lang="ts">
-  import type { VolumeMetadata } from '$lib/types';
+  import type { VolumeMetadata } from '#lib/types/index.js';
   import { Spinner } from 'flowbite-svelte';
   import { DownloadSolid } from 'flowbite-svelte-icons';
-  import { createCoverClaims } from '$lib/catalog/cover-claims.svelte';
-  import { displayableCoverBlob } from '$lib/util/raster-image';
+  import { createCoverClaims } from '#lib/catalog/cover-claims.svelte.js';
+  import { displayableCoverBlob } from '#lib/util/raster-image.js';
 
   interface Props {
     /** Number of items to show in stack (1 = single, 2-3 = stacked) */

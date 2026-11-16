@@ -13,7 +13,7 @@
  * Worker-safe: takes the connection, imports only `layer-store`.
  */
 import type Dexie from 'dexie';
-import type { Page } from '$lib/types';
+import type { Page } from '#lib/types/index.js';
 import { getLayerPages } from './layer-store';
 
 /** The editor's pre-edit snapshot (`edit-persist.ts`'s `ORIGINAL_LAYER_ID`). */

@@ -13,7 +13,7 @@ import {
   SERIES_SECTION_KEY,
   type SeriesReadingStates,
   type VolumeData
-} from '$lib/settings';
+} from '#lib/settings/index.js';
 import {
   TRACKING_SECTION_KEY,
   detectBogusTrackingKeys,
@@ -23,18 +23,18 @@ import {
   setTrackingStates,
   trackingState,
   type TrackingState
-} from '$lib/settings/tracking-data';
+} from '#lib/settings/tracking-data.js';
 import { ProviderError } from './provider-interface';
 import { refreshGates } from './identity-gates';
 import type { SyncProvider, ProviderType, CloudFileMetadata } from './provider-interface';
 import { cacheManager } from './cache-manager';
 import { uploadCacheEntry } from './cloud-cache-interface';
 import { noteRootFileUpload, readRootFile } from './root-file-memo';
-import { isHistoryFilePath } from '$lib/reading-history/paths';
-import { noteUploaded, watchedEscapes } from '$lib/positions/escapes';
-import { historySyncAllowed } from '$lib/reading-history/history-capability';
-import { noteMergedRemoteReads } from '$lib/reading-history/remote-reads';
-import { FUTURE_TOLERANCE_MS, normalizeUpdatedAt } from '$lib/metadata/sanitize';
+import { isHistoryFilePath } from '#lib/reading-history/paths.js';
+import { noteUploaded, watchedEscapes } from '#lib/positions/escapes.js';
+import { historySyncAllowed } from '#lib/reading-history/history-capability.js';
+import { noteMergedRemoteReads } from '#lib/reading-history/remote-reads.js';
+import { FUTURE_TOLERANCE_MS, normalizeUpdatedAt } from '#lib/metadata/sanitize.js';
 import { applyForgetHorizon, mergeLiveVolumeRecords } from './volume-record-merge';
 import { planVolumeDataUpload, stableStringify } from './volume-data-deferral';
 import { backendAuthEnabled } from './providers/google-drive/auth-backend';
@@ -54,17 +54,17 @@ import {
   sectionsAreEmpty,
   type GoalsFileSections,
   type GoalsSectionName
-} from '$lib/goals/goals-file';
+} from '#lib/goals/goals-file.js';
 // LEAF MODULES, never the `$lib/goals` barrel: that re-exports the snapshot
 // BUILDER and `active-progress`, which reach `$lib/catalog` and so drag Dexie
 // and the cloud manager into the sync layer — and into every sync test.
-import { deadlinesWithTrash, setVolumeDeadlineEntries } from '$lib/goals/goal-settings';
+import { deadlinesWithTrash, setVolumeDeadlineEntries } from '#lib/goals/goal-settings.js';
 import {
   dropDanglingCustomSelection,
   goalsWithTrash,
   setGoalSections
-} from '$lib/goals/goals-data';
-import { goalSnapshots, setGoalSnapshots } from '$lib/goals/snapshots-store';
+} from '#lib/goals/goals-data.js';
+import { goalSnapshots, setGoalSnapshots } from '#lib/goals/snapshots-store.js';
 
 /**
  * `goals.json` as it comes off the cloud.
@@ -914,8 +914,8 @@ class UnifiedSyncService {
     if (!cloud) return false; // the first upload to this provider
     try {
       const [{ changedMark }, { cloudPositionStamp }] = await Promise.all([
-        import('$lib/positions/positions-local'),
-        import('$lib/positions/positions-cloud')
+        import('#lib/positions/positions-local.js'),
+        import('#lib/positions/positions-cloud.js')
       ]);
       // Read after this sync's last await: a session that ended while it
       // downloaded (the flush that ends it) uploads.
@@ -974,7 +974,7 @@ class UnifiedSyncService {
   /** `positions.json` (`$lib/positions`), loaded lazily like the history modules. */
   private async syncPositionsFile(provider: SyncProvider): Promise<void> {
     try {
-      const { syncPositions } = await import('$lib/positions/positions-sync');
+      const { syncPositions } = await import('#lib/positions/positions-sync.js');
       await syncPositions(provider);
     } catch (error) {
       console.warn('[positions] sync step failed:', error);
@@ -1226,9 +1226,9 @@ class UnifiedSyncService {
     const status = provider.getStatus?.() ?? ({} as Partial<ReturnType<SyncProvider['getStatus']>>);
     try {
       const [cutOver, historySync, historyDbModule] = await Promise.all([
-        import('$lib/reading-history/cut-over'),
-        import('$lib/reading-history/history-sync'),
-        import('$lib/reading-history/history-db')
+        import('#lib/reading-history/cut-over.js'),
+        import('#lib/reading-history/history-sync.js'),
+        import('#lib/reading-history/history-db.js')
       ]);
       const historySyncs = historySync.historySyncAllowed(status) && !status.isReadOnly;
       if (historySyncs) await cutOver.cutOverLegacyTurns();
@@ -1261,8 +1261,8 @@ class UnifiedSyncService {
       const cache = cacheManager.getCache(provider.type);
       if (!cache?.isLoaded?.() || cache.isFetching?.()) return;
       const [{ syncHistory }, { historyDb }] = await Promise.all([
-        import('$lib/reading-history/history-sync'),
-        import('$lib/reading-history/history-db')
+        import('#lib/reading-history/history-sync.js'),
+        import('#lib/reading-history/history-db.js')
       ]);
       // Without a change feed (WebDAV, Local Folder) the cached listing holds
       // `history/` as of the last full walk: list that folder again when it
@@ -1271,7 +1271,7 @@ class UnifiedSyncService {
       if (cache.beginHistoryPatch) {
         const { refreshHistoryListing } = await import('./history-listing-refresh');
         await refreshHistoryListing(provider, cache, async () => {
-          const { getOrCreateDeviceId } = await import('$lib/reading-history/record');
+          const { getOrCreateDeviceId } = await import('#lib/reading-history/record.js');
           return getOrCreateDeviceId(historyDb());
         });
         if (!cache.isLoaded()) return; // cleared meanwhile (sign-out)

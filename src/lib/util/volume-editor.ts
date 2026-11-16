@@ -2,20 +2,20 @@
  * Volume editor utility functions for updating volume metadata and stats
  */
 
-import { db } from '$lib/catalog/db';
-import { accountCanAddToSeries } from '$lib/util/sync/account-capabilities';
-import { ProviderError } from '$lib/util/sync/provider-interface';
-import { isImageExtension } from '$lib/import';
-import { naturalSort } from '$lib/util/natural-sort';
-import { volumesWithTrash, VolumeData } from '$lib/settings/volume-data';
-import { recordEvent } from '$lib/reading-history/record';
+import { db } from '#lib/catalog/db.js';
+import { accountCanAddToSeries } from '#lib/util/sync/account-capabilities.js';
+import { ProviderError } from '#lib/util/sync/provider-interface.js';
+import { isImageExtension } from '#lib/import/index.js';
+import { naturalSort } from '#lib/util/natural-sort.js';
+import { volumesWithTrash, VolumeData } from '#lib/settings/volume-data.js';
+import { recordEvent } from '#lib/reading-history/record.js';
 import { get } from 'svelte/store';
-import { convertToWebP, generateThumbnail } from '$lib/catalog/thumbnails';
-import { thumbnailCache } from '$lib/catalog/thumbnail-cache';
-import type { VolumeMetadata } from '$lib/types';
-import { getCharCount } from '$lib/util/count-chars';
-import { normalizeFilename } from '$lib/util/misc';
-import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
+import { convertToWebP, generateThumbnail } from '#lib/catalog/thumbnails.js';
+import { thumbnailCache } from '#lib/catalog/thumbnail-cache.js';
+import type { VolumeMetadata } from '#lib/types/index.js';
+import { getCharCount } from '#lib/util/count-chars.js';
+import { normalizeFilename } from '#lib/util/misc.js';
+import { unifiedCloudManager } from '#lib/util/sync/unified-cloud-manager.js';
 
 type Volumes = Record<string, VolumeData>;
 

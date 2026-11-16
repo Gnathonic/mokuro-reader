@@ -2,8 +2,8 @@ import type {
   CloudFileMetadata,
   ProviderType,
   SyncProvider
-} from '$lib/util/sync/provider-interface';
-import { providerManager } from '$lib/util/sync/provider-manager';
+} from '#lib/util/sync/provider-interface.js';
+import { providerManager } from '#lib/util/sync/provider-manager.js';
 import {
   deleteSeriesIndex,
   indexNeedsRefresh,
@@ -263,7 +263,7 @@ async function runRefresh(
     title: rec.series_title,
     files: folders.get(rec.series_key)?.files ?? []
   }));
-  void import('$lib/catalog/ocr-upgrade-pass')
+  void import('#lib/catalog/ocr-upgrade-pass.js')
     .then(({ requestOcrUpgradePass }) => requestOcrUpgradePass(providerType, upgrade))
     .catch((error) => console.debug('[series-index-sync] OCR upgrade pass failed:', error));
 }

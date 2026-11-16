@@ -12,19 +12,23 @@
     type ScrollMode,
     type PageViewMode,
     type VolumeSettingsKey
-  } from '$lib/settings';
-  import { isReader } from '$lib/util';
-  import { routeParams } from '$lib/util/hash-router';
-  import { MAX_PAGE_GAP } from '$lib/reader/zoom-math';
-  import { layerSummaries, primaryLayerName, type LayerSummary } from '$lib/reader/edit/layer-list';
-  import { LAYER_KIND_LABEL, loadLayerPages } from '$lib/reader/edit/layers';
-  import { ORIGINAL_LAYER_ID } from '$lib/reader/edit/edit-persist';
-  import { TRANSLATION_PROMOTE_BLOCKED, isTranslationLayer } from '$lib/reader/edit/layer-kind';
-  import { runLayerAction, type LayerAction } from '$lib/components/Reader/Layers/layer-actions';
-  import { isCuratedLayerId } from '$lib/reader/edit/layer-names';
-  import { beforeLayerMutation } from '$lib/reader/edit/reader-edit-rules';
-  import { db } from '$lib/catalog/db';
-  import type { Page } from '$lib/types';
+  } from '#lib/settings/index.js';
+  import { isReader } from '#lib/util/index.js';
+  import { routeParams } from '#lib/util/hash-router.js';
+  import { MAX_PAGE_GAP } from '#lib/reader/zoom-math.js';
+  import {
+    layerSummaries,
+    primaryLayerName,
+    type LayerSummary
+  } from '#lib/reader/edit/layer-list.js';
+  import { LAYER_KIND_LABEL, loadLayerPages } from '#lib/reader/edit/layers.js';
+  import { ORIGINAL_LAYER_ID } from '#lib/reader/edit/edit-persist.js';
+  import { TRANSLATION_PROMOTE_BLOCKED, isTranslationLayer } from '#lib/reader/edit/layer-kind.js';
+  import { runLayerAction, type LayerAction } from '#lib/components/Reader/Layers/layer-actions.js';
+  import { isCuratedLayerId } from '#lib/reader/edit/layer-names.js';
+  import { beforeLayerMutation } from '#lib/reader/edit/reader-edit-rules.js';
+  import { db } from '#lib/catalog/db.js';
+  import type { Page } from '#lib/types/index.js';
 
   // Derived visibility flags
   let isContinuous = $derived($settings.continuousScroll);

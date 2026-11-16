@@ -18,8 +18,8 @@
 import { describe, it, expect } from 'vitest';
 
 // Import the different series name extraction functions
-import { extractSeriesName } from '$lib/util/series-extraction';
-import { extractVolumeInfo } from '$lib/import/processing';
+import { extractSeriesName } from '#lib/util/series-extraction.js';
+import { extractVolumeInfo } from '#lib/import/processing.js';
 
 // We can't import parseFilename directly as it's not exported,
 // so we'll inline test data based on its known behavior

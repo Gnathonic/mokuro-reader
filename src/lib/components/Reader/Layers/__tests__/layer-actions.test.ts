@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
-import type { Page } from '$lib/types';
+import type { Page } from '#lib/types/index.js';
 
-vi.mock('$lib/catalog/db', () => ({ db: {} }));
-vi.mock('$lib/reader/edit/layers', () => ({
+vi.mock('#lib/catalog/db.js', () => ({ db: {} }));
+vi.mock('#lib/reader/edit/layers.js', () => ({
   buildLayerExportFile: vi.fn(),
   copyIntoEditLayer: vi.fn(),
   createLayer: vi.fn(),
@@ -11,10 +11,10 @@ vi.mock('$lib/reader/edit/layers', () => ({
   promoteLayer: vi.fn(),
   renameLayer: vi.fn()
 }));
-vi.mock('$lib/util/volume-sidecars', () => ({ downloadFileBlob: vi.fn() }));
-vi.mock('$lib/util/modals', () => ({ promptConfirmation: vi.fn() }));
-vi.mock('$lib/util/snackbar', () => ({ showSnackbar: vi.fn() }));
-vi.mock('$lib/metadata/layer-sync', () => ({
+vi.mock('#lib/util/volume-sidecars.js', () => ({ downloadFileBlob: vi.fn() }));
+vi.mock('#lib/util/modals.js', () => ({ promptConfirmation: vi.fn() }));
+vi.mock('#lib/util/snackbar.js', () => ({ showSnackbar: vi.fn() }));
+vi.mock('#lib/metadata/layer-sync.js', () => ({
   deleteCloudLayerFile: vi.fn(async () => 'gone'),
   clearPendingLayerDelete: vi.fn(),
   publishCuratedLayer: vi.fn(),

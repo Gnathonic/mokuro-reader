@@ -1,6 +1,6 @@
 import { readable, writable, type Readable } from 'svelte/store';
-import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
-import { ocrFileLabel, validParts, type OcrPart } from '$lib/reader/edit/ocr-label';
+import { normalizeSeriesKey, normalizeVolumeTitleKey } from '#lib/metadata/series-key.js';
+import { ocrFileLabel, validParts, type OcrPart } from '#lib/reader/edit/ocr-label.js';
 
 /**
  * What the volume views show of a server's OCR queue — the light half of

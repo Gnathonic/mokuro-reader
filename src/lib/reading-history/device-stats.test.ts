@@ -1,8 +1,8 @@
 import 'fake-indexeddb/auto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('$app/environment', () => ({ browser: true }));
-vi.mock('$lib/catalog/db', () => ({
+vi.mock('$app/env', () => ({ browser: true }));
+vi.mock('#lib/catalog/db.js', () => ({
   db: {
     volumes: { get: vi.fn(async () => undefined), bulkGet: vi.fn(async () => []) },
     volume_ocr: { get: vi.fn(async () => undefined) }
@@ -10,8 +10,8 @@ vi.mock('$lib/catalog/db', () => ({
 }));
 
 import { get, type Readable } from 'svelte/store';
-import { setTrackingStates } from '$lib/settings/tracking-data';
-import { VolumeData, clearVolumes, volumes, volumesWithTrash } from '$lib/settings/volume-data';
+import { setTrackingStates } from '#lib/settings/tracking-data.js';
+import { VolumeData, clearVolumes, volumes, volumesWithTrash } from '#lib/settings/volume-data.js';
 import { HistoryDexie, historyDb } from './history-db';
 import { getOrCreateDeviceId, notifyEventsRecorded } from './record';
 import { _resetHistoryTurns, loadHistoryTurns } from './turns-store';

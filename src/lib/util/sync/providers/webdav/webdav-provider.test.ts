@@ -2,7 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ProviderError } from '../../provider-interface';
 import { fetchServerIdentity } from './identity';
 import { WebdavUploadError } from './webdav-upload';
-import { ingestMarkerRead, resetCloudBunkoMarkersForTest } from '$lib/catalog/cloud-bunko-marker';
+import {
+  ingestMarkerRead,
+  resetCloudBunkoMarkersForTest
+} from '#lib/catalog/cloud-bunko-marker.js';
 
 const { mockClient, mockCore, createClientMock } = vi.hoisted(() => {
   const mockClient = {
@@ -25,7 +28,7 @@ const { mockClient, mockCore, createClientMock } = vi.hoisted(() => {
   return { mockClient, mockCore, createClientMock };
 });
 
-vi.mock('$app/environment', () => ({ browser: true }));
+vi.mock('$app/env', () => ({ browser: true }));
 vi.mock('webdav', () => ({
   createClient: createClientMock,
   AuthType: { Auto: 'auto', Digest: 'digest', None: 'none', Password: 'password', Token: 'token' }

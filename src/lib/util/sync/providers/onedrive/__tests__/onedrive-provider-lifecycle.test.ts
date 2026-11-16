@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 // Lifecycle tests need the real constructor path (MSAL init + status),
 // unlike onedrive-provider.test.ts which pins browser:false to skip it.
-vi.mock('$app/environment', () => ({ browser: true }));
+vi.mock('$app/env', () => ({ browser: true }));
 
 vi.mock('../../../core/cloud-provider-core-registry', () => ({
   getCloudProviderCore: vi.fn(() => ({}))

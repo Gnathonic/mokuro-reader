@@ -1,6 +1,6 @@
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 import { derived, get, writable } from 'svelte/store';
-import { generateUUID } from '$lib/util/uuid';
+import { generateUUID } from '#lib/util/uuid.js';
 import { persistToLocalStorage } from './persist';
 import { buildYearKey } from './date-utils';
 import {

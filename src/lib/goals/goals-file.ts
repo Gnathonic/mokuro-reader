@@ -10,12 +10,12 @@
  * `volume-data.json` and `profiles.json`: it is the user's own state, and a
  * silently dropped write is data loss they never learn about.
  *
- * PURE MODULE — no stores, no `$app/environment`, no Dexie. The sync layer
+ * PURE MODULE — no stores, no `$app/env`, no Dexie. The sync layer
  * imports from here rather than from `$lib/goals`, whose barrel drags IndexedDB
  * into every sync test.
  */
 
-import { FUTURE_TOLERANCE_MS, isRecord, normalizeUpdatedAt } from '$lib/metadata/sanitize';
+import { FUTURE_TOLERANCE_MS, isRecord, normalizeUpdatedAt } from '#lib/metadata/sanitize.js';
 
 export const GOALS_FILE_NAME = 'goals.json';
 

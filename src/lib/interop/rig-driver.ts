@@ -14,14 +14,14 @@
  * production build drops this module; `scripts/check-no-test-hooks.mjs` bans its names from the bundle.
  */
 import { derived, get } from 'svelte/store';
-import { db } from '$lib/catalog/db';
-import { listLayerIds } from '$lib/catalog/layer-store';
+import { db } from '#lib/catalog/db.js';
+import { listLayerIds } from '#lib/catalog/layer-store.js';
 import {
   cloudFieldsForRemovedVolume,
   generatePlaceholders,
   indexCloudFilesByPath,
   indexCloudFilesByUuid
-} from '$lib/catalog/placeholders';
+} from '#lib/catalog/placeholders.js';
 import {
   describePendingOcr,
   pendingStatusFor,
@@ -29,64 +29,71 @@ import {
   serverOcrQueueStatus,
   seriesQueueStore,
   watchedKeyStore
-} from '$lib/catalog/server-ocr-pending';
-import { isMetadataOnly, isVolumeInstalled } from '$lib/catalog/volume-state';
-import { cloudBunkoMergesDuplicates, cloudBunkoStatus } from '$lib/catalog/cloud-bunko-marker';
-import { deleteVolumeCompletely, importFiles } from '$lib/import';
-import { defaultNaming } from '$lib/import/image-only-review';
-import { decideCurrent, reviewSession } from '$lib/import/review-session';
-import { publishCuratedLayer, pullOwnEditLayerBeforeEdit } from '$lib/metadata/layer-sync';
-import { catalogFileWritePending, settleCatalogFileWrites } from '$lib/metadata/catalog-file-sync';
-import { seriesBackfillsPending, settleSeriesBackfills } from '$lib/metadata/series-backfill';
-import { seriesFileWritesPending, settleSeriesFileWrites } from '$lib/metadata/series-file-sync';
-import type { SeriesIndexRecord } from '$lib/metadata/series-index';
-import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
+} from '#lib/catalog/server-ocr-pending.js';
+import { isMetadataOnly, isVolumeInstalled } from '#lib/catalog/volume-state.js';
+import { cloudBunkoMergesDuplicates, cloudBunkoStatus } from '#lib/catalog/cloud-bunko-marker.js';
+import { deleteVolumeCompletely, importFiles } from '#lib/import/index.js';
+import { defaultNaming } from '#lib/import/image-only-review.js';
+import { decideCurrent, reviewSession } from '#lib/import/review-session.js';
+import { publishCuratedLayer, pullOwnEditLayerBeforeEdit } from '#lib/metadata/layer-sync.js';
+import {
+  catalogFileWritePending,
+  settleCatalogFileWrites
+} from '#lib/metadata/catalog-file-sync.js';
+import { seriesBackfillsPending, settleSeriesBackfills } from '#lib/metadata/series-backfill.js';
+import { seriesFileWritesPending, settleSeriesFileWrites } from '#lib/metadata/series-file-sync.js';
+import type { SeriesIndexRecord } from '#lib/metadata/series-index.js';
+import { normalizeSeriesKey, normalizeVolumeTitleKey } from '#lib/metadata/series-key.js';
 import {
   clampSpineOffset,
   flushSpineOffsetWrites,
   getSpineOffsets,
   sameSpineOffsets,
   scheduleSpineOffsetWrite
-} from '$lib/metadata/spine-offsets';
-import { historyDb } from '$lib/reading-history/history-db';
-import { HISTORY_FOLDER } from '$lib/reading-history/paths';
-import { historySyncAllowed } from '$lib/reading-history/history-sync';
-import { persistPageEdit } from '$lib/reader/edit/edit-persist';
-import { setBlockLines } from '$lib/reader/edit/edit-ops';
-import { forksOnEdit } from '$lib/reader/edit/layer-kind';
-import { EDIT_LAYER_ID } from '$lib/reader/edit/layer-names';
+} from '#lib/metadata/spine-offsets.js';
+import { historyDb } from '#lib/reading-history/history-db.js';
+import { HISTORY_FOLDER } from '#lib/reading-history/paths.js';
+import { historySyncAllowed } from '#lib/reading-history/history-sync.js';
+import { persistPageEdit } from '#lib/reader/edit/edit-persist.js';
+import { setBlockLines } from '#lib/reader/edit/edit-ops.js';
+import { forksOnEdit } from '#lib/reader/edit/layer-kind.js';
+import { EDIT_LAYER_ID } from '#lib/reader/edit/layer-names.js';
 import {
   forkIntoEditLayer,
   listLayers,
   loadLayerPages,
   persistLayerPageEdit
-} from '$lib/reader/edit/layers';
-import { recordPagedPageView } from '$lib/reader/paged-progress';
-import { runLayerAction } from '$lib/components/Reader/Layers/layer-actions';
+} from '#lib/reader/edit/layers.js';
+import { recordPagedPageView } from '#lib/reader/paged-progress.js';
+import { runLayerAction } from '#lib/components/Reader/Layers/layer-actions.js';
 import {
   deleteVolume as deleteVolumeStats,
   updateVolumeSetting,
   volumes as volumeDataStore
-} from '$lib/settings/volume-data';
-import type { Page, VolumeMetadata } from '$lib/types';
-import { backupQueue, backupQueueSettled } from '$lib/util/backup-queue';
-import { downloadQueue } from '$lib/util/download-queue';
-import { nav } from '$lib/util/hash-router';
-import { sanitizeRenameTitle } from '$lib/util/sanitize-title';
-import { waitFor } from '$lib/util/store-wait';
-import { generateDeterministicUUID } from '$lib/util/series-extraction';
-import { executeRenameSeries } from '$lib/util/series-rename';
-import { activeProviderStatus } from '$lib/util/sync/active-provider-status';
-import { setFolderTestHandle } from '$lib/util/sync/cloud-test-hooks';
-import { canDeleteSeriesOnServer } from '$lib/util/sync/metadata-permissions';
-import type { ProviderStatus, ProviderType } from '$lib/util/sync/provider-interface';
-import { providerManager } from '$lib/util/sync/provider-manager';
+} from '#lib/settings/volume-data.js';
+import type { Page, VolumeMetadata } from '#lib/types/index.js';
+import { backupQueue, backupQueueSettled } from '#lib/util/backup-queue.js';
+import { downloadQueue } from '#lib/util/download-queue.js';
+import { nav } from '#lib/util/hash-router.js';
+import { sanitizeRenameTitle } from '#lib/util/sanitize-title.js';
+import { waitFor } from '#lib/util/store-wait.js';
+import { generateDeterministicUUID } from '#lib/util/series-extraction.js';
+import { executeRenameSeries } from '#lib/util/series-rename.js';
+import { activeProviderStatus } from '#lib/util/sync/active-provider-status.js';
+import { setFolderTestHandle } from '#lib/util/sync/cloud-test-hooks.js';
+import { canDeleteSeriesOnServer } from '#lib/util/sync/metadata-permissions.js';
+import type { ProviderStatus, ProviderType } from '#lib/util/sync/provider-interface.js';
+import { providerManager } from '#lib/util/sync/provider-manager.js';
 import {
   unifiedCloudManager,
   type CloudVolumeWithProvider
-} from '$lib/util/sync/unified-cloud-manager';
-import { uploadFailures } from '$lib/util/upload-failures';
-import { renameVolumeInCloud, updateVolumeInDb, updateVolumeStats } from '$lib/util/volume-editor';
+} from '#lib/util/sync/unified-cloud-manager.js';
+import { uploadFailures } from '#lib/util/upload-failures.js';
+import {
+  renameVolumeInCloud,
+  updateVolumeInDb,
+  updateVolumeStats
+} from '#lib/util/volume-editor.js';
 
 export const RIG_DRIVER_API_VERSION = 1;
 

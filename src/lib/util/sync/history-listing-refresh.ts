@@ -20,8 +20,8 @@
  * refresh made it current.
  */
 
-import { historySyncAllowed } from '$lib/reading-history/history-capability';
-import { HISTORY_FOLDER, isHistoryFilePath } from '$lib/reading-history/paths';
+import { historySyncAllowed } from '#lib/reading-history/history-capability.js';
+import { HISTORY_FOLDER, isHistoryFilePath } from '#lib/reading-history/paths.js';
 import type { CloudCache } from './cloud-cache-interface';
 import type { HistoryPatchResult } from './listing-mutations';
 import type { SyncProvider } from './provider-interface';

@@ -199,7 +199,7 @@ export interface DecompressedVolume {
    * `mokuroFile` is the cloud's LISTED primary sidecar (not an archive entry):
    * that file's listing stamp — see `ProcessedMetadata.mokuroCloud`.
    */
-  mokuroCloud?: import('$lib/catalog/mokuro-hash').MokuroCloudAttestation;
+  mokuroCloud?: import('#lib/catalog/mokuro-hash.js').MokuroCloudAttestation;
 }
 
 /**
@@ -264,12 +264,12 @@ export interface ProcessedMetadata {
    * which is what lets `buildSeriesFile` publish the hash. Becomes
    * `VolumeMetadata.mokuro_sha256_cloud`.
    */
-  mokuroCloud?: import('$lib/catalog/mokuro-hash').MokuroCloudAttestation;
+  mokuroCloud?: import('#lib/catalog/mokuro-hash.js').MokuroCloudAttestation;
   /**
    * The primary file's `ocr_engine` block and the digest of its pages
    * (`$lib/catalog/ocr-provenance`); absent when the file carries no block.
    */
-  ocrProvenance?: import('$lib/catalog/ocr-provenance').OcrProvenance;
+  ocrProvenance?: import('#lib/catalog/ocr-provenance.js').OcrProvenance;
 }
 
 /**

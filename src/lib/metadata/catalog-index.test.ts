@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import 'fake-indexeddb/auto';
 
-vi.mock('$lib/catalog/thumbnails', () => ({ generateThumbnail: vi.fn() }));
-vi.mock('$lib/util/progress-tracker', () => ({
+vi.mock('#lib/catalog/thumbnails.js', () => ({ generateThumbnail: vi.fn() }));
+vi.mock('#lib/util/progress-tracker.js', () => ({
   progressTrackerStore: { addProcess: vi.fn(), updateProcess: vi.fn(), removeProcess: vi.fn() }
 }));
 
@@ -13,13 +13,13 @@ vi.mock('$lib/util/progress-tracker', () => ({
  * db-v3.ts's primary key moved out from under it, which is exactly the round
  * trip these tests exist to prove.
  */
-vi.mock('$lib/catalog/db', async () => {
-  const { CatalogDexieV3 } = await import('$lib/catalog/db-v3');
+vi.mock('#lib/catalog/db.js', async () => {
+  const { CatalogDexieV3 } = await import('#lib/catalog/db-v3.js');
   return { db: new CatalogDexieV3('catalog-index-accessor-test') };
 });
 
-import { db } from '$lib/catalog/db';
-import type { CatalogDexieV3 } from '$lib/catalog/db-v3';
+import { db } from '#lib/catalog/db.js';
+import type { CatalogDexieV3 } from '#lib/catalog/db-v3.js';
 import {
   CATALOG_INDEX_ID,
   catalogNeedsRefresh,

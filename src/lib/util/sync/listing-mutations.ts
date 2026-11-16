@@ -1,6 +1,6 @@
 import type { CoalescedCacheStore } from './coalesced-cache-store';
 import type { CloudFileMetadata } from './provider-interface';
-import { HISTORY_FOLDER, parseHistoryPath } from '$lib/reading-history/paths';
+import { HISTORY_FOLDER, parseHistoryPath } from '#lib/reading-history/paths.js';
 
 /** A listing cache's map: files grouped by the first segment of their path. */
 type SeriesMap = Map<string, CloudFileMetadata[]>;

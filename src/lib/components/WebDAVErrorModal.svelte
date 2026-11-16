@@ -1,10 +1,10 @@
 <script lang="ts">
-  import { browser } from '$app/environment';
-  import { webdavErrorModalStore, closeWebDAVError } from '$lib/util/modals';
+  import { browser } from '$app/env';
+  import { webdavErrorModalStore, closeWebDAVError } from '#lib/util/modals.js';
   import { Modal, Button, AccordionItem, Accordion } from 'flowbite-svelte';
   import { ExclamationCircleOutline, ClipboardListOutline } from 'flowbite-svelte-icons';
-  import { showSnackbar } from '$lib/util/snackbar';
-  import type { WebDAVErrorType } from '$lib/util/modals';
+  import { showSnackbar } from '#lib/util/snackbar.js';
+  import type { WebDAVErrorType } from '#lib/util/modals.js';
 
   let open = $state(false);
 

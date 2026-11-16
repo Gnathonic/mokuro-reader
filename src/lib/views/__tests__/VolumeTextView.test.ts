@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, cleanup, screen } from '@testing-library/svelte';
-import type { VolumeMetadata } from '$lib/types';
+import type { VolumeMetadata } from '#lib/types/index.js';
 
 /**
  * The text view waits for `currentVolumeData`, which never resolves for a
@@ -30,8 +30,8 @@ const { currentVolume, currentVolumeData } = vi.hoisted(() => {
 });
 
 // The catalog barrel drags in Dexie and the whole sync stack; only these two matter.
-vi.mock('$lib/catalog', () => ({ currentVolume, currentVolumeData }));
-vi.mock('$lib/util/hash-router', () => ({
+vi.mock('#lib/catalog/index.js', () => ({ currentVolume, currentVolumeData }));
+vi.mock('#lib/util/hash-router.js', () => ({
   nav: { toReader: vi.fn(), toSeries: vi.fn() },
   routeParams: {
     subscribe: (fn: (v: Record<string, string>) => void) => {
@@ -40,7 +40,7 @@ vi.mock('$lib/util/hash-router', () => ({
     }
   }
 }));
-vi.mock('$lib/settings/reading-speed', () => ({
+vi.mock('#lib/settings/reading-speed.js', () => ({
   personalizedReadingSpeed: {
     subscribe: (fn: (v: unknown) => void) => {
       fn({ isPersonalized: false, charsPerMinute: 0 });
@@ -48,7 +48,7 @@ vi.mock('$lib/settings/reading-speed', () => ({
     }
   }
 }));
-vi.mock('$lib/metadata/store', () => ({
+vi.mock('#lib/metadata/store.js', () => ({
   seriesMetadataMap: {
     subscribe: (fn: (v: Map<string, unknown>) => void) => {
       fn(new Map());

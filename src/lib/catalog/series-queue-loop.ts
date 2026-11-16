@@ -21,9 +21,9 @@
  * 6. On unmount, stop. The memo (token, file, read time) is kept, so coming
  *    back within the interval costs no read.
  */
-import { foldFolderName, SERIES_QUEUE_FILE_NAME } from '$lib/util/sync/syncable-file';
-import type { SyncProvider } from '$lib/util/sync/provider-interface';
-import { normalizeSeriesKey } from '$lib/metadata/series-key';
+import { foldFolderName, SERIES_QUEUE_FILE_NAME } from '#lib/util/sync/syncable-file.js';
+import type { SyncProvider } from '#lib/util/sync/provider-interface.js';
+import { normalizeSeriesKey } from '#lib/metadata/series-key.js';
 import { onCloudSeriesQueueChange, type MarkerNodeRecord } from './cloud-bunko-marker';
 import { publishSeriesQueueSlice } from './server-ocr-pending';
 import {

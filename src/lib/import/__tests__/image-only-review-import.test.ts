@@ -9,7 +9,7 @@ import 'fake-indexeddb/auto';
 import { get } from 'svelte/store';
 import { Uint8ArrayReader, Uint8ArrayWriter, ZipWriter } from '@zip.js/zip.js';
 
-vi.mock('$lib/catalog/db', async () => {
+vi.mock('#lib/catalog/db.js', async () => {
   const { default: Dexie } = await import('dexie');
   const db: any = new Dexie('image-only-review-import-test');
   db.version(1).stores({
@@ -22,21 +22,21 @@ vi.mock('$lib/catalog/db', async () => {
   db.processThumbnails = async () => undefined;
   return { db };
 });
-vi.mock('$lib/catalog/thumbnails', () => ({
+vi.mock('#lib/catalog/thumbnails.js', () => ({
   generateThumbnail: async () => ({
     file: new File([new Uint8Array([1])], 'thumb.webp', { type: 'image/webp' }),
     width: 10,
     height: 14
   })
 }));
-vi.mock('$lib/util/snackbar', () => ({ showSnackbar: vi.fn() }));
-vi.mock('$lib/util/progress-tracker', () => ({
+vi.mock('#lib/util/snackbar.js', () => ({ showSnackbar: vi.fn() }));
+vi.mock('#lib/util/progress-tracker.js', () => ({
   progressTrackerStore: { addProcess: vi.fn(), updateProcess: vi.fn(), removeProcess: vi.fn() }
 }));
-vi.mock('$lib/util/modals', () => ({
+vi.mock('#lib/util/modals.js', () => ({
   promptMissingFiles: (_info: unknown, onContinue: () => void) => onContinue()
 }));
-vi.mock('$lib/metadata/series-file-sync', () => ({ scheduleSeriesFileWrite: vi.fn() }));
+vi.mock('#lib/metadata/series-file-sync.js', () => ({ scheduleSeriesFileWrite: vi.fn() }));
 // Every archive read the import makes, so the pre-scan can be held to names only.
 vi.mock('../archive-extraction', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../archive-extraction')>();
@@ -46,13 +46,13 @@ vi.mock('../archive-extraction', async (importOriginal) => {
     extractArchiveByVolumes: vi.fn(actual.extractArchiveByVolumes)
   };
 });
-vi.mock('$lib/util/file-processing-pool', () => ({
+vi.mock('#lib/util/file-processing-pool.js', () => ({
   getFileProcessingPool: async () => ({ addTask: () => {} }),
   incrementPoolUsers: () => {},
   decrementPoolUsers: () => {}
 }));
 
-import { db } from '$lib/catalog/db';
+import { db } from '#lib/catalog/db.js';
 import {
   cancelQueuedImports,
   describeImportOutcome,
@@ -60,7 +60,7 @@ import {
   importQueue,
   isImporting
 } from '../import-service';
-import { generateDeterministicUUID } from '$lib/util/series-extraction';
+import { generateDeterministicUUID } from '#lib/util/series-extraction.js';
 import { decideCurrent, reviewSession, skipAllRemaining } from '../review-session';
 import { defaultNaming } from '../image-only-review';
 import {
@@ -69,8 +69,8 @@ import {
   installReviewer,
   type Reviewer
 } from './helpers/review-bridge';
-import { showSnackbar } from '$lib/util/snackbar';
-import { progressTrackerStore } from '$lib/util/progress-tracker';
+import { showSnackbar } from '#lib/util/snackbar.js';
+import { progressTrackerStore } from '#lib/util/progress-tracker.js';
 import type { ReviewGroup } from '../image-only-review';
 import { decompressArchive, extractArchiveByVolumes } from '../archive-extraction';
 

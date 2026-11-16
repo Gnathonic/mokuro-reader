@@ -1,13 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { zipManga, createArchiveBlob } from './zip';
-import { db } from '$lib/catalog/db';
+import { db } from '#lib/catalog/db.js';
 import { compressVolume } from './compress-volume';
 import { TextReader, ZipWriter } from '@zip.js/zip.js';
-import { parseSeriesFile, type SeriesFile } from '$lib/metadata/series-file';
+import { parseSeriesFile, type SeriesFile } from '#lib/metadata/series-file.js';
 
 // Mock the database with v3 tables
 const layersToArray = vi.hoisted(() => vi.fn(async () => [] as unknown[]));
-vi.mock('$lib/catalog/db', () => ({
+vi.mock('#lib/catalog/db.js', () => ({
   db: {
     volumes: {
       toArray: vi.fn().mockResolvedValue([]),
@@ -23,13 +23,13 @@ vi.mock('$lib/catalog/db', () => ({
 }));
 
 // Layers are read through the layer store (metadata + pages joined).
-vi.mock('$lib/catalog/layer-store', () => ({ listLayersWithPages: layersToArray }));
+vi.mock('#lib/catalog/layer-store.js', () => ({ listLayersWithPages: layersToArray }));
 
-vi.mock('$lib/metadata/store', () => ({
+vi.mock('#lib/metadata/store.js', () => ({
   getSeriesMetadataForTitle: vi.fn().mockResolvedValue(undefined)
 }));
 
-vi.mock('$lib/metadata/series-index', () => ({
+vi.mock('#lib/metadata/series-index.js', () => ({
   getSeriesIndex: vi.fn().mockResolvedValue(undefined)
 }));
 

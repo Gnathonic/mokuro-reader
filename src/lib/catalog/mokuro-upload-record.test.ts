@@ -1,16 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import 'fake-indexeddb/auto';
 
-vi.mock('$lib/catalog/db', async () => {
+vi.mock('#lib/catalog/db.js', async () => {
   const { default: Dexie } = await import('dexie');
-  const { declareMokuroSchema } = await import('$lib/catalog/db-schema');
+  const { declareMokuroSchema } = await import('#lib/catalog/db-schema.js');
   const db: any = new Dexie('mokuro-upload-record-test');
   declareMokuroSchema(db);
   return { db };
 });
 
-import { db } from '$lib/catalog/db';
-import type { VolumeMetadata } from '$lib/types';
+import { db } from '#lib/catalog/db.js';
+import type { VolumeMetadata } from '#lib/types/index.js';
 import { sha256Hex } from './mokuro-hash';
 import {
   UPLOAD_RECORD_FLUSH_MS,

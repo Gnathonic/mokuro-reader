@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('$app/environment', () => ({ browser: true }));
+vi.mock('$app/env', () => ({ browser: true }));
 
 // The AnkiConnect client reads the URL from the current profile; a stand-in
 // store lets each test say what the profile holds (as an import or a synced
@@ -23,9 +23,9 @@ const h = vi.hoisted(() => {
     showSnackbar: vi.fn()
   };
 });
-vi.mock('$lib/settings', () => ({ settings: h.settings, DEFAULT_MODEL_CONFIGS: {} }));
-vi.mock('$lib/util', () => ({ showSnackbar: h.showSnackbar }));
-vi.mock('$lib/util/platform', () => ({ isMobilePlatform: () => false }));
+vi.mock('#lib/settings/index.js', () => ({ settings: h.settings, DEFAULT_MODEL_CONFIGS: {} }));
+vi.mock('#lib/util/index.js', () => ({ showSnackbar: h.showSnackbar }));
+vi.mock('#lib/util/platform.js', () => ({ isMobilePlatform: () => false }));
 
 import {
   CONFIRMED_ANKI_URLS_KEY,

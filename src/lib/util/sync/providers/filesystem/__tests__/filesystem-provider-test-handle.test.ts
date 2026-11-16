@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 // The login's real path (browser + supported API), as filesystem-provider-restore.test.ts.
-vi.mock('$app/environment', () => ({ browser: true }));
+vi.mock('$app/env', () => ({ browser: true }));
 
 vi.mock('../feature-detect', () => ({
   isFilesystemProviderSupported: vi.fn(() => true)

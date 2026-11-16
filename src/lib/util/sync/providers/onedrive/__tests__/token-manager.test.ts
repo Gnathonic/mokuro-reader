@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-vi.mock('$app/environment', () => ({ browser: true }));
+vi.mock('$app/env', () => ({ browser: true }));
 const updateStatus = vi.hoisted(() => vi.fn());
 vi.mock('../../../provider-manager', () => ({ providerManager: { updateStatus } }));
 

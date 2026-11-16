@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('$app/environment', () => ({ browser: true }));
-vi.mock('$lib/util/sync/providers/google-drive/token-manager', () => ({
+vi.mock('$app/env', () => ({ browser: true }));
+vi.mock('#lib/util/sync/providers/google-drive/token-manager.js', () => ({
   tokenManager: {
     isAuthenticated: vi.fn(() => true),
     requestNewToken: vi.fn(),
@@ -20,7 +20,7 @@ vi.mock('$lib/util/sync/providers/google-drive/token-manager', () => ({
     logout: vi.fn(async () => {})
   }
 }));
-vi.mock('$lib/util/sync/providers/google-drive/api-client', () => ({
+vi.mock('#lib/util/sync/providers/google-drive/api-client.js', () => ({
   driveApiClient: {
     initialize: vi.fn(async () => {}),
     listFiles: vi.fn(async () => []),
@@ -36,7 +36,7 @@ vi.mock('$lib/util/sync/providers/google-drive/api-client', () => ({
   // double would let production stop calling it without anything noticing.
   escapeNameForDriveQuery: (name: string) => name.replace(/\\/g, '\\\\').replace(/'/g, "\\'")
 }));
-vi.mock('$lib/util/sync/providers/google-drive/drive-files-cache', () => ({
+vi.mock('#lib/util/sync/providers/google-drive/drive-files-cache.js', () => ({
   driveFilesCache: {
     getReaderFolderId: vi.fn(async () => 'reader-root'),
     setReaderFolderId: vi.fn(),
@@ -50,7 +50,7 @@ vi.mock('$lib/util/sync/providers/google-drive/drive-files-cache', () => ({
     refreshFromChanges: vi.fn(async () => 'unchanged')
   }
 }));
-vi.mock('$lib/util/backup', () => ({ findFile: vi.fn() }));
+vi.mock('#lib/util/backup.js', () => ({ findFile: vi.fn() }));
 vi.mock('../../cache-manager', () => ({
   cacheManager: { registerCache: vi.fn(), clearAll: vi.fn() }
 }));
@@ -66,9 +66,9 @@ vi.mock('../../core/cloud-provider-core-registry', () => ({
 }));
 
 import { googleDriveProvider } from './google-drive-provider';
-import { driveApiClient } from '$lib/util/sync/providers/google-drive/api-client';
-import { tokenManager } from '$lib/util/sync/providers/google-drive/token-manager';
-import { driveFilesCache } from '$lib/util/sync/providers/google-drive/drive-files-cache';
+import { driveApiClient } from '#lib/util/sync/providers/google-drive/api-client.js';
+import { tokenManager } from '#lib/util/sync/providers/google-drive/token-manager.js';
+import { driveFilesCache } from '#lib/util/sync/providers/google-drive/drive-files-cache.js';
 import { providerManager } from '../../provider-manager';
 import { isLoginCancelled, ProviderError } from '../../provider-interface';
 import { driveStorageFullError } from '../../core/providers/drive-http';
@@ -1032,7 +1032,7 @@ describe('GoogleDriveProvider worker credentials and their renewal', () => {
   });
 
   it('a worker’s refused token is renewed on the main thread (worker-auth-refresh)', async () => {
-    const { answerAuthRefresh } = await import('$lib/util/worker-auth-refresh');
+    const { answerAuthRefresh } = await import('#lib/util/worker-auth-refresh.js');
     vi.mocked(tokenManager.renewRejectedToken).mockResolvedValue({
       kind: 'renewed',
       token: 'NEW'
@@ -1058,7 +1058,7 @@ describe('GoogleDriveProvider worker credentials and their renewal', () => {
 
   it('a backend that is down is a transient failure, never the 401', async () => {
     const { answerAuthRefresh, isTransientAuthRefreshError } =
-      await import('$lib/util/worker-auth-refresh');
+      await import('#lib/util/worker-auth-refresh.js');
     vi.mocked(tokenManager.renewRejectedToken).mockResolvedValue({ kind: 'transient' } as never);
     await expect(googleDriveProvider.refreshedWorkerCredentials('Bearer OLD')).rejects.toSatisfy(
       isTransientAuthRefreshError

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 // Keep the constructor cheap (no MSAL init) by reporting a non-browser env.
-vi.mock('$app/environment', () => ({ browser: false }));
+vi.mock('$app/env', () => ({ browser: false }));
 
 // The provider grabs a worker core at construction; a dummy is enough here.
 vi.mock('../../../core/cloud-provider-core-registry', () => ({

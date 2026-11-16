@@ -170,7 +170,7 @@ describe('series-metadata.json stays retired', () => {
     'sanitizeCloudSeriesMetadata',
     'sanitizeTitlePreference',
     'sanitizeVolumeOffsets',
-    '$lib/metadata/merge'
+    '#lib/metadata/merge'
   ];
 
   /**

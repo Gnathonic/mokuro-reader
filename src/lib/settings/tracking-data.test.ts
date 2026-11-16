@@ -1,7 +1,7 @@
-import { resolveDevice } from '$lib/reading-history/devices';
+import { resolveDevice } from '#lib/reading-history/devices.js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('$app/environment', () => ({ browser: true }));
+vi.mock('$app/env', () => ({ browser: true }));
 
 import { get } from 'svelte/store';
 import {
@@ -26,7 +26,7 @@ import {
   unmergeDevice,
   widenIdleK
 } from './tracking-data';
-import { DEFAULT_K, K_MAX } from '$lib/reading-history/stats-engine';
+import { DEFAULT_K, K_MAX } from '#lib/reading-history/stats-engine.js';
 
 const T1 = '2026-10-01T00:00:00.000Z';
 const T2 = '2026-10-02T00:00:00.000Z';

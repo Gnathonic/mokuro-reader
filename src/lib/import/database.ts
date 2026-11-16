@@ -8,15 +8,15 @@
  * - volume_files: image files
  */
 
-import { db } from '$lib/catalog/db';
-import { mainMakerOfFile } from '$lib/reader/edit/ocr-label';
-import { deleteLayersOfVolume, layerTables } from '$lib/catalog/layer-store';
-import { requestPersistentStorage } from '$lib/util/upload';
-import { sanitizeTitleSegment } from '$lib/util/sanitize-title';
+import { db } from '#lib/catalog/db.js';
+import { mainMakerOfFile } from '#lib/reader/edit/ocr-label.js';
+import { deleteLayersOfVolume, layerTables } from '#lib/catalog/layer-store.js';
+import { requestPersistentStorage } from '#lib/util/upload.js';
+import { sanitizeTitleSegment } from '#lib/util/sanitize-title.js';
 import type { ProcessedVolume } from './types';
-import type { VolumeMetadata } from '$lib/types';
-import { naturalSort } from '$lib/util/natural-sort';
-import { isVolumeInstalled } from '$lib/catalog/volume-state';
+import type { VolumeMetadata } from '#lib/types/index.js';
+import { naturalSort } from '#lib/util/natural-sort.js';
+import { isVolumeInstalled } from '#lib/catalog/volume-state.js';
 
 /**
  * The uuids of every volume row filed under a stored series title — keys only,

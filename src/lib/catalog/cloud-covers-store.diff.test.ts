@@ -33,9 +33,9 @@ import 'fake-indexeddb/auto';
  * the one under test.
  */
 
-vi.mock('$lib/catalog/db', async () => {
+vi.mock('#lib/catalog/db.js', async () => {
   const { CatalogDexieV3 } =
-    await vi.importActual<typeof import('$lib/catalog/db-v3')>('$lib/catalog/db-v3');
+    await vi.importActual<typeof import('#lib/catalog/db-v3.js')>('#lib/catalog/db-v3.js');
   return { db: new CatalogDexieV3('mokuro_v3_cover_key_diff_test') };
 });
 
@@ -68,7 +68,7 @@ const { cloudFiles, account } = vi.hoisted(() => {
   };
 });
 
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: {
     cloudFiles,
     getActiveProvider: () => ({
@@ -78,7 +78,7 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
   }
 }));
 
-import { db } from '$lib/catalog/db';
+import { db } from '#lib/catalog/db.js';
 import { cachedCoverPathSet, initCoverKeyWatch } from './cloud-covers-store';
 import { putCloudCovers, type CloudCover } from './cloud-covers';
 

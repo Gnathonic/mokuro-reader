@@ -5,7 +5,7 @@
     rollbackMigration,
     type MigrationProgress,
     type MigrationPhase
-  } from '$lib/catalog/migration';
+  } from '#lib/catalog/migration/index.js';
   import { Progressbar, Button, Alert, Spinner } from 'flowbite-svelte';
 
   interface Props {

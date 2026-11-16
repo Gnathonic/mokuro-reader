@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-vi.mock('$app/environment', () => ({ browser: false }));
+vi.mock('$app/env', () => ({ browser: false }));
 vi.mock('../../../core/cloud-provider-core-registry', () => ({
   getCloudProviderCore: vi.fn(() => ({}))
 }));
@@ -32,7 +32,10 @@ import { onedriveTokenManager } from '../token-manager';
 import { ProviderError } from '../../../provider-interface';
 import type { ControlFileRead } from '../../../provider-interface';
 import { BUNKO_MARKER_NAME, SERIES_QUEUE_FILE_NAME } from '../../../syncable-file';
-import { ingestMarkerRead, resetCloudBunkoMarkersForTest } from '$lib/catalog/cloud-bunko-marker';
+import {
+  ingestMarkerRead,
+  resetCloudBunkoMarkersForTest
+} from '#lib/catalog/cloud-bunko-marker.js';
 
 const MARKER = JSON.stringify({
   version: 1,

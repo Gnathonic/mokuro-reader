@@ -17,7 +17,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import 'fake-indexeddb/auto';
 import Dexie from 'dexie';
-import { CatalogDexieV3 } from '$lib/catalog/db-v3';
+import { CatalogDexieV3 } from '#lib/catalog/db-v3.js';
 import { generateVolumeSidecarsFromDb } from './compress-volume';
 
 afterEach(async () => {

@@ -27,9 +27,9 @@ import 'fake-indexeddb/auto';
  * which is precisely the thing being claimed.
  */
 
-vi.mock('$lib/catalog/db', async () => {
+vi.mock('#lib/catalog/db.js', async () => {
   const { CatalogDexieV3 } =
-    await vi.importActual<typeof import('$lib/catalog/db-v3')>('$lib/catalog/db-v3');
+    await vi.importActual<typeof import('#lib/catalog/db-v3.js')>('#lib/catalog/db-v3.js');
   return { db: new CatalogDexieV3('mokuro_v3_cover_key_store_test') };
 });
 
@@ -55,7 +55,7 @@ const { cloudFiles, account } = vi.hoisted(() => {
   };
 });
 
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: {
     cloudFiles,
     getActiveProvider: () => ({
@@ -70,10 +70,10 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
 // cache would try to spawn Workers jsdom does not have, and the
 // reading-history store is irrelevant here (no cover in this file ever has a
 // row, so routing always lands in `cloud_covers`).
-vi.mock('$lib/catalog/thumbnail-cache', () => ({
+vi.mock('#lib/catalog/thumbnail-cache.js', () => ({
   thumbnailCache: { invalidate: vi.fn() }
 }));
-vi.mock('$lib/settings/volume-data', () => ({
+vi.mock('#lib/settings/volume-data.js', () => ({
   volumes: {
     subscribe(fn: (v: Record<string, unknown>) => void) {
       fn({});
@@ -82,7 +82,7 @@ vi.mock('$lib/settings/volume-data', () => ({
   }
 }));
 
-import { db } from '$lib/catalog/db';
+import { db } from '#lib/catalog/db.js';
 import { cachedCoverPathSet, initCoverKeyWatch } from './cloud-covers-store';
 import { putCloudCovers } from './cloud-covers';
 import { _resetCoverPersistForTests, installCover } from './cover-persist';

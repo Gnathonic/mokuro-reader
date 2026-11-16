@@ -1,10 +1,10 @@
-import { db } from '$lib/catalog/db';
-import { entryMokuroVersion } from '$lib/metadata/series-file';
-import type { VolumeMetadata } from '$lib/types';
-import type { SeriesFileVolume } from '$lib/metadata/series-file';
-import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
-import { generateDeterministicUUID } from '$lib/util/series-extraction';
-import { isVolumeInstalled } from '$lib/catalog/volume-state';
+import { db } from '#lib/catalog/db.js';
+import { entryMokuroVersion } from '#lib/metadata/series-file.js';
+import type { VolumeMetadata } from '#lib/types/index.js';
+import type { SeriesFileVolume } from '#lib/metadata/series-file.js';
+import { normalizeSeriesKey, normalizeVolumeTitleKey } from '#lib/metadata/series-key.js';
+import { generateDeterministicUUID } from '#lib/util/series-extraction.js';
+import { isVolumeInstalled } from '#lib/catalog/volume-state.js';
 
 /**
  * Promote a series' index entries into real `volumes` rows in the

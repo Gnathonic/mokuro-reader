@@ -7,7 +7,7 @@ import { megaProvider } from './mega-provider';
 import {
   cloudBunkoMergesDuplicates,
   refreshCloudBunkoMarker
-} from '$lib/catalog/cloud-bunko-marker';
+} from '#lib/catalog/cloud-bunko-marker.js';
 
 /** Dedup-triggered refetches in a row before the cache stops asking (see runDeduplication). */
 const MAX_DEDUP_REFETCHES = 2;

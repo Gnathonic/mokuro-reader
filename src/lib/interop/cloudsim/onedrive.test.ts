@@ -16,19 +16,19 @@ import {
   sha256Hex,
   sim
 } from '../cloudsim';
-import { setCloudTestBases, setCloudTestToken } from '$lib/util/sync/cloud-test-hooks';
-import { ProviderError, type CloudFileMetadata } from '$lib/util/sync/provider-interface';
+import { setCloudTestBases, setCloudTestToken } from '#lib/util/sync/cloud-test-hooks.js';
+import { ProviderError, type CloudFileMetadata } from '#lib/util/sync/provider-interface.js';
 
-vi.mock('$app/environment', () => ({ browser: true, dev: false, building: false }));
+vi.mock('$app/env', () => ({ browser: true, dev: false, building: false }));
 
 const VOLUME = new Uint8Array(90_000).map((_, i) => (i * 7) % 253);
 const SIDECAR = JSON.stringify({ version: '0.2.5', volume: 'Vol 1', pages: [] });
 const CATALOG = JSON.stringify({ version: 1, series: [] });
 
 describe.skipIf(!cloudsimForSuite())('OneDrive provider against cloudsim', () => {
-  type Provider = import('$lib/util/sync/providers/onedrive/onedrive-provider').OneDriveProvider;
+  type Provider = import('#lib/util/sync/providers/onedrive/onedrive-provider.js').OneDriveProvider;
   let provider: Provider;
-  let tokenManager: typeof import('$lib/util/sync/providers/onedrive/token-manager').onedriveTokenManager;
+  let tokenManager: typeof import('#lib/util/sync/providers/onedrive/token-manager.js').onedriveTokenManager;
   let accessToken = '';
   let restoreXhr = () => {};
   let restoreFetch = () => {};
@@ -62,9 +62,9 @@ describe.skipIf(!cloudsimForSuite())('OneDrive provider against cloudsim', () =>
     restoreFetch = fetchWithoutForeignSignals();
     setCloudTestBases(sim.bases());
     const { OneDriveProvider } =
-      await import('$lib/util/sync/providers/onedrive/onedrive-provider');
+      await import('#lib/util/sync/providers/onedrive/onedrive-provider.js');
     ({ onedriveTokenManager: tokenManager } =
-      await import('$lib/util/sync/providers/onedrive/token-manager'));
+      await import('#lib/util/sync/providers/onedrive/token-manager.js'));
     provider = new OneDriveProvider();
     await sim.seed('microsoft', [
       { path: 'mokuro-reader/Series A/Vol 1.cbz', data: VOLUME },
@@ -135,7 +135,7 @@ describe.skipIf(!cloudsimForSuite())('OneDrive provider against cloudsim', () =>
 
   it('uploads resolve their folders once: no getItemByPath after the first upload into each', async () => {
     const { OneDriveProvider } =
-      await import('$lib/util/sync/providers/onedrive/onedrive-provider');
+      await import('#lib/util/sync/providers/onedrive/onedrive-provider.js');
     // A fresh session's provider: nothing remembered yet.
     const fresh = new OneDriveProvider();
     const lookups = async () =>
@@ -161,7 +161,7 @@ describe.skipIf(!cloudsimForSuite())('OneDrive provider against cloudsim', () =>
 
   it('a remembered folder another device deleted is re-created by the next upload', async () => {
     const { OneDriveProvider } =
-      await import('$lib/util/sync/providers/onedrive/onedrive-provider');
+      await import('#lib/util/sync/providers/onedrive/onedrive-provider.js');
     const fresh = new OneDriveProvider();
     await fresh.uploadFile('Series Gone/Vol 1.mokuro', new Blob(['{}']));
     const folder = (await sim.tree('microsoft')).find((n) => n.name === 'Series Gone');
@@ -244,7 +244,7 @@ describe.skipIf(!cloudsimForSuite())('OneDrive provider against cloudsim', () =>
   });
 
   it('a worker transfer reaches the simulator with the bases from its credentials', async () => {
-    const { onedriveCore } = await import('$lib/util/sync/core/providers/onedrive-core');
+    const { onedriveCore } = await import('#lib/util/sync/core/providers/onedrive-core.js');
     const vol = await find('Series A/Vol 1.cbz');
     const down = await provider.getWorkerDownloadCredentials(vol.fileId);
     await provider.prepareUploadTarget('Series A');

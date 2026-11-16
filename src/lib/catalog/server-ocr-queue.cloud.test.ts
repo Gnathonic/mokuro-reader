@@ -9,26 +9,26 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import 'fake-indexeddb/auto';
 import { get } from 'svelte/store';
 
-vi.mock('$lib/catalog/db', async () => {
+vi.mock('#lib/catalog/db.js', async () => {
   const { CatalogDexieV3 } =
-    await vi.importActual<typeof import('$lib/catalog/db-v3')>('$lib/catalog/db-v3');
+    await vi.importActual<typeof import('#lib/catalog/db-v3.js')>('#lib/catalog/db-v3.js');
   return { db: new CatalogDexieV3('mokuro_v3_server_ocr_queue_cloud_test') };
 });
 const pullLayersForVolume = vi.hoisted(() => vi.fn(async () => 0));
 const importFetchedLayers = vi.hoisted(() => vi.fn());
-vi.mock('$lib/metadata/layer-sync', () => ({ pullLayersForVolume, importFetchedLayers }));
+vi.mock('#lib/metadata/layer-sync.js', () => ({ pullLayersForVolume, importFetchedLayers }));
 const requestOcrUpgradePass = vi.hoisted(() => vi.fn(async () => {}));
 vi.mock('./ocr-upgrade-pass', () => ({ requestOcrUpgradePass }));
 const loadVolumeManifest = vi.hoisted(() => vi.fn());
-vi.mock('$lib/import/deep-link-manifest', () => ({ loadVolumeManifest }));
+vi.mock('#lib/import/deep-link-manifest.js', () => ({ loadVolumeManifest }));
 const getActiveProvider = vi.hoisted(() => vi.fn(() => null as unknown));
-vi.mock('$lib/util/sync/provider-manager', () => ({
+vi.mock('#lib/util/sync/provider-manager.js', () => ({
   providerManager: { getActiveProvider: () => getActiveProvider() }
 }));
 // The folder lookups of the series page: the listing holds the series as spelled.
 const refreshSeriesFolder = vi.hoisted(() => vi.fn());
 const fetchAllCloudVolumes = vi.hoisted(() => vi.fn(async () => {}));
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: {
     resolveCloudFolderTitle: (title: string) => title,
     getCloudVolumesBySeries: () => [{}],
@@ -37,8 +37,8 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
   }
 }));
 
-import { db } from '$lib/catalog/db';
-import type { ControlFileResult } from '$lib/util/sync/provider-interface';
+import { db } from '#lib/catalog/db.js';
+import type { ControlFileResult } from '#lib/util/sync/provider-interface.js';
 import { resetCloudBunkoMarkersForTest } from './cloud-bunko-marker';
 import { seriesQueueStore, volumeQueueKey } from './server-ocr-pending';
 import {

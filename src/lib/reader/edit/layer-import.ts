@@ -1,9 +1,13 @@
-import { db } from '$lib/catalog/db';
-import { getLayerMeta, layerTables, putLayerWithPages } from '$lib/catalog/layer-store';
-import { volumesForFoldedSeriesTitle } from '$lib/catalog/volumes-by-series';
-import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
-import type { Page, VolumeMetadata, VolumeOcrLayer } from '$lib/types';
-import { foldStem, miscasedLayerStem, splitLayerSidecarName } from '$lib/util/sync/syncable-file';
+import { db } from '#lib/catalog/db.js';
+import { getLayerMeta, layerTables, putLayerWithPages } from '#lib/catalog/layer-store.js';
+import { volumesForFoldedSeriesTitle } from '#lib/catalog/volumes-by-series.js';
+import { normalizeSeriesKey, normalizeVolumeTitleKey } from '#lib/metadata/series-key.js';
+import type { Page, VolumeMetadata, VolumeOcrLayer } from '#lib/types/index.js';
+import {
+  foldStem,
+  miscasedLayerStem,
+  splitLayerSidecarName
+} from '#lib/util/sync/syncable-file.js';
 import { layerKindForId, servedEngineOf } from './layers';
 import {
   layerFileMaker,

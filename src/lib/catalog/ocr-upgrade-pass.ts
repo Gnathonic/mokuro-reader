@@ -1,18 +1,18 @@
-import { parseMokuroFile } from '$lib/import/processing';
-import type { SeriesFileVolume } from '$lib/metadata/series-file';
-import { getSeriesIndex } from '$lib/metadata/series-index';
-import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
-import { groupSeriesSidecarFiles } from '$lib/metadata/cloud-sidecar-stamps';
-import type { Page, VolumeMetadata } from '$lib/types';
-import { isVolumeOpen } from '$lib/util/hash-router';
-import { showSnackbar } from '$lib/util/snackbar';
-import { cacheManager } from '$lib/util/sync/cache-manager';
+import { parseMokuroFile } from '#lib/import/processing.js';
+import type { SeriesFileVolume } from '#lib/metadata/series-file.js';
+import { getSeriesIndex } from '#lib/metadata/series-index.js';
+import { normalizeSeriesKey, normalizeVolumeTitleKey } from '#lib/metadata/series-key.js';
+import { groupSeriesSidecarFiles } from '#lib/metadata/cloud-sidecar-stamps.js';
+import type { Page, VolumeMetadata } from '#lib/types/index.js';
+import { isVolumeOpen } from '#lib/util/hash-router.js';
+import { showSnackbar } from '#lib/util/snackbar.js';
+import { cacheManager } from '#lib/util/sync/cache-manager.js';
 import type {
   CloudFileMetadata,
   ProviderType,
   SyncProvider
-} from '$lib/util/sync/provider-interface';
-import { providerManager } from '$lib/util/sync/provider-manager';
+} from '#lib/util/sync/provider-interface.js';
+import { providerManager } from '#lib/util/sync/provider-manager.js';
 import {
   applyCloudPrimaryOcr,
   attestationOfListedFile,

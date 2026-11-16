@@ -1,4 +1,4 @@
-import type { UploadFileResult } from '$lib/util/sync/provider-interface';
+import type { UploadFileResult } from '#lib/util/sync/provider-interface.js';
 
 /**
  * An upload is CONFIRMED by its own response (#288): a success status, and —

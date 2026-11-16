@@ -15,17 +15,17 @@ import {
   sim,
   type SimLogEntry
 } from '../cloudsim';
-import { setCloudTestBases, setCloudTestToken } from '$lib/util/sync/cloud-test-hooks';
-import { uploadCacheEntry } from '$lib/util/sync/cloud-cache-interface';
+import { setCloudTestBases, setCloudTestToken } from '#lib/util/sync/cloud-test-hooks.js';
+import { uploadCacheEntry } from '#lib/util/sync/cloud-cache-interface.js';
 
-vi.mock('$app/environment', () => ({ browser: true, dev: false, building: false }));
+vi.mock('$app/env', () => ({ browser: true, dev: false, building: false }));
 
 const SERIES = Array.from({ length: 6 }, (_, i) => `Series ${i + 1}`);
 
 describe.skipIf(!cloudsimForSuite())('OneDrive change feed (Graph delta) against cloudsim', () => {
-  type Cache = typeof import('$lib/util/sync/providers/onedrive/onedrive-cache').onedriveCache;
+  type Cache = typeof import('#lib/util/sync/providers/onedrive/onedrive-cache.js').onedriveCache;
   type Provider =
-    typeof import('$lib/util/sync/providers/onedrive/onedrive-provider').onedriveProvider;
+    typeof import('#lib/util/sync/providers/onedrive/onedrive-provider.js').onedriveProvider;
   let cache: Cache;
   let provider: Provider;
   let accessToken = '';
@@ -63,9 +63,10 @@ describe.skipIf(!cloudsimForSuite())('OneDrive change feed (Graph delta) against
     restoreXhr = sendBlobsAsBytes();
     restoreFetch = fetchWithoutForeignSignals();
     setCloudTestBases(sim.bases());
-    ({ onedriveCache: cache } = await import('$lib/util/sync/providers/onedrive/onedrive-cache'));
+    ({ onedriveCache: cache } =
+      await import('#lib/util/sync/providers/onedrive/onedrive-cache.js'));
     ({ onedriveProvider: provider } =
-      await import('$lib/util/sync/providers/onedrive/onedrive-provider'));
+      await import('#lib/util/sync/providers/onedrive/onedrive-provider.js'));
   });
 
   beforeEach(async () => {

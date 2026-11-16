@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { COVER_VIEWPORT_ROOT_MARGIN } from '$lib/catalog/cover-viewport';
+import { COVER_VIEWPORT_ROOT_MARGIN } from '#lib/catalog/cover-viewport.js';
 import {
   installIntersectionObserverStub,
   IntersectionObserverStub
-} from '$lib/catalog/__tests__/intersection-observer-stub';
+} from '#lib/catalog/__tests__/intersection-observer-stub.js';
 
 /**
  * THE STUB IS TEST INFRASTRUCTURE, so its own defects are invisible: they do not

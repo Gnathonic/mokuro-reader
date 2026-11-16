@@ -9,21 +9,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import 'fake-indexeddb/auto';
 import { get } from 'svelte/store';
 
-vi.mock('$lib/catalog/db', async () => {
+vi.mock('#lib/catalog/db.js', async () => {
   const { CatalogDexieV3 } =
-    await vi.importActual<typeof import('$lib/catalog/db-v3')>('$lib/catalog/db-v3');
+    await vi.importActual<typeof import('#lib/catalog/db-v3.js')>('#lib/catalog/db-v3.js');
   return { db: new CatalogDexieV3('mokuro_v3_server_ocr_queue_test') };
 });
 const upgradeOcrFromSidecarBlob = vi.hoisted(() => vi.fn());
-vi.mock('$lib/catalog/cloud-ocr-upgrade', () => ({ upgradeOcrFromSidecarBlob }));
+vi.mock('#lib/catalog/cloud-ocr-upgrade.js', () => ({ upgradeOcrFromSidecarBlob }));
 const importFetchedLayers = vi.hoisted(() => vi.fn());
 const pullLayersForVolume = vi.hoisted(() => vi.fn(async () => 0));
-vi.mock('$lib/metadata/layer-sync', () => ({ importFetchedLayers, pullLayersForVolume }));
+vi.mock('#lib/metadata/layer-sync.js', () => ({ importFetchedLayers, pullLayersForVolume }));
 const requestOcrUpgradePass = vi.hoisted(() => vi.fn(async () => {}));
 vi.mock('./ocr-upgrade-pass', () => ({ requestOcrUpgradePass }));
 const refreshSeriesFolder = vi.hoisted(() => vi.fn(async (_title: string) => null as unknown));
 const getActiveProvider = vi.hoisted(() => vi.fn(() => null as unknown));
-vi.mock('$lib/util/sync/provider-manager', async () => {
+vi.mock('#lib/util/sync/provider-manager.js', async () => {
   const { writable } = await import('svelte/store');
   return {
     providerManager: {
@@ -34,7 +34,7 @@ vi.mock('$lib/util/sync/provider-manager', async () => {
   };
 });
 // A series page's folder lookups: the listing holds every series asked about.
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: {
     resolveCloudFolderTitle: (title: string) => title,
     getCloudVolumesBySeries: () => [{}],
@@ -42,9 +42,9 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
   }
 }));
 
-import { db } from '$lib/catalog/db';
-import { providerManager } from '$lib/util/sync/provider-manager';
-import { clearAllLayers } from '$lib/catalog/layer-store';
+import { db } from '#lib/catalog/db.js';
+import { providerManager } from '#lib/util/sync/provider-manager.js';
+import { clearAllLayers } from '#lib/catalog/layer-store.js';
 import {
   NOVA_ON_PPOCR_PARTS,
   queueFixture,

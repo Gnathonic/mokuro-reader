@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
-import type { VolumeMetadata } from '$lib/types';
+import type { VolumeMetadata } from '#lib/types/index.js';
 
 /**
  * What the queue accepts. The two absent states are both downloadable — a cloud-only
@@ -10,7 +10,7 @@ import type { VolumeMetadata } from '$lib/types';
  * Everything past the enqueue (the pool, the providers, the install) is stubbed; with no
  * active provider `processQueue` logs and returns, so nothing runs off the end of a test.
  */
-vi.mock('$lib/catalog/db', () => ({
+vi.mock('#lib/catalog/db.js', () => ({
   db: {
     volumes: { get: vi.fn(async () => undefined), update: vi.fn(async () => 1) },
     volume_ocr: { get: vi.fn(async () => undefined) },
@@ -41,7 +41,7 @@ vi.mock('./sync/unified-cloud-manager', () => ({
     refreshCloudFiles: vi.fn()
   }
 }));
-vi.mock('$lib/import', () => ({
+vi.mock('#lib/import/index.js', () => ({
   processVolume: vi.fn(),
   saveVolume: vi.fn(),
   deleteVolumeCompletely: vi.fn(async () => {}),
@@ -49,7 +49,7 @@ vi.mock('$lib/import', () => ({
   isImageExtension: () => true,
   getImageMimeType: () => 'image/jpeg'
 }));
-vi.mock('$lib/catalog/stranded-rows', () => ({
+vi.mock('#lib/catalog/stranded-rows.js', () => ({
   dropStrandedMetadataOnlyRow: vi.fn(async () => {})
 }));
 

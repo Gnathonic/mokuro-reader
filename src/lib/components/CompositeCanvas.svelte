@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { thumbnailCache, type CacheEntry } from '$lib/catalog/thumbnail-cache';
-  import type { VolumeMetadata } from '$lib/types';
+  import { thumbnailCache, type CacheEntry } from '#lib/catalog/thumbnail-cache.js';
+  import type { VolumeMetadata } from '#lib/types/index.js';
 
   /**
    * Shared identity for "this canvas was handed no covers", so a caller that has none can

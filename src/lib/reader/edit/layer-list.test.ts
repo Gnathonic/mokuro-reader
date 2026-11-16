@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 
-vi.mock('$lib/catalog/db', () => ({ db: {} }));
+vi.mock('#lib/catalog/db.js', () => ({ db: {} }));
 
 import { summarizeLayers, nextLayerId, prevLayerId, primaryLayerName } from './layer-list';
-import type { VolumeOcrLayer } from '$lib/types';
+import type { VolumeOcrLayer } from '#lib/types/index.js';
 
 describe('summarizeLayers', () => {
   it('keeps only what the picker shows, puts original first, then by created_at', () => {

@@ -7,10 +7,10 @@
  * thumbnails; reading them to count would cost a blob read per volume.
  */
 
-import { db } from '$lib/catalog/db';
+import { db } from '#lib/catalog/db.js';
 import { seriesVolumeUuids } from './database';
 import { identityUuids, locateVolume, storedTitle } from './image-only-naming';
-import { generateDeterministicUUID } from '$lib/util/series-extraction';
+import { generateDeterministicUUID } from '#lib/util/series-extraction.js';
 import type { LibraryMatch, LibrarySeries, ReviewGroup } from './image-only-review';
 
 /** Every series title the library has, once, with its volume count (index order). */

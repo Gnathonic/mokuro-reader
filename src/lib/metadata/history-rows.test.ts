@@ -4,8 +4,8 @@ import 'fake-indexeddb/auto';
 // `IDBDatabase.transaction` wrapper at module load, and Dexie binds that method
 // once when it opens a database — so it must be in place before the Dexie
 // instance below is ever used. See `idb-op-counter.ts`.
-import { countIdbOps } from '$lib/catalog/__tests__/idb-op-counter';
-import type { VolumeMetadata } from '$lib/types';
+import { countIdbOps } from '#lib/catalog/__tests__/idb-op-counter.js';
+import type { VolumeMetadata } from '#lib/types/index.js';
 import type { SeriesFile, SeriesFileVolume } from './series-file';
 import type { SeriesIndexRecord } from './series-index';
 
@@ -18,9 +18,9 @@ import type { SeriesIndexRecord } from './series-index';
  * `materializeSeriesVolumes`' own guards run against a real table. A hand-rolled
  * `db` double would make every one of those assertions vacuous.
  */
-vi.mock('$lib/catalog/db', async () => {
+vi.mock('#lib/catalog/db.js', async () => {
   const { CatalogDexieV3 } =
-    await vi.importActual<typeof import('$lib/catalog/db-v3')>('$lib/catalog/db-v3');
+    await vi.importActual<typeof import('#lib/catalog/db-v3.js')>('#lib/catalog/db-v3.js');
   return { db: new CatalogDexieV3('mokuro_v3_history_rows_test') };
 });
 
@@ -44,7 +44,7 @@ const { progressStore } = vi.hoisted(() => {
     }
   };
 });
-vi.mock('$lib/settings/volume-data', () => ({ volumes: progressStore }));
+vi.mock('#lib/settings/volume-data.js', () => ({ volumes: progressStore }));
 
 /**
  * The `.cbz` titles the cloud listing shows per series folder.
@@ -55,14 +55,14 @@ vi.mock('$lib/settings/volume-data', () => ({ volumes: progressStore }));
  * "deleted volume is not resurrected" case below prove nothing.
  */
 let listing = new Map<string, Set<string>>();
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: {
     cloudVolumeTitlesFor: (title: string) => listing.get(title) ?? new Set<string>()
   }
 }));
 
-import { db } from '$lib/catalog/db';
-import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
+import { db } from '#lib/catalog/db.js';
+import { unifiedCloudManager } from '#lib/util/sync/unified-cloud-manager.js';
 import { materializeHistoryRows, resetHistoryRowsSessionForTests } from './history-rows';
 
 function indexVolume(uuid: string, title: string, over: Partial<SeriesFileVolume> = {}) {

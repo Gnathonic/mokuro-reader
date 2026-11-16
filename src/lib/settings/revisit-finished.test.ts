@@ -5,8 +5,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
 
-vi.mock('$app/environment', () => ({ browser: true }));
-vi.mock('$lib/catalog/db', () => ({
+vi.mock('$app/env', () => ({ browser: true }));
+vi.mock('#lib/catalog/db.js', () => ({
   db: {
     volumes: {
       get: vi.fn().mockResolvedValue(undefined),
@@ -25,9 +25,9 @@ import {
   volumes,
   volumesWithTrash
 } from './volume-data';
-import { _resetHistoryTurns, _setHistoryTurnsForTest } from '$lib/reading-history/turns-store';
-import { isVolumeFinished } from '$lib/util/volume-helpers';
-import { isCompletedInPeriod, partialProgressInPeriod } from '$lib/goals/goal-counting';
+import { _resetHistoryTurns, _setHistoryTurnsForTest } from '#lib/reading-history/turns-store.js';
+import { isVolumeFinished } from '#lib/util/volume-helpers.js';
+import { isCompletedInPeriod, partialProgressInPeriod } from '#lib/goals/goal-counting.js';
 import type { PageTurn } from './volume-data';
 
 const PAGES = 200;

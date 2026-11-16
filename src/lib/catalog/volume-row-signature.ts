@@ -1,4 +1,4 @@
-import type { VolumeMetadata } from '$lib/types';
+import type { VolumeMetadata } from '#lib/types/index.js';
 
 /**
  * A content signature of a `volumes` row: equal signatures = nothing about

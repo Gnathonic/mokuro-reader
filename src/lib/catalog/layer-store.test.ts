@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import 'fake-indexeddb/auto';
 
-vi.mock('$lib/catalog/thumbnails', () => ({ generateThumbnail: vi.fn() }));
-vi.mock('$lib/util/progress-tracker', () => ({
+vi.mock('#lib/catalog/thumbnails.js', () => ({ generateThumbnail: vi.fn() }));
+vi.mock('#lib/util/progress-tracker.js', () => ({
   progressTrackerStore: { addProcess: vi.fn(), updateProcess: vi.fn(), removeProcess: vi.fn() }
 }));
 
@@ -26,7 +26,7 @@ import {
   putLayerWithPages,
   updateLayerMeta
 } from './layer-store';
-import type { Page, VolumeOcrLayerWithPages } from '$lib/types';
+import type { Page, VolumeOcrLayerWithPages } from '#lib/types/index.js';
 
 const db = new CatalogDexieV3('mokuro_v3_layer_store_test');
 

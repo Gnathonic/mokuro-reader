@@ -1,15 +1,15 @@
 <script lang="ts">
-  import type { Page, VolumeMetadata } from '$lib/types';
-  import type { VolumeSettings } from '$lib/settings/volume-data';
-  import { settings, imageFilter, updateSetting } from '$lib/settings';
-  import { matchFilesToPages } from '$lib/reader/image-cache';
-  import { getCharCount } from '$lib/util/count-chars';
-  import { activityTracker } from '$lib/util/activity-tracker';
+  import type { Page, VolumeMetadata } from '#lib/types/index.js';
+  import type { VolumeSettings } from '#lib/settings/volume-data.js';
+  import { settings, imageFilter, updateSetting } from '#lib/settings/index.js';
+  import { matchFilesToPages } from '#lib/reader/image-cache.js';
+  import { getCharCount } from '#lib/util/count-chars.js';
+  import { activityTracker } from '#lib/util/activity-tracker.js';
   import MangaPage from './MangaPage.svelte';
-  import { ScrollAnimator } from '$lib/reader/scroll-animator';
-  import { ContinuousZoomController, type SettleReason } from '$lib/reader/zoom-controller';
-  import { applyVerticalZoomLayout } from '$lib/reader/zoom-layout';
-  import { closestPageToCenter, visiblePageRange } from '$lib/reader/page-detection';
+  import { ScrollAnimator } from '#lib/reader/scroll-animator.js';
+  import { ContinuousZoomController, type SettleReason } from '#lib/reader/zoom-controller.js';
+  import { applyVerticalZoomLayout } from '#lib/reader/zoom-layout.js';
+  import { closestPageToCenter, visiblePageRange } from '#lib/reader/page-detection.js';
   import {
     GAP_WHEEL_STEP_SIZE,
     MAX_PAGE_GAP,
@@ -19,19 +19,19 @@
     normalizeWheelDelta,
     wheelIntentIsGapAdjust,
     wheelIntentIsZoom
-  } from '$lib/reader/zoom-math';
-  import { gestureTargetRole, keyboardShouldIgnore } from '$lib/reader/input/gesture-target';
-  import { volumeEdgeNav } from '$lib/reader/page-nav';
+  } from '#lib/reader/zoom-math.js';
+  import { gestureTargetRole, keyboardShouldIgnore } from '#lib/reader/input/gesture-target.js';
+  import { volumeEdgeNav } from '#lib/reader/page-nav.js';
   import {
     alignDelta,
     pageKeyStep,
     stripPageKeyTarget,
     type AxisSpan
-  } from '$lib/reader/page-key-step';
-  import { PointerGestureTracker, zoomGestureConfig } from '$lib/reader/input/pointer-tracker';
-  import { TapDiscriminator } from '$lib/reader/input/tap';
-  import type { MotionGate } from '$lib/reader/input/motion-gate';
-  import { PageWindow, seedPageWindow } from '$lib/reader/page-window';
+  } from '#lib/reader/page-key-step.js';
+  import { PointerGestureTracker, zoomGestureConfig } from '#lib/reader/input/pointer-tracker.js';
+  import { TapDiscriminator } from '#lib/reader/input/tap.js';
+  import type { MotionGate } from '#lib/reader/input/motion-gate.js';
+  import { PageWindow, seedPageWindow } from '#lib/reader/page-window.js';
   import { onMount, onDestroy, tick } from 'svelte';
 
   interface Props {

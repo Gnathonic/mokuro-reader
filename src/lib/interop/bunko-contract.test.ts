@@ -25,27 +25,31 @@ const fetchHandler = vi.hoisted(() => {
   return state;
 });
 
-vi.mock('$app/environment', () => ({ browser: true }));
-vi.mock('$lib/util/sync/core/cloud-provider-core-registry', () => ({
+vi.mock('$app/env', () => ({ browser: true }));
+vi.mock('#lib/util/sync/core/cloud-provider-core-registry.js', () => ({
   getCloudProviderCore: () => ({ uploadFile: vi.fn(), downloadFile: vi.fn() })
 }));
-vi.mock('$lib/util/sync/provider-manager', () => ({
+vi.mock('#lib/util/sync/provider-manager.js', () => ({
   providerManager: { updateStatus: vi.fn() }
 }));
-vi.mock('$lib/util/sync/cache-manager', () => ({
+vi.mock('#lib/util/sync/cache-manager.js', () => ({
   cacheManager: { registerCache: vi.fn() }
 }));
-vi.mock('$lib/util/sync/providers/webdav/webdav-cache', () => ({ webdavCache: {} }));
+vi.mock('#lib/util/sync/providers/webdav/webdav-cache.js', () => ({ webdavCache: {} }));
 
-import { QUEUE_SNAPSHOT, stripQueueParts } from '$lib/catalog/__fixtures__/mokuro-queue';
-import { describePendingOcr } from '$lib/catalog/server-ocr-pending';
-import { MARKER_SNAPSHOT } from '$lib/catalog/__fixtures__/bunko-marker';
+import { QUEUE_SNAPSHOT, stripQueueParts } from '#lib/catalog/__fixtures__/mokuro-queue.js';
+import { describePendingOcr } from '#lib/catalog/server-ocr-pending.js';
+import { MARKER_SNAPSHOT } from '#lib/catalog/__fixtures__/bunko-marker.js';
 import {
   SERIES_QUEUE_HTTP_SNAPSHOT,
   SERIES_QUEUE_SHAPES_SNAPSHOT,
   seriesQueueShapes
-} from '$lib/catalog/__fixtures__/series-queue';
-import { parseSeriesQueueFile, pickTrustedCopy, seriesQueueSlice } from '$lib/catalog/series-queue';
+} from '#lib/catalog/__fixtures__/series-queue.js';
+import {
+  parseSeriesQueueFile,
+  pickTrustedCopy,
+  seriesQueueSlice
+} from '#lib/catalog/series-queue.js';
 import {
   EPOCH_MS,
   ETAG_SENTINEL,
@@ -59,34 +63,37 @@ import {
   loadSeed,
   type Fixture
 } from './contract';
-import { fetchServerIdentity } from '$lib/util/sync/providers/webdav/identity';
-import { bunkoSupportsHistory } from '$lib/util/sync/providers/webdav/bunko-version';
-import { requestBunkoToken, revokeBunkoToken } from '$lib/util/sync/providers/webdav/bunko-token';
-import { loadVolumeManifest, parseVolumeManifest } from '$lib/import/deep-link-manifest';
-import { parseQueueFile } from '$lib/catalog/server-ocr-queue';
+import { fetchServerIdentity } from '#lib/util/sync/providers/webdav/identity.js';
+import { bunkoSupportsHistory } from '#lib/util/sync/providers/webdav/bunko-version.js';
+import {
+  requestBunkoToken,
+  revokeBunkoToken
+} from '#lib/util/sync/providers/webdav/bunko-token.js';
+import { loadVolumeManifest, parseVolumeManifest } from '#lib/import/deep-link-manifest.js';
+import { parseQueueFile } from '#lib/catalog/server-ocr-queue.js';
 import {
   isMarkerFresh,
   parseBunkoMarker,
   type MarkerNodeRecord
-} from '$lib/catalog/cloud-bunko-marker';
-import { parseSeriesFileWithReport } from '$lib/metadata/series-file';
-import { parseCatalogFile } from '$lib/metadata/catalog-file';
+} from '#lib/catalog/cloud-bunko-marker.js';
+import { parseSeriesFileWithReport } from '#lib/metadata/series-file.js';
+import { parseCatalogFile } from '#lib/metadata/catalog-file.js';
 import {
   WebdavUploadError,
   readServerOcrHeaders,
   uploadFileWithClient
-} from '$lib/util/sync/providers/webdav/webdav-upload';
-import { classifyWriteError } from '$lib/util/sync/providers/webdav/webdav-errors';
-import { webdavCore } from '$lib/util/sync/core/providers/webdav-core';
-import { ProviderError } from '$lib/util/sync/provider-interface';
-import { canPublishCurated } from '$lib/util/sync/account-capabilities';
+} from '#lib/util/sync/providers/webdav/webdav-upload.js';
+import { classifyWriteError } from '#lib/util/sync/providers/webdav/webdav-errors.js';
+import { webdavCore } from '#lib/util/sync/core/providers/webdav-core.js';
+import { ProviderError } from '#lib/util/sync/provider-interface.js';
+import { canPublishCurated } from '#lib/util/sync/account-capabilities.js';
 import {
   SERIES_QUEUE_FILE_NAME,
   isSyncableFile,
   layerSidecarName
-} from '$lib/util/sync/syncable-file';
-import { CURATED_LAYER_ID, EDIT_LAYER_ID } from '$lib/reader/edit/layer-names';
-import { parseHistoryPath } from '$lib/reading-history/paths';
+} from '#lib/util/sync/syncable-file.js';
+import { CURATED_LAYER_ID, EDIT_LAYER_ID } from '#lib/reader/edit/layer-names.js';
+import { parseHistoryPath } from '#lib/reading-history/paths.js';
 
 const SERVER = 'https://bunko.example';
 const NOW = Date.parse('2026-10-28T12:00:00Z');
@@ -774,7 +781,7 @@ describeContract('PROPFIND answers as Bunko gives them', () => {
     ]);
     calls = answers.calls;
     fetchHandler.impl = answers.fetch;
-    const { WebDAVProvider } = await import('$lib/util/sync/providers/webdav/webdav-provider');
+    const { WebDAVProvider } = await import('#lib/util/sync/providers/webdav/webdav-provider.js');
     provider = new WebDAVProvider();
     await provider.whenReady();
     await provider.login({ serverUrl: SERVER, username: 'reader', password: password('reader') });
@@ -822,7 +829,7 @@ describeContract('PROPFIND answers as Bunko gives them', () => {
     // collection, and its Allow names a collection write method (DELETE or
     // MOVE; PUT and MKCOL only where the account may write, from 0.8).
     const { allowHeaderPermitsCollectionWrite } =
-      await import('$lib/util/sync/providers/webdav/webdav-provider');
+      await import('#lib/util/sync/providers/webdav/webdav-provider.js');
     expect(allowHeaderPermitsCollectionWrite(allow)).toBe(true);
     expect(await provider.checkWritePermissions(SERVER)).toBe(true);
     expect(answers.calls.map((c) => c.method)).toEqual(['PROPFIND', 'OPTIONS']);
@@ -887,7 +894,7 @@ describeContract('a registered account as Bunko reports it', () => {
       fx('login-token-issue'),
       fx('options-library')
     ]).fetch;
-    const { WebDAVProvider } = await import('$lib/util/sync/providers/webdav/webdav-provider');
+    const { WebDAVProvider } = await import('#lib/util/sync/providers/webdav/webdav-provider.js');
     provider = new WebDAVProvider();
     await provider.whenReady();
     await provider.login({
@@ -1101,7 +1108,7 @@ describeContract('who may write is what `/login/api/me` says, never the WebDAV f
     localStorage.clear();
     const answers = fixtureFetch([...fallbackAnswers(), fx(meFixture)]);
     fetchHandler.impl = answers.fetch;
-    const { WebDAVProvider } = await import('$lib/util/sync/providers/webdav/webdav-provider');
+    const { WebDAVProvider } = await import('#lib/util/sync/providers/webdav/webdav-provider.js');
     const provider = new WebDAVProvider();
     await provider.whenReady();
     const login = provider.login(

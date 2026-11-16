@@ -15,7 +15,7 @@
  * PURE MODULE — no stores, no Dexie.
  */
 
-import { FUTURE_TOLERANCE_MS, isRecord } from '$lib/metadata/sanitize';
+import { FUTURE_TOLERANCE_MS, isRecord } from '#lib/metadata/sanitize.js';
 
 export const POSITIONS_FILE_NAME = 'positions.json';
 

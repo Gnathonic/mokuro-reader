@@ -1,4 +1,4 @@
-import type { VolumeMetadata } from '$lib/types';
+import type { VolumeMetadata } from '#lib/types/index.js';
 
 // Natural sorting collator that handles numbers properly
 const naturalSort = new Intl.Collator(undefined, {

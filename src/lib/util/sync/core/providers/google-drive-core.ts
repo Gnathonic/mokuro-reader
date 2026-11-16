@@ -1,5 +1,5 @@
 import { confirmUploadReceipt } from '../upload-receipt';
-import type { UploadFileResult } from '$lib/util/sync/provider-interface';
+import type { UploadFileResult } from '#lib/util/sync/provider-interface.js';
 import type {
   CloudCoreAuthRefresher,
   CloudCoreCredentials,

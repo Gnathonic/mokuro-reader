@@ -15,16 +15,20 @@
     settings,
     markVolumeAsComplete,
     markVolumeAsUnread
-  } from '$lib/settings';
-  import { volumes as catalogVolumes } from '$lib/catalog';
-  import { personalizedReadingSpeed } from '$lib/settings/reading-speed';
-  import { figuresFor, readingStats } from '$lib/reading-history/stats-store';
-  import { seriesSpeeds } from '$lib/reading-history/series-speeds';
-  import type { VolumeMetadata, Page } from '$lib/types';
-  import { promptConfirmation, showSnackbar } from '$lib/util';
-  import { promptExtraction } from '$lib/util/modals';
-  import { zipManga } from '$lib/util/zip';
-  import { getCurrentPage, getProgressDisplay, isVolumeFinished } from '$lib/util/volume-helpers';
+  } from '#lib/settings/index.js';
+  import { volumes as catalogVolumes } from '#lib/catalog/index.js';
+  import { personalizedReadingSpeed } from '#lib/settings/reading-speed.js';
+  import { figuresFor, readingStats } from '#lib/reading-history/stats-store.js';
+  import { seriesSpeeds } from '#lib/reading-history/series-speeds.js';
+  import type { VolumeMetadata, Page } from '#lib/types/index.js';
+  import { promptConfirmation, showSnackbar } from '#lib/util/index.js';
+  import { promptExtraction } from '#lib/util/modals.js';
+  import { zipManga } from '#lib/util/zip.js';
+  import {
+    getCurrentPage,
+    getProgressDisplay,
+    isVolumeFinished
+  } from '#lib/util/volume-helpers.js';
   import { ListgroupItem, Dropdown, DropdownItem, Badge, Button, Spinner } from 'flowbite-svelte';
   import {
     CheckCircleSolid,
@@ -39,26 +43,26 @@
     EditOutline,
     DownloadSolid
   } from 'flowbite-svelte-icons';
-  import { promptVolumeEditor } from '$lib/util/modals';
-  import { db } from '$lib/catalog/db';
-  import { removeVolumeFiles, deleteVolumeCompletely } from '$lib/import';
+  import { promptVolumeEditor } from '#lib/util/modals.js';
+  import { db } from '#lib/catalog/db.js';
+  import { removeVolumeFiles, deleteVolumeCompletely } from '#lib/import/index.js';
   import { liveQuery } from 'dexie';
-  import { nav, routeParams } from '$lib/util/hash-router';
+  import { nav, routeParams } from '#lib/util/hash-router.js';
   import PositionOfferChip from './PositionOfferChip.svelte';
   import BackupButton from './BackupButton.svelte';
-  import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
-  import { providerManager } from '$lib/util/sync';
-  import { backupQueue } from '$lib/util/backup-queue';
-  import { downloadQueue } from '$lib/util/download-queue';
+  import { unifiedCloudManager } from '#lib/util/sync/unified-cloud-manager.js';
+  import { providerManager } from '#lib/util/sync/index.js';
+  import { backupQueue } from '#lib/util/backup-queue.js';
+  import { downloadQueue } from '#lib/util/download-queue.js';
   import {
     getArchiveSize,
     getCloudFileId,
     getCloudModifiedTime,
     getCloudProvider
-  } from '$lib/util/cloud-fields';
-  import type { CloudFileMetadata } from '$lib/util/sync/provider-interface';
-  import { formatArchiveSize } from '$lib/util/format-size';
-  import { progressTrackerStore } from '$lib/util/progress-tracker';
+  } from '#lib/util/cloud-fields.js';
+  import type { CloudFileMetadata } from '#lib/util/sync/provider-interface.js';
+  import { formatArchiveSize } from '#lib/util/format-size.js';
+  import { progressTrackerStore } from '#lib/util/progress-tracker.js';
   import {
     describePendingOcr,
     markVolumeShown,
@@ -68,19 +72,19 @@
     serverOcrQueueStatus,
     seriesQueueStore,
     watchedKeyStore
-  } from '$lib/catalog/server-ocr-pending';
-  import { uploadFailures } from '$lib/util/upload-failures';
-  import type { CloudVolumeWithProvider } from '$lib/util/sync/unified-cloud-manager';
-  import { getCharCount } from '$lib/util/count-chars';
+  } from '#lib/catalog/server-ocr-pending.js';
+  import { uploadFailures } from '#lib/util/upload-failures.js';
+  import type { CloudVolumeWithProvider } from '#lib/util/sync/unified-cloud-manager.js';
+  import { getCharCount } from '#lib/util/count-chars.js';
   import PlaceholderThumbnail from './PlaceholderThumbnail.svelte';
-  import { createCoverClaims } from '$lib/catalog/cover-claims.svelte';
+  import { createCoverClaims } from '#lib/catalog/cover-claims.svelte.js';
   import DownloadBadge from './DownloadBadge.svelte';
-  import { needsDownload } from '$lib/catalog/volume-state';
-  import { anyModalOpen, shouldTriggerDelete } from '$lib/util/delete-shortcut';
-  import { canDeleteSeriesOnServer } from '$lib/util/sync/metadata-permissions';
-  import { isTypingTarget } from '$lib/util/series-editor-shortcut';
+  import { needsDownload } from '#lib/catalog/volume-state.js';
+  import { anyModalOpen, shouldTriggerDelete } from '#lib/util/delete-shortcut.js';
+  import { canDeleteSeriesOnServer } from '#lib/util/sync/metadata-permissions.js';
+  import { isTypingTarget } from '#lib/util/series-editor-shortcut.js';
   import { onDestroy } from 'svelte';
-  import { displayableCoverBlob } from '$lib/util/raster-image';
+  import { displayableCoverBlob } from '#lib/util/raster-image.js';
   import { get } from 'svelte/store';
 
   interface Props {

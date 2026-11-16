@@ -37,13 +37,13 @@ import type {
   VolumeOcrLayer,
   VolumeOcrLayerPages,
   VolumeOcrLayerWithPages
-} from '$lib/types';
+} from '#lib/types/index.js';
 import { isUntouchedUpgradeLayer } from './mokuro-hash';
 import {
   isSetAsideLayerId,
   PREVIOUS_OCR_ID_RE,
   PREVIOUS_OCR_NAME_RE
-} from '$lib/reader/edit/layer-names';
+} from '#lib/reader/edit/layer-names.js';
 
 export const LAYER_META_TABLE = 'volume_ocr_layers';
 export const LAYER_PAGES_TABLE = 'volume_ocr_layer_pages';

@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('$app/environment', () => ({ browser: true }));
-vi.mock('$lib/catalog/db', () => ({
+vi.mock('$app/env', () => ({ browser: true }));
+vi.mock('#lib/catalog/db.js', () => ({
   db: { volumes: { get: vi.fn().mockResolvedValue(undefined), bulkGet: vi.fn(async () => []) } }
 }));
 
-import { VolumeData } from '$lib/settings/volume-data';
+import { VolumeData } from '#lib/settings/volume-data.js';
 import { isCompletedInPeriod, partialProgressInPeriod } from '../goal-counting';
 import { mergeSnapshotEntries, type GoalSnapshotEntry } from '../goals-file';
 

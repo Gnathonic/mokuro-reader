@@ -1,5 +1,5 @@
 import { readable, type Readable } from 'svelte/store';
-import { stampMs } from '$lib/util/volume-helpers';
+import { stampMs } from '#lib/util/volume-helpers.js';
 import { remoteReads, uncoveredRemoteRead, type RemoteRead } from './remote-reads';
 import { getVolumeEvents, historyVolumes, onHistoryChanged } from './turns-store';
 import type { ReadingEvent } from './types';

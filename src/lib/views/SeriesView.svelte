@@ -1,17 +1,17 @@
 <script lang="ts">
-  import { catalog, currentSeries } from '$lib/catalog';
-  import VolumeItem from '$lib/components/VolumeItem.svelte';
-  import PlaceholderVolumeItem from '$lib/components/PlaceholderVolumeItem.svelte';
-  import SeriesMetadataBar from '$lib/components/Series/SeriesMetadataBar.svelte';
+  import { catalog, currentSeries } from '#lib/catalog/index.js';
+  import VolumeItem from '#lib/components/VolumeItem.svelte';
+  import PlaceholderVolumeItem from '#lib/components/PlaceholderVolumeItem.svelte';
+  import SeriesMetadataBar from '#lib/components/Series/SeriesMetadataBar.svelte';
   import { Button, Listgroup, Spinner, Badge, Dropdown, DropdownItem } from 'flowbite-svelte';
-  import { promptConfirmation, zipManga, showSnackbar } from '$lib/util';
-  import { promptExtraction, promptSeriesEditor } from '$lib/util/modals';
-  import { progressTrackerStore } from '$lib/util/progress-tracker';
-  import { volumes, progress, settings } from '$lib/settings';
-  import { figuresFor, readingStats } from '$lib/reading-history/stats-store';
-  import { seriesSpeeds } from '$lib/reading-history/series-speeds';
-  import { nav, routeParams, navigateBack } from '$lib/util/hash-router';
-  import { personalizedReadingSpeed } from '$lib/settings/reading-speed';
+  import { promptConfirmation, zipManga, showSnackbar } from '#lib/util/index.js';
+  import { promptExtraction, promptSeriesEditor } from '#lib/util/modals.js';
+  import { progressTrackerStore } from '#lib/util/progress-tracker.js';
+  import { volumes, progress, settings } from '#lib/settings/index.js';
+  import { figuresFor, readingStats } from '#lib/reading-history/stats-store.js';
+  import { seriesSpeeds } from '#lib/reading-history/series-speeds.js';
+  import { nav, routeParams, navigateBack } from '#lib/util/hash-router.js';
+  import { personalizedReadingSpeed } from '#lib/settings/reading-speed.js';
   import {
     CloudArrowUpOutline,
     TrashBinSolid,
@@ -23,27 +23,27 @@
     DotsVerticalOutline,
     EditOutline
   } from 'flowbite-svelte-icons';
-  import { backupQueue } from '$lib/util/backup-queue';
-  import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
-  import { providerManager } from '$lib/util/sync';
+  import { backupQueue } from '#lib/util/backup-queue.js';
+  import { unifiedCloudManager } from '#lib/util/sync/unified-cloud-manager.js';
+  import { providerManager } from '#lib/util/sync/index.js';
   import { onMount } from 'svelte';
   import { get } from 'svelte/store';
-  import { browser } from '$app/environment';
-  import { preferredTitleLanguage } from '$lib/settings/settings';
-  import { partitionSeriesVolumes } from '$lib/catalog/catalog';
-  import { seriesMetadataMap } from '$lib/metadata/store';
-  import { reconcileMissingMetadataFiles } from '$lib/metadata/series-file-sync';
-  import { normalizeSeriesKey } from '$lib/metadata/series-key';
-  import { openSeries } from '$lib/metadata/series-open';
-  import { resolveDisplayTitle } from '$lib/metadata/display-title';
-  import { isVolumeInstalled, needsDownload } from '$lib/catalog/volume-state';
-  import { sortVolumes } from '$lib/catalog/sort-volumes';
-  import { isVolumeComplete } from '$lib/util/volume-helpers';
-  import { isIndexedPlaceholder } from '$lib/catalog/placeholders';
-  import { deleteSeriesFromCloudByTitle, promptSeriesRemoval } from '$lib/catalog/series-delete';
-  import { getCloudFileId } from '$lib/util/cloud-fields';
-  import type { VolumeMetadata } from '$lib/types';
-  import { downloadQueue } from '$lib/util/download-queue';
+  import { browser } from '$app/env';
+  import { preferredTitleLanguage } from '#lib/settings/settings.js';
+  import { partitionSeriesVolumes } from '#lib/catalog/catalog.js';
+  import { seriesMetadataMap } from '#lib/metadata/store.js';
+  import { reconcileMissingMetadataFiles } from '#lib/metadata/series-file-sync.js';
+  import { normalizeSeriesKey } from '#lib/metadata/series-key.js';
+  import { openSeries } from '#lib/metadata/series-open.js';
+  import { resolveDisplayTitle } from '#lib/metadata/display-title.js';
+  import { isVolumeInstalled, needsDownload } from '#lib/catalog/volume-state.js';
+  import { sortVolumes } from '#lib/catalog/sort-volumes.js';
+  import { isVolumeComplete } from '#lib/util/volume-helpers.js';
+  import { isIndexedPlaceholder } from '#lib/catalog/placeholders.js';
+  import { deleteSeriesFromCloudByTitle, promptSeriesRemoval } from '#lib/catalog/series-delete.js';
+  import { getCloudFileId } from '#lib/util/cloud-fields.js';
+  import type { VolumeMetadata } from '#lib/types/index.js';
+  import { downloadQueue } from '#lib/util/download-queue.js';
 
   // Calculate manga stats locally to avoid circular dependency
   let mangaStats = $derived.by(() => {
@@ -196,7 +196,7 @@
     if (!browser || !title) return;
     let stop: (() => void) | null = null;
     let gone = false;
-    void import('$lib/catalog/server-ocr-queue')
+    void import('#lib/catalog/server-ocr-queue.js')
       .then((m) => m.followSeriesQueue(title))
       .then((s) => {
         if (gone) s();
@@ -529,7 +529,7 @@
     }
 
     try {
-      const { queueSeriesVolumes } = await import('$lib/util/download-queue');
+      const { queueSeriesVolumes } = await import('#lib/util/download-queue.js');
       const before = get(downloadQueue).length;
       queueSeriesVolumes(toDownload);
       if (get(downloadQueue).length === before) {
