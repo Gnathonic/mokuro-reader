@@ -445,7 +445,7 @@ test('answers sync between devices; the latest answer wins', async ({ browser })
   // The laptop left a page open 10 minutes (no pace: a 5-minute cap) and
   // answered "count none".
   const target = await laptop.evaluate(async (VOL) => {
-    const { recordEvent, recordResolve } = await import('/src/lib/reading-history/record.ts');
+    const { recordEvent } = await import('/src/lib/reading-history/record.ts');
     const { updateProgress } = await import('/src/lib/settings/volume-data.ts');
     const event = await recordEvent({
       kind: 'page',
@@ -461,7 +461,7 @@ test('answers sync between devices; the latest answer wins', async ({ browser })
     });
     updateProgress(VOL, 1, 300);
     const target: [string, number] = [event!.device, event!.seq];
-    await recordResolve(VOL, target, 'none');
+    await recordEvent({ kind: 'resolve', volume: VOL, target, count: 'none' });
     return target;
   }, VOL);
   await sync(laptop);
@@ -475,8 +475,8 @@ test('answers sync between devices; the latest answer wins', async ({ browser })
   // Changed later on the laptop: every device takes the newer answer.
   await laptop.evaluate(
     async ({ VOL, target }) => {
-      const { recordResolve } = await import('/src/lib/reading-history/record.ts');
-      await recordResolve(VOL, target, 'full');
+      const { recordEvent } = await import('/src/lib/reading-history/record.ts');
+      await recordEvent({ kind: 'resolve', volume: VOL, target, count: 'full' });
     },
     { VOL, target }
   );
