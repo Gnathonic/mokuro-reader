@@ -1,11 +1,11 @@
 <script lang="ts">
   /** The edit-mode toolbar, fixed to the viewport (never scrolls with the
    * page), dockable to any edge so it never sits over what is being edited. */
-  import type { EditSession } from '$lib/reader/edit/edit-session.svelte';
-  import { editCommandState } from '$lib/reader/edit/edit-commands';
-  import { nextLayerId, prevLayerId, type LayerSummary } from '$lib/reader/edit/layer-list';
-  import type { EditToolbarDock } from '$lib/settings/misc';
-  import { keyHints } from '$lib/keys/live';
+  import type { EditSession } from '#lib/reader/edit/edit-session.svelte.js';
+  import { editCommandState } from '#lib/reader/edit/edit-commands.js';
+  import { nextLayerId, prevLayerId, type LayerSummary } from '#lib/reader/edit/layer-list.js';
+  import type { EditToolbarDock } from '#lib/settings/misc.js';
+  import { keyHints } from '#lib/keys/live.js';
   import {
     ChevronDownOutline,
     ChevronLeftOutline,

@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const markVolumeAsComplete = vi.fn();
 const markVolumeAsUnread = vi.fn();
-vi.mock('$lib/settings/volume-data', () => ({ markVolumeAsComplete, markVolumeAsUnread }));
+vi.mock('#lib/settings/volume-data.js', () => ({ markVolumeAsComplete, markVolumeAsUnread }));
 
 const { toggleVolumeRead } = await import('./volume-read');
 

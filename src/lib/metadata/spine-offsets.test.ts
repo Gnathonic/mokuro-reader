@@ -21,7 +21,7 @@ import {
 } from './spine-offsets';
 import { createEmptySeriesMetadata, type SeriesMetadata } from './types';
 import { buildSeriesFile, type SeriesFile } from './series-file';
-import type { VolumeMetadata } from '$lib/types';
+import type { VolumeMetadata } from '#lib/types/index.js';
 
 /** Resolve the functional patch a scheduled write handed to the store. */
 function resolvePatch(callIndex: number, existing: SeriesMetadata) {

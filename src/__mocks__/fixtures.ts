@@ -2,9 +2,9 @@
  * Test fixtures and factory functions for creating mock data
  */
 
-import type { Page, Block, VolumeMetadata } from '$lib/types';
-import type { VolumeSpeedData } from '$lib/util/reading-speed-history';
-import type { ReadingSpeedResult } from '$lib/util/reading-speed';
+import type { Page, Block, VolumeMetadata } from '#lib/types/index.js';
+import type { VolumeSpeedData } from '#lib/util/reading-speed-history.js';
+import type { ReadingSpeedResult } from '#lib/util/reading-speed.js';
 
 // ============================================================================
 // Page Fixtures

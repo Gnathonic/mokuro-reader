@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
-import { createEmptySeriesMetadata, type SeriesMetadata } from '$lib/metadata/types';
-import type { VolumeMetadata } from '$lib/types';
+import { createEmptySeriesMetadata, type SeriesMetadata } from '#lib/metadata/types.js';
+import type { VolumeMetadata } from '#lib/types/index.js';
 
 // vi.hoisted: `vi.mock` factories are hoisted above every other top-level
 // statement (including this file's own imports), so any state a factory
@@ -55,13 +55,13 @@ const h = vi.hoisted(() => {
   };
 });
 
-vi.mock('$app/environment', () => ({ browser: true }));
+vi.mock('$app/env', () => ({ browser: true }));
 // Only reached through the real `computeLocalPassState`'s module graph — the
 // panel never touches IndexedDB itself.
-vi.mock('$lib/catalog/db', () => ({
+vi.mock('#lib/catalog/db.js', () => ({
   db: { volumes: { toArray: async () => [], get: async () => undefined } }
 }));
-vi.mock('$lib/metadata/store', () => ({
+vi.mock('#lib/metadata/store.js', () => ({
   seriesMetadataMap: h.seriesMetadataMap,
   // Mirrors the real store: a functional patch is resolved against the record as
   // it is stored right now (the real one does that inside its `rw` transaction).
@@ -83,7 +83,7 @@ vi.mock('$lib/metadata/store', () => ({
     }
   )
 }));
-vi.mock('$lib/settings/volume-data', () => ({
+vi.mock('#lib/settings/volume-data.js', () => ({
   volumes: h.volumesData,
   registerCompletionListener: vi.fn(() => () => {})
 }));
@@ -92,7 +92,7 @@ vi.mock('$lib/settings/volume-data', () => ({
 // cleared flags dropped. The real store's `nextTimestamp` (which steps past a
 // stored stamp sitting in the future) is NOT modelled — nothing here reads the
 // stamp — so this double simply stamps `now`.
-vi.mock('$lib/settings/series-data', () => ({
+vi.mock('#lib/settings/series-data.js', () => ({
   seriesReadingState: h.seriesReadingState,
   readingStateFor: (states: Record<string, any>, key: string) =>
     states[key] ?? { read_count: 0, lastUpdated: new Date(0).toISOString() },
@@ -115,12 +115,12 @@ vi.mock('$lib/settings/series-data', () => ({
     }
   )
 }));
-vi.mock('$lib/settings/settings', () => ({
+vi.mock('#lib/settings/settings.js', () => ({
   catalogSettings: h.catalogSettings,
   settings: h.settings,
   preferredTitleLanguage: h.preferredTitleLanguage
 }));
-vi.mock('$lib/metadata/anilist-auth', () => ({
+vi.mock('#lib/metadata/anilist-auth.js', () => ({
   getAniListClientId: () => h.auth.clientId,
   getAniListToken: () => h.auth.token,
   anilistUser: h.anilistUser,
@@ -129,26 +129,26 @@ vi.mock('$lib/metadata/anilist-auth', () => ({
 }));
 // The real pass-state maths is the whole point of "Read N times" matching what
 // the tracker pushes, so it is imported for real; only the network call is a spy.
-vi.mock('$lib/metadata/progress-tracker', async () => {
-  const actual = await vi.importActual<typeof import('$lib/metadata/progress-tracker')>(
-    '$lib/metadata/progress-tracker'
+vi.mock('#lib/metadata/progress-tracker.js', async () => {
+  const actual = await vi.importActual<typeof import('#lib/metadata/progress-tracker.js')>(
+    '#lib/metadata/progress-tracker.js'
   );
   return {
     computeLocalPassState: actual.computeLocalPassState,
     onReadCountChanged: vi.fn(async () => 'pushed')
   };
 });
-vi.mock('$lib/metadata/reread', () => ({ restartSeries: vi.fn(async () => {}) }));
-vi.mock('$lib/util/modals', () => ({ promptConfirmation: vi.fn() }));
-vi.mock('$lib/util/snackbar', () => ({ showSnackbar: vi.fn() }));
-vi.mock('$lib/util/sync', () => ({ providerManager: { status: h.providerStatus } }));
+vi.mock('#lib/metadata/reread.js', () => ({ restartSeries: vi.fn(async () => {}) }));
+vi.mock('#lib/util/modals.js', () => ({ promptConfirmation: vi.fn() }));
+vi.mock('#lib/util/snackbar.js', () => ({ showSnackbar: vi.fn() }));
+vi.mock('#lib/util/sync/index.js', () => ({ providerManager: { status: h.providerStatus } }));
 
-import { updateSeriesMetadata } from '$lib/metadata/store';
-import { updateSeriesReadingState } from '$lib/settings/series-data';
-import { onReadCountChanged } from '$lib/metadata/progress-tracker';
-import { restartSeries } from '$lib/metadata/reread';
-import { promptConfirmation } from '$lib/util/modals';
-import { showSnackbar } from '$lib/util/snackbar';
+import { updateSeriesMetadata } from '#lib/metadata/store.js';
+import { updateSeriesReadingState } from '#lib/settings/series-data.js';
+import { onReadCountChanged } from '#lib/metadata/progress-tracker.js';
+import { restartSeries } from '#lib/metadata/reread.js';
+import { promptConfirmation } from '#lib/util/modals.js';
+import { showSnackbar } from '#lib/util/snackbar.js';
 import SeriesTrackingPanel from '../SeriesTrackingPanel.svelte';
 
 function volume(uuid: string, title: string, isPlaceholder = false): VolumeMetadata {

@@ -10,11 +10,11 @@
  * imported lazily on purpose: this module is pulled in by every catalog card, and none of
  * that graph should load until someone actually presses Delete.
  */
-import { promptConfirmation } from '$lib/util/modals';
-import { showSnackbar } from '$lib/util/snackbar';
-import { normalizeSeriesKey } from '$lib/metadata/series-key';
+import { promptConfirmation } from '#lib/util/modals.js';
+import { showSnackbar } from '#lib/util/snackbar.js';
+import { normalizeSeriesKey } from '#lib/metadata/series-key.js';
 import { isMetadataOnly } from './volume-state';
-import type { VolumeMetadata } from '$lib/types';
+import type { VolumeMetadata } from '#lib/types/index.js';
 
 /**
  * One prompt at a time. The cloud context is gathered across an `await`, so two Delete
@@ -83,13 +83,13 @@ export function cloudFolderOfSeries(
 
 async function readCloudContext(rows: VolumeMetadata[]): Promise<CloudContext> {
   const [{ unifiedCloudManager }, { providerManager }, { get }] = await Promise.all([
-    import('$lib/util/sync/unified-cloud-manager'),
-    import('$lib/util/sync/provider-manager'),
+    import('#lib/util/sync/unified-cloud-manager.js'),
+    import('#lib/util/sync/provider-manager.js'),
     import('svelte/store')
   ]);
 
   const status = get(providerManager.status);
-  const { canDeleteSeriesOnServer } = await import('$lib/util/sync/metadata-permissions');
+  const { canDeleteSeriesOnServer } = await import('#lib/util/sync/metadata-permissions.js');
   // Backed up = one of these volumes is listed, in a folder that is this series' own:
   // the delete the box offers (`cloudFolderOfSeries`) resolves the folder the same way.
   const hasCloudBackups =
@@ -126,14 +126,14 @@ export async function deleteSeriesFromCloudByTitle(
 
   // Server rules, checked up front so every entry point (dialog checkbox, series
   // page menu) gets the same block instead of a pile of per-file 403s.
-  const { canDeleteSeriesOnServer } = await import('$lib/util/sync/metadata-permissions');
+  const { canDeleteSeriesOnServer } = await import('#lib/util/sync/metadata-permissions.js');
   const permitted = canDeleteSeriesOnServer(seriesTitle);
   if (!permitted.allowed) {
     showSnackbar(permitted.reason ?? "This account can't delete this series on this server");
     return;
   }
 
-  const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+  const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
   const providerDisplayName = unifiedCloudManager.getActiveProvider()?.name || 'cloud';
 
   // Nothing backed up means nothing to delete. The folder as the CLOUD spells it,
@@ -202,7 +202,7 @@ async function raisePrompt(
     if (!seriesUuid) return;
 
     const [{ removeVolumeFiles, deleteVolumeCompletely }, { deleteVolume: deleteVolumeStats }] =
-      await Promise.all([import('$lib/import'), import('$lib/settings')]);
+      await Promise.all([import('#lib/import/index.js'), import('#lib/settings/index.js')]);
 
     await Promise.all(
       rows.map(async (vol) => {

@@ -3,12 +3,12 @@ import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { get } from 'svelte/store';
 
-vi.mock('$app/environment', () => ({ browser: true }));
+vi.mock('$app/env', () => ({ browser: true }));
 vi.mock('../Settings.svelte', async () => await import('./SettingsStub.svelte'));
 
 import DrawerPair from './DrawerPair.svelte';
-import { openSettings, settingsOpen } from '$lib/settings/settings-open';
-import { currentView } from '$lib/util/hash-router';
+import { openSettings, settingsOpen } from '#lib/settings/settings-open.js';
+import { currentView } from '#lib/util/hash-router.js';
 
 const READER = { type: 'reader', seriesId: 's', volumeId: 'v' } as const;
 

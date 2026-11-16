@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readable } from 'svelte/store';
-import type { VolumeMetadata } from '$lib/types';
+import type { VolumeMetadata } from '#lib/types/index.js';
 import type { CloudThumbnailResult } from './cloud-thumbnails';
 
 /**
@@ -14,7 +14,7 @@ import type { CloudThumbnailResult } from './cloud-thumbnails';
  * own `sleep()` between attempts.
  */
 
-vi.mock('$lib/util/sync/provider-manager', () => ({
+vi.mock('#lib/util/sync/provider-manager.js', () => ({
   providerManager: {
     get status() {
       return readable({
@@ -26,11 +26,11 @@ vi.mock('$lib/util/sync/provider-manager', () => ({
   }
 }));
 
-vi.mock('$lib/catalog/cover-install', () => ({
+vi.mock('#lib/catalog/cover-install.js', () => ({
   installCoversForSeries: vi.fn(async () => 0)
 }));
 
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: {
     getActiveProvider: vi.fn(() => null),
     resolveCloudFolderTitle: vi.fn((t: string) => t),
@@ -38,14 +38,14 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
   }
 }));
 
-vi.mock('$lib/metadata/series-file-sync', () => ({
+vi.mock('#lib/metadata/series-file-sync.js', () => ({
   scheduleSeriesFileWrite: vi.fn()
 }));
 
 const { fetchCloudThumbnailMock } = vi.hoisted(() => ({
   fetchCloudThumbnailMock: vi.fn(async (_v: unknown) => null as CloudThumbnailResult | null)
 }));
-vi.mock('$lib/catalog/cloud-thumbnails', () => ({
+vi.mock('#lib/catalog/cloud-thumbnails.js', () => ({
   fetchCloudThumbnail: (...a: Parameters<typeof fetchCloudThumbnailMock>) =>
     fetchCloudThumbnailMock(...a),
   getCachedCloudThumbnail: vi.fn(() => undefined)
@@ -54,7 +54,7 @@ vi.mock('$lib/catalog/cloud-thumbnails', () => ({
 const { volumeRows } = vi.hoisted(() => ({
   volumeRows: [] as VolumeMetadata[]
 }));
-vi.mock('$lib/catalog/db', () => ({
+vi.mock('#lib/catalog/db.js', () => ({
   db: {
     volumes: {
       get: async (uuid: string) => volumeRows.find((v) => v.volume_uuid === uuid),
@@ -98,11 +98,11 @@ const readingHistory = vi.hoisted(() => {
     }
   };
 });
-vi.mock('$lib/settings/volume-data', () => ({
+vi.mock('#lib/settings/volume-data.js', () => ({
   volumes: readingHistory.store
 }));
 
-import { db } from '$lib/catalog/db';
+import { db } from '#lib/catalog/db.js';
 import { _resetCoverPersistForTests } from './cover-persist';
 import {
   _resetCoverServiceForTests,

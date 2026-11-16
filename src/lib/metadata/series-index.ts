@@ -1,4 +1,4 @@
-import { db } from '$lib/catalog/db';
+import { db } from '#lib/catalog/db.js';
 import { type Readable } from 'svelte/store';
 import { keyedTableMap, moveKeyedRecord } from './keyed-table';
 import type { SeriesFile } from './series-file';

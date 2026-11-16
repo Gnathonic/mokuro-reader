@@ -1,6 +1,6 @@
 <script lang="ts">
-  import type { ActionId } from '$lib/keys/actions';
-  import { keyHints } from '$lib/keys/live';
+  import type { ActionId } from '#lib/keys/actions.js';
+  import { keyHints } from '#lib/keys/live.js';
 
   // The live binding's label — never a hard-coded key (#55). An unbound
   // action shows no hint at all.

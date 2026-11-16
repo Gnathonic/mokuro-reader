@@ -8,19 +8,19 @@ const { toReader, showSnackbar, queueVolume } = vi.hoisted(() => ({
   showSnackbar: vi.fn(),
   queueVolume: vi.fn()
 }));
-vi.mock('$lib/util/hash-router', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('$lib/util/hash-router')>();
+vi.mock('#lib/util/hash-router.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('#lib/util/hash-router.js')>();
   return { ...actual, nav: { ...actual.nav, toReader } };
 });
-vi.mock('$lib/util/snackbar', () => ({ showSnackbar }));
-vi.mock('$lib/util/download-queue', () => ({ downloadQueue: { queueVolume } }));
-vi.mock('$lib/catalog/cover-service', () => ({
+vi.mock('#lib/util/snackbar.js', () => ({ showSnackbar }));
+vi.mock('#lib/util/download-queue.js', () => ({ downloadQueue: { queueVolume } }));
+vi.mock('#lib/catalog/cover-service.js', () => ({
   requestCover: vi.fn(async () => 'none' as const),
   isCoverFetchTarget: vi.fn(() => false)
 }));
 
 import VolumeCard from '../VolumeCard.svelte';
-import type { VolumeMetadata } from '$lib/types';
+import type { VolumeMetadata } from '#lib/types/index.js';
 
 function volume(overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
   return {

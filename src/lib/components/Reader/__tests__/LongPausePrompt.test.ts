@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import { AWAY_AFTER_MS, livePause } from '$lib/reading-history/pause-watch';
+import { AWAY_AFTER_MS, livePause } from '#lib/reading-history/pause-watch.js';
 import LongPausePrompt, { REFRESH_MS } from '../LongPausePrompt.svelte';
 
 const MIN = 60_000;

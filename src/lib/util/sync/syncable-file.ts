@@ -22,13 +22,13 @@
  * keep ignoring them.
  */
 
-import { CATALOG_FILE_NAME, isCatalogFilePath } from '$lib/metadata/catalog-file';
-import { SERIES_FILE_NAME, isSeriesFilePath } from '$lib/metadata/series-file';
-import { GOALS_FILE_NAME } from '$lib/goals/goals-file';
-import { naturalSort } from '$lib/util/natural-sort';
-import { isHistoryFilePath } from '$lib/reading-history/paths';
-import { POSITIONS_FILE_NAME } from '$lib/positions/positions-file';
-import { isReservedLayerId } from '$lib/reader/edit/layer-names';
+import { CATALOG_FILE_NAME, isCatalogFilePath } from '#lib/metadata/catalog-file.js';
+import { SERIES_FILE_NAME, isSeriesFilePath } from '#lib/metadata/series-file.js';
+import { GOALS_FILE_NAME } from '#lib/goals/goals-file.js';
+import { naturalSort } from '#lib/util/natural-sort.js';
+import { isHistoryFilePath } from '#lib/reading-history/paths.js';
+import { POSITIONS_FILE_NAME } from '#lib/positions/positions-file.js';
+import { isReservedLayerId } from '#lib/reader/edit/layer-names.js';
 
 const ROOT_CONFIG_FILENAMES = new Set([
   'volume-data.json',
@@ -105,9 +105,30 @@ export function dedupKeepsEveryCopy(basename: string): boolean {
 export const QUEUE_FILE_NAME = '.mokuro-queue.json';
 export const BUNKO_MARKER_NAME = '.mokuro-bunko.json';
 
-/** Is this basename one of Bunko's control files? */
+/** Is this basename one of Bunko's ROOT control files? */
 export function isBunkoControlFile(basename: string): boolean {
   return basename === QUEUE_FILE_NAME || basename === BUNKO_MARKER_NAME;
+}
+
+/**
+ * Bunko's per-series OCR queue file (queue file v2): `<Series>/` + this name,
+ * one per series folder that owes OCR. A control file like the two above —
+ * read by name (`readControlFile(name, { folder })`), never listed, so it stays
+ * OUT of {@link isSyncableFile} — but it lives in a SERIES folder, so it is not
+ * an {@link isBunkoControlFile} (that one names the root files only). The name
+ * folds to neither root name, so a released reader's exact-name hooks stay
+ * silent for it.
+ */
+export const SERIES_QUEUE_FILE_NAME = '.mokuro-series-queue.json';
+
+/**
+ * A folder name as two spellings of one folder compare: NFC, then lowercase.
+ * The library is case-insensitive and case-preserving on every host, so
+ * `Example Saga/` and `example saga/` are one series folder, and a name that
+ * went through a decomposing filesystem (NFD) is still the same name.
+ */
+export function foldFolderName(name: string): string {
+  return name.normalize('NFC').toLowerCase();
 }
 
 /**

@@ -5,7 +5,7 @@
  * callers (the generated-setting handler, later the commands) never ask
  * which one applies.
  */
-import { showSnackbar } from '$lib/util/snackbar';
+import { showSnackbar } from '#lib/util/snackbar.js';
 
 /** One button on a notification: "Set to manual". */
 export interface AnnounceAction {

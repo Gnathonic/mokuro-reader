@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Page } from '$lib/types';
+import type { Page } from '#lib/types/index.js';
 import { editCommandState, type EditSelectionState } from './edit-commands';
 
 function page(): Page {

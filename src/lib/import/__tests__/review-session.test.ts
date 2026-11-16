@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
 
-vi.mock('$lib/util/progress-tracker', () => ({
+vi.mock('#lib/util/progress-tracker.js', () => ({
   progressTrackerStore: { addProcess: vi.fn(), updateProcess: vi.fn(), removeProcess: vi.fn() }
 }));
-vi.mock('$lib/util/snackbar', () => ({ showSnackbar: vi.fn() }));
-vi.mock('$lib/util/modals', () => ({ promptMissingFiles: vi.fn() }));
+vi.mock('#lib/util/snackbar.js', () => ({ showSnackbar: vi.fn() }));
+vi.mock('#lib/util/modals.js', () => ({ promptMissingFiles: vi.fn() }));
 
 import {
   appendReviewGroups,

@@ -8,7 +8,7 @@
  * resolves an id against a module-level table: a compiled keymap carries the
  * list it was built from (`Keymap.actions`).
  */
-import { SETTING_DEFS, type SettingDef } from '$lib/settings/setting-defs';
+import { SETTING_DEFS, type SettingDef } from '#lib/settings/setting-defs.js';
 import { KEY_ACTIONS, type ActionId, type KeyActionDef } from './actions';
 import { actionsForSetting } from './generate';
 

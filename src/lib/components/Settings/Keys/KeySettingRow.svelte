@@ -2,8 +2,8 @@
   import type { Snippet } from 'svelte';
   import { ChevronDownOutline, ChevronRightOutline } from 'flowbite-svelte-icons';
   import { ExclamationCircleSolid } from 'flowbite-svelte-icons';
-  import type { IconName } from '$lib/keys/icon-names';
-  import { actionIcon } from '$lib/keys/icons';
+  import type { IconName } from '#lib/keys/icon-names.js';
+  import { actionIcon } from '#lib/keys/icons.js';
 
   /**
    * One LIST or SLIDER setting in the shortcuts section (#55, spec 17.9): a

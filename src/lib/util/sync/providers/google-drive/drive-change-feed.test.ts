@@ -673,6 +673,49 @@ describe('driveFilesCache change feed (#288)', () => {
     expect(folderDeduplicator.deduplicateAll).not.toHaveBeenCalled();
   });
 
+  describe('one folder only (queue file v2: the scoped pull)', () => {
+    it('says whether the feed would answer: after a listing that took a position, not after a clear or a day', () => {
+      expect(driveFilesCache.changeFeedUsable()).toBe(true);
+      const now = Date.now();
+      vi.spyOn(Date, 'now').mockReturnValue(now + CHANGE_FEED_MAX_AGE_MS + 1);
+      expect(driveFilesCache.changeFeedUsable()).toBe(false);
+      vi.restoreAllMocks();
+      driveFilesCache.clear();
+      expect(driveFilesCache.changeFeedUsable()).toBe(false);
+    });
+
+    it('not when the listing took no position', async () => {
+      driveFilesCache.clear();
+      api.getStartPageToken.mockRejectedValueOnce(new Error('offline'));
+      await driveFilesCache.fetch();
+      expect(driveFilesCache.changeFeedUsable()).toBe(false);
+    });
+
+    it("replaces one folder's entries from a scoped listing, no whole-account walk", async () => {
+      const mokuro: DriveFileMetadata = {
+        provider: 'google-drive',
+        fileId: 'v1-hayai',
+        name: 'Volume 1.hayai.mokuro',
+        path: 'Series A/Volume 1.hayai.mokuro',
+        modifiedTime: T1,
+        size: 12,
+        parentId: 'series-a'
+      };
+      const kept = driveFilesCache.get('Series A/Volume 1.cbz')!;
+      await expect(
+        driveFilesCache.replaceFolderEntries('Series A', async () => [kept, mokuro])
+      ).resolves.toBe(true);
+      expect(paths()).toEqual([
+        'Series A/Volume 1.cbz',
+        'Series A/Volume 1.hayai.mokuro',
+        'history/dev-a/2026-10.events',
+        'volume-data.json'
+      ]);
+      expect(api.listFiles).not.toHaveBeenCalled();
+      expect(api.listChanges).not.toHaveBeenCalled();
+    });
+  });
+
   describe('falls back to the full listing', () => {
     it('when Drive refuses the position', async () => {
       api.listChanges.mockRejectedValueOnce(

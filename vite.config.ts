@@ -42,13 +42,8 @@ export default defineConfig({
     sveltekit({
       preprocess: vitePreprocess(),
 
-      // `$lib`, which SvelteKit 3 no longer provides by default. The `alias`
-      // option is deprecated (SvelteKit prints a warning for it on every build
-      // and dev start) but still generates the Vite alias and the tsconfig
-      // `paths`. Moving to `#lib` subpath imports
-      // touches every import in the app, so it waits until open branches have
-      // landed: https://github.com/Gnathonic/mokuro-reader/issues/359
-      alias: { $lib: 'src/lib' },
+      // No `alias`: `src/lib` is imported as `#lib/...`, a subpath import
+      // declared in package.json `imports` (SvelteKit 3 provides no `$lib`).
 
       // adapter-vercel, pinned in the lockfile. adapter-auto installed it at
       // build time OUTSIDE the lockfile, unpinned, on every deploy. The runtime

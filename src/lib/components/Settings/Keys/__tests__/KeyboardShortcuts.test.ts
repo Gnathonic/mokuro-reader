@@ -3,24 +3,24 @@ import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { get } from 'svelte/store';
 
-vi.mock('$lib/util', () => ({
+vi.mock('#lib/util/index.js', () => ({
   promptConfirmation: (_message: string, onConfirm?: () => void) => onConfirm?.(),
   showSnackbar: vi.fn()
 }));
 
 import KeyboardShortcuts, { SEARCH_DELAY_MS } from '../KeyboardShortcuts.svelte';
-import { GROUP_LABELS, GROUP_ORDER } from '$lib/keys/actions';
-import { chordLabel } from '$lib/keys/live';
-import { menuEligible } from '$lib/keys/quick-menu';
-import { allActions } from '$lib/keys/registry';
-import { MATCH_LIMIT } from '$lib/keys/targets';
+import { GROUP_LABELS, GROUP_ORDER } from '#lib/keys/actions.js';
+import { chordLabel } from '#lib/keys/live.js';
+import { menuEligible } from '#lib/keys/quick-menu.js';
+import { allActions } from '#lib/keys/registry.js';
+import { MATCH_LIMIT } from '#lib/keys/targets.js';
 import {
   changeProfile,
   createProfile,
   profiles,
   settings,
   updateSetting
-} from '$lib/settings/settings';
+} from '#lib/settings/settings.js';
 
 beforeEach(() => {
   changeProfile('Desktop');

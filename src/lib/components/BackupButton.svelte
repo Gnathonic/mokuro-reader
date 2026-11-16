@@ -1,16 +1,16 @@
 <script lang="ts">
   import { Button, Spinner } from 'flowbite-svelte';
   import { CloudArrowUpOutline, TrashBinSolid } from 'flowbite-svelte-icons';
-  import { promptConfirmation, showSnackbar } from '$lib/util';
-  import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
-  import { providerManager } from '$lib/util/sync';
-  import type { VolumeMetadata } from '$lib/types';
-  import type { CloudVolumeWithProvider } from '$lib/util/sync/unified-cloud-manager';
-  import { backupQueue, isVolumeInBackupQueue } from '$lib/util/backup-queue';
-  import { progressTrackerStore } from '$lib/util/progress-tracker';
-  import type { Process } from '$lib/util/progress-tracker';
-  import { uploadFailures } from '$lib/util/upload-failures';
-  import { canDeleteSeriesOnServer } from '$lib/util/sync/metadata-permissions';
+  import { promptConfirmation, showSnackbar } from '#lib/util/index.js';
+  import { unifiedCloudManager } from '#lib/util/sync/unified-cloud-manager.js';
+  import { providerManager } from '#lib/util/sync/index.js';
+  import type { VolumeMetadata } from '#lib/types/index.js';
+  import type { CloudVolumeWithProvider } from '#lib/util/sync/unified-cloud-manager.js';
+  import { backupQueue, isVolumeInBackupQueue } from '#lib/util/backup-queue.js';
+  import { progressTrackerStore } from '#lib/util/progress-tracker.js';
+  import type { Process } from '#lib/util/progress-tracker.js';
+  import { uploadFailures } from '#lib/util/upload-failures.js';
+  import { canDeleteSeriesOnServer } from '#lib/util/sync/metadata-permissions.js';
 
   interface Props {
     volume: VolumeMetadata;

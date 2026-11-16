@@ -20,7 +20,7 @@ import {
   type SettingCtx,
   type SettingDef,
   type SettingOptions
-} from '$lib/settings/setting-defs';
+} from '#lib/settings/setting-defs.js';
 
 export const SETTING_ID_PREFIX = 'set.';
 

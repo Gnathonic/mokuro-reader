@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest';
-import type { VolumeMetadata } from '$lib/types';
+import type { VolumeMetadata } from '#lib/types/index.js';
 
 /**
  * The cover download slot queue (`cloud-thumbnails.ts`): LIFO with a
@@ -33,7 +33,7 @@ const cloud = vi.hoisted(() => {
   return { calls, resolvers, downloadFile };
 });
 
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: {
     getActiveProvider: () => ({ type: 'webdav' }),
     downloadFile: cloud.downloadFile

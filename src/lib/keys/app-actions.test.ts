@@ -11,26 +11,26 @@ const sync = vi.hoisted(() => ({ syncProgress: vi.fn(async () => ({})) }));
 const announce = vi.hoisted(() => vi.fn());
 const snackbar = vi.hoisted(() => vi.fn());
 
-vi.mock('$lib/util/hash-router', async () => {
+vi.mock('#lib/util/hash-router.js', async () => {
   const { writable } = await import('svelte/store');
   return { nav, currentView: writable({ type: 'catalog' }) };
 });
-vi.mock('$lib/util/snackbar', () => ({ showSnackbar: snackbar }));
+vi.mock('#lib/util/snackbar.js', () => ({ showSnackbar: snackbar }));
 vi.mock('./announce', () => ({ announce }));
-vi.mock('$lib/util/sync/unified-provider-state', async () => {
+vi.mock('#lib/util/sync/unified-provider-state.js', async () => {
   const { writable } = await import('svelte/store');
   return { unifiedProviderState: writable({ hasActiveProvider: false, isReadOnly: false }) };
 });
-vi.mock('$lib/util/sync/unified-cloud-manager', async () => {
+vi.mock('#lib/util/sync/unified-cloud-manager.js', async () => {
   const { writable } = await import('svelte/store');
   return {
     unifiedCloudManager: { isSyncing: writable(false), syncProgress: sync.syncProgress }
   };
 });
 
-import { settingsOpen, uploadModalOpen } from '$lib/settings/settings-open';
-import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
-import { unifiedProviderState } from '$lib/util/sync/unified-provider-state';
+import { settingsOpen, uploadModalOpen } from '#lib/settings/settings-open.js';
+import { unifiedCloudManager } from '#lib/util/sync/unified-cloud-manager.js';
+import { unifiedProviderState } from '#lib/util/sync/unified-provider-state.js';
 import { KEY_ACTIONS } from './actions';
 import { appKeyHandlers, canSyncProgress, manualSyncGate, syncProgressNow } from './app-actions';
 import type { KeyHandler } from './dispatch';

@@ -1,10 +1,10 @@
 <script lang="ts">
   import { tick } from 'svelte';
   import { ExclamationCircleSolid } from 'flowbite-svelte-icons';
-  import { SCOPES, type ActionId, type KeyActionDef, type KeyScope } from '$lib/keys/actions';
-  import { assessCapture } from '$lib/keys/capture';
-  import { actionIcon } from '$lib/keys/icons';
-  import { warningsFor } from '$lib/keys/reserved';
+  import { SCOPES, type ActionId, type KeyActionDef, type KeyScope } from '#lib/keys/actions.js';
+  import { assessCapture } from '#lib/keys/capture.js';
+  import { actionIcon } from '#lib/keys/icons.js';
+  import { warningsFor } from '#lib/keys/reserved.js';
   import {
     MAX_CHORDS_PER_ACTION,
     addChord,
@@ -14,7 +14,7 @@
     replaceChord,
     resetAction,
     type KeyBindings
-  } from '$lib/keys/keymap';
+  } from '#lib/keys/keymap.js';
   import KeyChip from './KeyChip.svelte';
   import KeyCapture from './KeyCapture.svelte';
 

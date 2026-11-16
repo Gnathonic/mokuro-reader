@@ -1,6 +1,6 @@
 <script lang="ts">
-  import SettingsDrawerHost from '$lib/components/Settings/SettingsDrawerHost.svelte';
-  import { openSettings } from '$lib/settings/settings-open';
+  import SettingsDrawerHost from '#lib/components/Settings/SettingsDrawerHost.svelte';
+  import { openSettings } from '#lib/settings/settings-open.js';
   import { UserSettingsSolid } from 'flowbite-svelte-icons';
 
   interface Props {

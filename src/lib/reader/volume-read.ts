@@ -12,8 +12,8 @@
  * After #224 merges, the mark goes through its sheet: route this one function
  * there, as the row's handler is.
  */
-import { markVolumeAsComplete, markVolumeAsUnread } from '$lib/settings/volume-data';
-import { isVolumeComplete } from '$lib/util/volume-helpers';
+import { markVolumeAsComplete, markVolumeAsUnread } from '#lib/settings/volume-data.js';
+import { isVolumeComplete } from '#lib/util/volume-helpers.js';
 
 export type VolumeReadChange = 'read' | 'unread';
 

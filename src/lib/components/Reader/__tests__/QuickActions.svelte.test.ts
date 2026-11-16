@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { flushSync } from 'svelte';
 
-vi.mock('$lib/catalog/db', () => ({ db: {} }));
+vi.mock('#lib/catalog/db.js', () => ({ db: {} }));
 
 import QuickActions from '../QuickActions.svelte';
 import {
@@ -10,8 +10,8 @@ import {
   quickMenuItems,
   type QuickMenuSelection,
   type QuickMenuState
-} from '$lib/keys/quick-menu';
-import { allActions } from '$lib/keys/registry';
+} from '#lib/keys/quick-menu.js';
+import { allActions } from '#lib/keys/registry.js';
 
 afterEach(cleanup);
 

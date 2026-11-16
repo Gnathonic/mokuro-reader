@@ -127,6 +127,34 @@ describe('PagedCamera — panning', () => {
     expect(camera.translate.y).toBeCloseTo(900 - 1800, 1); // clamped end
   });
 
+  it('verticalExtent reports where a running pan will come to rest (#283)', () => {
+    const { camera } = makeCamera();
+    camera.applyBase(tall, baseTransform('zoomFitToScreen', tall, viewport, true));
+    camera.setUserZoom(2); // 1260x1800 on a 900-high viewport
+    expect(camera.verticalExtent()).toEqual({ start: 0, end: 1800 });
+    camera.panBy(0, -400);
+    // Mid-glide the target is already the answer — a held key chains from it.
+    expect(camera.verticalExtent()).toEqual({ start: -400, end: 1400 });
+    pump();
+    expect(camera.translate.y).toBeCloseTo(-400, 1);
+  });
+
+  it('placeAtEnd shows the bottom edge of a tall page, and leaves a fitting one centered', () => {
+    const { camera } = makeCamera();
+    camera.applyBase(tall, baseTransform('zoomFitToWidth', tall, viewport, true));
+    // fit-to-width: 1600x2285.7 — overflows the 900px viewport
+    camera.placeAtEnd();
+    const scaledHeight = 1000 * (1600 / 700);
+    expect(camera.translate.y).toBeCloseTo(900 - scaledHeight, 0);
+    expect(camera.verticalExtent().end).toBeCloseTo(900, 0);
+
+    const fit = makeCamera().camera;
+    fit.applyBase(tall, baseTransform('zoomFitToScreen', tall, viewport, true));
+    const before = fit.translate.y;
+    fit.placeAtEnd();
+    expect(fit.translate.y).toBe(before);
+  });
+
   it('rounds the settled translate to device pixels (compositor seam, #65)', () => {
     const { camera } = makeCamera({ dpr: 2 });
     camera.applyBase(tall, baseTransform('zoomFitToScreen', tall, viewport, true));

@@ -4,9 +4,9 @@
  * orchestrator, the key handlers and the store all ask the same question, and
  * none of them should have to pull in the database to do it.
  */
-import type { VolumeOcrLayerKind } from '$lib/types';
+import type { VolumeOcrLayerKind } from '#lib/types/index.js';
 import { EDIT_LAYER_ID, isCuratedLayerId, isServerKeepsakeLayerId } from './layer-names';
-import { CANNOT_PUBLISH_CURATED_MESSAGE } from '$lib/util/sync/account-capabilities';
+import { CANNOT_PUBLISH_CURATED_MESSAGE } from '#lib/util/sync/account-capabilities.js';
 
 const TRANSLATION_ID_RE = /^tr-[a-z0-9-]+$/;
 

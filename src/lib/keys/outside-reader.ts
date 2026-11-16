@@ -9,7 +9,7 @@
  * hovered, a dialog while it is the top one); `app` and the generated setting
  * actions are passed in by the caller.
  */
-import { anyModalOpen, shortcutAllowed } from '$lib/util/delete-shortcut';
+import { anyModalOpen, shortcutAllowed } from '#lib/util/delete-shortcut.js';
 import type { ActionId, KeyActionDef, KeyScope } from './actions';
 import { dispatchKey, type KeyEventLike, type KeyHandler } from './dispatch';
 import type { Keymap } from './keymap';

@@ -709,22 +709,35 @@ export interface SyncProvider {
   removeDirectoryIfEmpty?(relativePath: string): Promise<void>;
 
   /**
-   * Read a CONTROL file at the library root (`mokuro-reader/<name>`, see
-   * `isBunkoControlFile`) directly by name — these files are never listed.
-   * Returns EVERY node of that name (duplicates included), `'not-modified'`
-   * when `opts.ifNoneMatch` equals the current set's `etag`, or null when
-   * there is none. Downloads only nodes whose version changed since the last
-   * read. Throws a `ProviderError` on failure (auth expiry: `isAuthError`).
-   * Optional: a provider without it simply never sees a cloud-direct Bunko.
+   * Read a CONTROL file directly by name — these files are never listed.
+   * Without `opts.folder` the file sits at the library root
+   * (`mokuro-reader/<name>`, see `isBunkoControlFile`); with it, in that
+   * SERIES folder (`mokuro-reader/<folder>/<name>`, see
+   * `SERIES_QUEUE_FILE_NAME`), `folder` spelled as the listing spells it.
+   * Returns EVERY node of that name (duplicates included) — for a folder, in
+   * every folder whose name folds equal to `folder` (`foldFolderName`), under
+   * every library root — `'not-modified'` when `opts.ifNoneMatch` equals the
+   * current set's `etag`, or null when there is none (a `folder` that cannot
+   * be one series-folder name on that store, `isPathSafeFolderName`, is null
+   * too). Downloads
+   * only nodes whose version changed since the last read; versions are kept
+   * per `folder/name` (`controlReadKey`). Throws a `ProviderError` on failure
+   * (auth expiry: `isAuthError`). Optional: a provider without it simply
+   * never sees a cloud-direct Bunko.
    */
-  readControlFile?(name: string, opts?: { ifNoneMatch?: string }): Promise<ControlFileResult>;
+  readControlFile?(
+    name: string,
+    opts?: { ifNoneMatch?: string; folder?: string }
+  ): Promise<ControlFileResult>;
 
   /**
-   * Subscribe to changes of control files (called with the file's basename).
-   * MEGA: the live tree's change events; providers without a push feed omit
-   * it. Returns the unsubscribe.
+   * Subscribe to changes of control files, called with the file's basename
+   * and, for a series folder's file, that folder's name as the store spells
+   * it (undefined for a root file). Subscribers filter: a root-file reader
+   * ignores calls that carry a folder. MEGA: the live tree's change events;
+   * providers without a push feed omit it. Returns the unsubscribe.
    */
-  onControlFileChange?(listener: (name: string) => void): () => void;
+  onControlFileChange?(listener: (name: string, folder?: string) => void): () => void;
 
   /**
    * Get storage quota information from the provider

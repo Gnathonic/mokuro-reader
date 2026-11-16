@@ -1,15 +1,15 @@
 <script lang="ts">
-  import type { Page, VolumeMetadata } from '$lib/types';
-  import type { VolumeSettings } from '$lib/settings/volume-data';
-  import { settings, imageFilter, updateSetting } from '$lib/settings';
-  import { matchFilesToPages } from '$lib/reader/image-cache';
-  import { getCharCount } from '$lib/util/count-chars';
-  import { activityTracker } from '$lib/util/activity-tracker';
+  import type { Page, VolumeMetadata } from '#lib/types/index.js';
+  import type { VolumeSettings } from '#lib/settings/volume-data.js';
+  import { settings, imageFilter, updateSetting } from '#lib/settings/index.js';
+  import { matchFilesToPages } from '#lib/reader/image-cache.js';
+  import { getCharCount } from '#lib/util/count-chars.js';
+  import { activityTracker } from '#lib/util/activity-tracker.js';
   import MangaPage from './MangaPage.svelte';
-  import { ScrollAnimator } from '$lib/reader/scroll-animator';
-  import { ContinuousZoomController, type SettleReason } from '$lib/reader/zoom-controller';
-  import { applyVerticalZoomLayout } from '$lib/reader/zoom-layout';
-  import { closestPageToCenter, visiblePageRange } from '$lib/reader/page-detection';
+  import { ScrollAnimator } from '#lib/reader/scroll-animator.js';
+  import { ContinuousZoomController, type SettleReason } from '#lib/reader/zoom-controller.js';
+  import { applyVerticalZoomLayout } from '#lib/reader/zoom-layout.js';
+  import { closestPageToCenter, visiblePageRange } from '#lib/reader/page-detection.js';
   import {
     GAP_WHEEL_STEP_SIZE,
     MAX_PAGE_GAP,
@@ -20,14 +20,20 @@
     wheelIntentIsGapAdjust,
     wheelIntentIsZoom,
     wheelSwapsZoom
-  } from '$lib/reader/zoom-math';
-  import { gestureTargetRole } from '$lib/reader/input/gesture-target';
-  import type { ReaderActionId } from '$lib/keys/actions';
-  import { volumeEdgeNav } from '$lib/reader/page-nav';
-  import { PointerGestureTracker, zoomGestureConfig } from '$lib/reader/input/pointer-tracker';
-  import { TapDiscriminator } from '$lib/reader/input/tap';
-  import type { MotionGate } from '$lib/reader/input/motion-gate';
-  import { PageWindow, seedPageWindow } from '$lib/reader/page-window';
+  } from '#lib/reader/zoom-math.js';
+  import { gestureTargetRole } from '#lib/reader/input/gesture-target.js';
+  import type { ReaderActionId } from '#lib/keys/actions.js';
+  import { volumeEdgeNav } from '#lib/reader/page-nav.js';
+  import {
+    alignDelta,
+    pageKeyStep,
+    stripPageKeyTarget,
+    type AxisSpan
+  } from '#lib/reader/page-key-step.js';
+  import { PointerGestureTracker, zoomGestureConfig } from '#lib/reader/input/pointer-tracker.js';
+  import { TapDiscriminator } from '#lib/reader/input/tap.js';
+  import type { MotionGate } from '#lib/reader/input/motion-gate.js';
+  import { PageWindow, seedPageWindow } from '#lib/reader/page-window.js';
   import { onMount, onDestroy, tick } from 'svelte';
 
   interface Props {
@@ -340,6 +346,73 @@
   }
 
   /**
+   * Page Down / Space / Page Up with "scroll tall pages before turning" on
+   * (#283). Measured at the scroll's resting target, so a held key chains.
+   * The key acts on the first page with content hidden in its direction
+   * (`stripPageKeyTarget` — never the page nearest the centre, which beside a
+   * short page is the wrong one): while that page covers the view it scrolls
+   * a screenful (minus an overlap), never past a page start below the view
+   * top; otherwise the key turns onto it as before — and a backward turn onto
+   * a page taller than the screen shows its LAST screenful, so repeated
+   * Page Up walks back up through it.
+   */
+  function pageKey(direction: 'forward' | 'backward') {
+    if (!scroller || !scrollContainer) return;
+    motion.beforeNav?.();
+    const rest = scroller.restingTarget();
+    const maxY = Math.max(0, scrollContainer.scrollHeight - scrollContainer.clientHeight);
+    const restY = Math.min(maxY, Math.max(0, rest.y));
+    // Page rects are measured at the LIVE scroll position; shift the view to
+    // where the scroll is heading instead of re-measuring mid-glide.
+    const box = scrollContainer.getBoundingClientRect();
+    const shift = restY - scrollContainer.scrollTop;
+    const view: AxisSpan = { start: box.top + shift, end: box.top + shift + box.height };
+    const spans = pageElements.map((el) => {
+      const r = el?.getBoundingClientRect();
+      return r ? { start: r.top, end: r.bottom } : undefined;
+    });
+    const delta = direction === 'forward' ? 1 : -1;
+    const fits = pageElements.map((_, i) => pageFitsVertically(i));
+    const target = stripPageKeyTarget(direction, view, spans, (i) => fits[i]);
+
+    // Nothing hidden that way: the strip's end — turn past it (volume edge).
+    // No page measured yet (not mounted): nothing to act on.
+    if (!target) {
+      if (spans.some(Boolean)) scrollToPageVertical(direction === 'forward' ? pages.length : -1);
+      return;
+    }
+
+    let turnTo = target.index;
+    if (target.within) {
+      const step = pageKeyStep({
+        direction,
+        view,
+        current: spans[target.index]!,
+        pages: spans.filter((p): p is AxisSpan => !!p),
+        enabled: true
+      });
+      if (step.kind === 'scroll') {
+        const y = Math.min(maxY, Math.max(0, restY + step.by));
+        // At the strip's end nothing is left to scroll — turn past the page.
+        if (Math.abs(y - restY) >= 1) {
+          scroller.scrollBy(0, y - rest.y);
+          return;
+        }
+      }
+      turnTo = target.index + delta;
+    }
+
+    const turnSpan = spans[turnTo];
+    if (direction === 'forward' || !turnSpan || fits[turnTo]) {
+      scrollToPageVertical(turnTo);
+      return;
+    }
+    // Backward onto a tall page: its last screenful.
+    const y = Math.min(maxY, Math.max(0, restY + alignDelta(view, turnSpan, 'end')));
+    scroller.scrollBy(0, y - rest.y);
+  }
+
+  /**
    * A keyboard action, resolved by Reader.svelte (the reader's only key
    * listener — #55). Returns false for an action this layout does not do,
    * so the key keeps its browser default.
@@ -377,10 +450,12 @@
         scroller?.scrollBy(viewportWidth * 0.5, 0);
         return true;
       case 'reader.page-next':
-        scrollToPageVertical(detectCurrentPage() + 1);
+        if ($settings.pageKeysScrollFirst) pageKey('forward');
+        else scrollToPageVertical(detectCurrentPage() + 1);
         return true;
       case 'reader.page-prev':
-        scrollToPageVertical(detectCurrentPage() - 1);
+        if ($settings.pageKeysScrollFirst) pageKey('backward');
+        else scrollToPageVertical(detectCurrentPage() - 1);
         return true;
       case 'reader.page-first':
         scrollToPageVertical(0);

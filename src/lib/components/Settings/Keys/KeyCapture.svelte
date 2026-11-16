@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { startCapture } from '$lib/keys/capture-session';
+  import { startCapture } from '#lib/keys/capture-session.js';
 
   interface Props {
     capturing: boolean;

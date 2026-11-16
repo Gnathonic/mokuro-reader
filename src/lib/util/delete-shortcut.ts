@@ -5,7 +5,7 @@
 // `app`. Kept out of the components so it can be unit tested without their
 // (heavy) import graphs.
 
-import { keyboardShouldIgnore } from '$lib/reader/input/gesture-target';
+import { keyboardShouldIgnore } from '#lib/reader/input/gesture-target.js';
 import { isTypingTarget } from './series-editor-shortcut';
 
 /**

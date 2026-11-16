@@ -1,5 +1,5 @@
 import type { Handle } from '@sveltejs/kit/hooks';
-import { hermeticShell } from '$lib/interop/hermetic';
+import { hermeticShell } from '#lib/interop/hermetic.js';
 
 // An interop build serves a shell that names no host off the machine
 // ($lib/interop/hermetic.ts). Everywhere else the shell goes out as it is.

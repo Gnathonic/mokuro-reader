@@ -8,7 +8,7 @@
  * fields are read where this is called, so a `$derived` over it re-runs when
  * the selection or the page changes, and a test passes a plain object.
  */
-import type { Block, Page } from '$lib/types';
+import type { Block, Page } from '#lib/types/index.js';
 
 export interface EditSelectionState {
   readonly selection: readonly { pageIndex: number; blockIndex: number }[];

@@ -15,7 +15,7 @@
  * profiles add their own at run time.
  */
 import { describe, expect, it } from 'vitest';
-import { SETTING_DEFS, type SettingDef } from '$lib/settings/setting-defs';
+import { SETTING_DEFS, type SettingDef } from '#lib/settings/setting-defs.js';
 import { generateSettingActions, parseSettingActionId } from './generate';
 
 const GOLDEN = [

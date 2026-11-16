@@ -2,12 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { get } from 'svelte/store';
 
-vi.mock('$app/environment', () => ({ browser: true }));
+vi.mock('$app/env', () => ({ browser: true }));
 const ui = vi.hoisted(() => ({ promptConfirmation: vi.fn(), showSnackbar: vi.fn() }));
-vi.mock('$lib/util', () => ui);
+vi.mock('#lib/util/index.js', () => ui);
 
-import { profiles, profilesWithTrash } from '$lib/settings';
-import { resetAnkiUrlTrustForTest } from '$lib/anki-connect/url-trust';
+import { profiles, profilesWithTrash } from '#lib/settings/index.js';
+import { resetAnkiUrlTrustForTest } from '#lib/anki-connect/url-trust.js';
 import Profiles from '../Profiles.svelte';
 
 /**

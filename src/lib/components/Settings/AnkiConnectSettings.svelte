@@ -1,7 +1,7 @@
 <script lang="ts">
   import { page } from '$app/state';
-  import { settings, updateAnkiSetting } from '$lib/settings';
-  import { listOptions } from '$lib/settings/setting-defs';
+  import { settings, updateAnkiSetting } from '#lib/settings/index.js';
+  import { listOptions } from '#lib/settings/setting-defs.js';
   import {
     AccordionItem,
     Button,
@@ -19,7 +19,7 @@
     fetchConnectionData,
     isAnkiUrlTrusted,
     openConfigureModal
-  } from '$lib/anki-connect';
+  } from '#lib/anki-connect/index.js';
   import { onMount } from 'svelte';
 
   // Connection state

@@ -1,14 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import 'fake-indexeddb/auto';
 
-vi.mock('$lib/catalog/db', async () => {
+vi.mock('#lib/catalog/db.js', async () => {
   const { default: Dexie } = await import('dexie');
   const db = new Dexie('series-metadata-store-test');
   db.version(1).stores({ series_metadata: 'series_key, folded_key' });
   return { db };
 });
 
-import { db } from '$lib/catalog/db';
+import { db } from '#lib/catalog/db.js';
 import {
   getSeriesMetadata,
   getSeriesMetadataByFoldedTitle,
@@ -24,11 +24,11 @@ import {
   registerIndexChangeListener,
   registerFactsChangeListener
 } from './store';
-import { updateSeriesReadingState } from '$lib/settings/series-data';
+import { updateSeriesReadingState } from '#lib/settings/series-data.js';
 import { toSeriesMetadataPatch } from './providers/anilist';
 import { FACTLESS_UPDATED_AT, type SeriesFile } from './series-file';
 import { createEmptySeriesMetadata } from './types';
-import { countIdbOps } from '$lib/catalog/__tests__/idb-op-counter';
+import { countIdbOps } from '#lib/catalog/__tests__/idb-op-counter.js';
 
 /** A minimal series.json carrying only the facts the store reads. */
 function seriesFile(facts: Omit<SeriesFile, 'version' | 'series_title' | 'volumes'>): SeriesFile {

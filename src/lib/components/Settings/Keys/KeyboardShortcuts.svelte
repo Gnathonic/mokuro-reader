@@ -17,20 +17,20 @@
     profiles,
     settings,
     updateSetting
-  } from '$lib/settings';
-  import { findSettingDef } from '$lib/settings/setting-defs';
-  import { promptConfirmation, showSnackbar } from '$lib/util';
-  import { FIXED_INPUTS, type ActionId, type KeyActionDef } from '$lib/keys/actions';
-  import { chordLabel, keymap } from '$lib/keys/live';
-  import { keyLabelsVersion } from '$lib/keys/key-labels';
-  import { findConflicts, isModified, type KeyBindings } from '$lib/keys/keymap';
+  } from '#lib/settings/index.js';
+  import { findSettingDef } from '#lib/settings/setting-defs.js';
+  import { promptConfirmation, showSnackbar } from '#lib/util/index.js';
+  import { FIXED_INPUTS, type ActionId, type KeyActionDef } from '#lib/keys/actions.js';
+  import { chordLabel, keymap } from '#lib/keys/live.js';
+  import { keyLabelsVersion } from '#lib/keys/key-labels.js';
+  import { findConflicts, isModified, type KeyBindings } from '#lib/keys/keymap.js';
   import {
     isMenuChanged,
     menuEligible,
     quickMenuIds,
     withQuickMenu,
     type QuickMenuSelection
-  } from '$lib/keys/quick-menu';
+  } from '#lib/keys/quick-menu.js';
   import {
     buildTargets,
     groupTargets,
@@ -40,7 +40,7 @@
     MATCH_LIMIT,
     type KeyTarget,
     type TargetFacts
-  } from '$lib/keys/targets';
+  } from '#lib/keys/targets.js';
   import KeyActionRow from './KeyActionRow.svelte';
   import KeySettingRow from './KeySettingRow.svelte';
 

@@ -1,5 +1,5 @@
 <script lang="ts" module>
-  import type { AnnounceAction } from '$lib/keys/announce';
+  import type { AnnounceAction } from '#lib/keys/announce.js';
 
   /** One message on screen. `seq` changes on every show, so a repeat restarts the timer. */
   export interface ReaderNotice {

@@ -3,7 +3,7 @@
  * Receives File objects, returns ImageBitmaps via Transferable
  */
 
-import { forwardWorkerCspViolations } from '$lib/security/csp-violations';
+import { forwardWorkerCspViolations } from '#lib/security/csp-violations.js';
 
 // A violation here fires on this worker, where the page's buffer cannot see it.
 forwardWorkerCspViolations();

@@ -4,18 +4,18 @@ import type {
   VolumeFiles,
   VolumeOcrLayer,
   VolumeOcrLayerPages
-} from '$lib/types';
-import type { StoredSeriesMetadata } from '$lib/metadata/types';
-import type { SeriesIndexRecord } from '$lib/metadata/series-index';
-import type { CatalogIndexRecord } from '$lib/metadata/catalog-index';
+} from '#lib/types/index.js';
+import type { StoredSeriesMetadata } from '#lib/metadata/types.js';
+import type { SeriesIndexRecord } from '#lib/metadata/series-index.js';
+import type { CatalogIndexRecord } from '#lib/metadata/catalog-index.js';
 import type { CloudCover } from './cloud-covers';
 import Dexie, { type Table } from 'dexie';
-import { generateThumbnail } from '$lib/catalog/thumbnails';
-import { browser } from '$app/environment';
-import { progressTrackerStore } from '$lib/util/progress-tracker';
-import { naturalSort } from '$lib/util/natural-sort';
-import { isVolumeInstalled } from '$lib/catalog/volume-state';
-import { isRasterImageType, toRasterImageFile } from '$lib/util/raster-image';
+import { generateThumbnail } from '#lib/catalog/thumbnails.js';
+import { browser } from '$app/env';
+import { progressTrackerStore } from '#lib/util/progress-tracker.js';
+import { naturalSort } from '#lib/util/natural-sort.js';
+import { isVolumeInstalled } from '#lib/catalog/volume-state.js';
+import { isRasterImageType, toRasterImageFile } from '#lib/util/raster-image.js';
 import { MOKURO_DB_NAME, declareMokuroSchema } from './db-schema';
 
 export class CatalogDexieV3 extends Dexie {

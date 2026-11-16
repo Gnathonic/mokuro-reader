@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { VolumeData } from '$lib/settings/volume-data';
+import { VolumeData } from '#lib/settings/volume-data.js';
 import { completionEventsFor } from '../completed-at';
 
 const NOW = Date.parse('2026-08-30T12:00:00.000Z');

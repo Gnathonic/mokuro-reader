@@ -11,9 +11,9 @@
  *
  * `uploadModalOpen` sits beside it for the "Open upload" action.
  */
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 import { writable } from 'svelte/store';
-import { currentView } from '$lib/util/hash-router';
+import { currentView } from '#lib/util/hash-router.js';
 
 export const settingsOpen = writable(false);
 export const uploadModalOpen = writable(false);

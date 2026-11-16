@@ -9,7 +9,7 @@
  */
 
 import { derived, writable, type Readable } from 'svelte/store';
-import { profiles, settings } from '$lib/settings/settings';
+import { profiles, settings } from '#lib/settings/settings.js';
 import type { ActionId } from './actions';
 import { formatChord } from './chord';
 import { compileKeymap, type KeyBindings, type Keymap } from './keymap';

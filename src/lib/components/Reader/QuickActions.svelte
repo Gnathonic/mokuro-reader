@@ -1,10 +1,10 @@
 <script lang="ts">
-  import { settings } from '$lib/settings';
+  import { settings } from '#lib/settings/index.js';
   import { PlusOutline } from 'flowbite-svelte-icons';
-  import { actionIcon } from '$lib/keys/icons';
-  import type { QuickMenuItem } from '$lib/keys/quick-menu';
+  import { actionIcon } from '#lib/keys/icons.js';
+  import type { QuickMenuItem } from '#lib/keys/quick-menu.js';
   import LayerPicker from './Layers/LayerPicker.svelte';
-  import type { LayerSummary } from '$lib/reader/edit/layer-list';
+  import type { LayerSummary } from '#lib/reader/edit/layer-list.js';
   import type { LayerAction } from './Layers/layer-actions';
   import { onDestroy } from 'svelte';
 

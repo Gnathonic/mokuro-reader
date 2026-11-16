@@ -12,8 +12,8 @@ import {
   type SettingCtx,
   type SettingDef,
   type SettingDefId
-} from '$lib/settings/setting-defs';
-import { isWithinSchedule, settings, updateScheduleSetting } from '$lib/settings/settings';
+} from '#lib/settings/setting-defs.js';
+import { isWithinSchedule, settings, updateScheduleSetting } from '#lib/settings/settings.js';
 import type { KeyActionDef, SettingOp } from './actions';
 import { announce, type AnnounceAction } from './announce';
 

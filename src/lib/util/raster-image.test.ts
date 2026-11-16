@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { IMAGE_MIME_TYPES } from '$lib/import/types';
+import { IMAGE_MIME_TYPES } from '#lib/import/types.js';
 import {
   RASTER_FORMAT_NAMES,
   RASTER_IMAGE_TYPES,

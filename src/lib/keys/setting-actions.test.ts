@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
 
-vi.mock('$lib/util/snackbar', () => ({ showSnackbar: vi.fn() }));
+vi.mock('#lib/util/snackbar.js', () => ({ showSnackbar: vi.fn() }));
 
-import { showSnackbar } from '$lib/util/snackbar';
+import { showSnackbar } from '#lib/util/snackbar.js';
 import {
   changeProfile,
   createProfile,
@@ -12,9 +12,9 @@ import {
   settings,
   updateScheduleSetting,
   updateSetting
-} from '$lib/settings/settings';
-import { miscSettings, updateMiscSetting } from '$lib/settings/misc';
-import { settingDef, type SettingDefId } from '$lib/settings/setting-defs';
+} from '#lib/settings/settings.js';
+import { miscSettings, updateMiscSetting } from '#lib/settings/misc.js';
+import { settingDef, type SettingDefId } from '#lib/settings/setting-defs.js';
 import { registerAnnouncer, type AnnounceAction } from './announce';
 import { actionDef } from './registry';
 import { applySettingOp, runSettingAction, settingToggleOn, stepSetting } from './setting-actions';

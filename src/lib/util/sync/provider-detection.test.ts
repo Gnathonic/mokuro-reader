@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('$app/environment', () => ({ browser: true }));
-vi.mock('$lib/util/sync/providers/google-drive/constants', () => ({
+vi.mock('$app/env', () => ({ browser: true }));
+vi.mock('#lib/util/sync/providers/google-drive/constants.js', () => ({
   GOOGLE_DRIVE_CONFIG: {
     STORAGE_KEYS: { HAS_AUTHENTICATED: 'gdrive_has_authenticated', TOKEN: 'gdrive_token' }
   }

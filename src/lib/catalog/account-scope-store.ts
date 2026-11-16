@@ -1,5 +1,5 @@
 import { derived, type Readable } from 'svelte/store';
-import { providerManager } from '$lib/util/sync';
+import { providerManager } from '#lib/util/sync/index.js';
 
 /**
  * Which account's covers a surface may show, as a PRIMITIVE.

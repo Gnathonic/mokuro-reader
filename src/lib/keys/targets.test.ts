@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { findSettingDef } from '$lib/settings/setting-defs';
+import { findSettingDef } from '#lib/settings/setting-defs.js';
 import { GROUP_LABELS, GROUP_ORDER, type ActionId, type KeyActionDef } from './actions';
 import { compileKeymap, findConflicts, isModified, type KeyBindings } from './keymap';
 import { isMenuChanged, quickMenuIds, type QuickMenuSelection } from './quick-menu';

@@ -5,8 +5,8 @@
    * it shows only there, so the two mounts are never open together.
    */
   import { get } from 'svelte/store';
-  import { settingsOpen } from '$lib/settings/settings-open';
-  import { isOnReader } from '$lib/util/hash-router';
+  import { settingsOpen } from '#lib/settings/settings-open.js';
+  import { isOnReader } from '#lib/util/hash-router.js';
   import Settings from './Settings.svelte';
 
   let { context }: { context: 'reader' | 'app' } = $props();

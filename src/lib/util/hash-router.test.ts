@@ -7,11 +7,11 @@ import {
   navigateBack,
   parseHash,
   viewToHash
-} from '$lib/util/hash-router';
+} from '#lib/util/hash-router.js';
 import { get } from 'svelte/store';
-import { snackbarStore } from '$lib/util/snackbar';
+import { snackbarStore } from '#lib/util/snackbar.js';
 
-vi.mock('$lib/metadata/providers/anilist', () => ({
+vi.mock('#lib/metadata/providers/anilist.js', () => ({
   anilistRequest: vi.fn().mockResolvedValue({ Viewer: null })
 }));
 

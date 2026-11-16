@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { VolumeMetadata } from '$lib/types';
+import type { VolumeMetadata } from '#lib/types/index.js';
 
 /**
  * A cloud cover is typed by its bytes, never by its name (`<Volume>.webp`) or
@@ -9,7 +9,7 @@ import type { VolumeMetadata } from '$lib/types';
 
 const cloud = vi.hoisted(() => ({ next: null as Blob | null }));
 
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: {
     getActiveProvider: () => ({ type: 'webdav' }),
     downloadFile: vi.fn(async () => cloud.next)

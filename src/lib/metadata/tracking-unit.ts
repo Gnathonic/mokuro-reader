@@ -1,4 +1,4 @@
-import type { VolumeMetadata } from '$lib/types';
+import type { VolumeMetadata } from '#lib/types/index.js';
 import type { SeriesMetadata, SeriesTotals, TrackingUnit } from './types';
 import { detectTrackingUnitDetailed } from './volume-number';
 

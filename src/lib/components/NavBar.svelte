@@ -8,16 +8,16 @@
     ChartLineUpOutline,
     CalendarMonthOutline
   } from 'flowbite-svelte-icons';
-  import { nav, isOnReader } from '$lib/util/hash-router';
+  import { nav, isOnReader } from '#lib/util/hash-router.js';
   import SettingsDrawerHost from './Settings/SettingsDrawerHost.svelte';
-  import { openSettings, uploadModalOpen } from '$lib/settings/settings-open';
+  import { openSettings, uploadModalOpen } from '#lib/settings/settings-open.js';
   import UploadModal from './UploadModal.svelte';
-  import Icon from '$lib/assets/icon.webp';
-  import { showSnackbar } from '$lib/util';
-  import { tokenManager } from '$lib/util/sync/providers/google-drive';
-  import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
-  import { unifiedProviderState } from '$lib/util/sync/unified-provider-state';
-  import { canSyncProgress, syncProgressNow } from '$lib/keys/app-actions';
+  import Icon from '#lib/assets/icon.webp';
+  import { showSnackbar } from '#lib/util/index.js';
+  import { tokenManager } from '#lib/util/sync/providers/google-drive/index.js';
+  import { unifiedCloudManager } from '#lib/util/sync/unified-cloud-manager.js';
+  import { unifiedProviderState } from '#lib/util/sync/unified-provider-state.js';
+  import { canSyncProgress, syncProgressNow } from '#lib/keys/app-actions.js';
 
   // Use $state to make these reactive
   let isReader = $state(false);

@@ -5,10 +5,10 @@
    * `ocrLayer` setting through the reader (`onSelect`); actions go to the
    * shared orchestrator (`onAction`).
    */
-  import type { LayerSummary } from '$lib/reader/edit/layer-list';
-  import { LAYER_KIND_LABEL } from '$lib/reader/edit/layers';
-  import { layerActionAvailable, type LayerCommand } from '$lib/reader/edit/layer-kind';
-  import { isCuratedLayerId, isPersonalLayerId } from '$lib/reader/edit/layer-names';
+  import type { LayerSummary } from '#lib/reader/edit/layer-list.js';
+  import { LAYER_KIND_LABEL } from '#lib/reader/edit/layers.js';
+  import { layerActionAvailable, type LayerCommand } from '#lib/reader/edit/layer-kind.js';
+  import { isCuratedLayerId, isPersonalLayerId } from '#lib/reader/edit/layer-names.js';
   import type { LayerAction } from './layer-actions';
   import {
     ArrowUpOutline,

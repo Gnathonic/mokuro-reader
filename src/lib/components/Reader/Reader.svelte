@@ -1,26 +1,26 @@
 <script lang="ts">
-  import { pageImageUrlFrom } from '$lib/reader/page-image-url';
+  import { pageImageUrlFrom } from '#lib/reader/page-image-url.js';
   import { run } from 'svelte/legacy';
   import type { TransitionConfig } from 'svelte/transition';
 
   import { get } from 'svelte/store';
-  import { currentSeries, currentVolume, currentVolumeData } from '$lib/catalog';
+  import { currentSeries, currentVolume, currentVolumeData } from '#lib/catalog/index.js';
   import PagedViewport from './PagedViewport.svelte';
-  import { pagedZoom } from '$lib/reader/paged-zoom';
-  import { spreadContentSize } from '$lib/reader/paged-zoom-layout';
-  import { setInstantAnimations } from '$lib/reader/animator';
-  import { keyboardShouldIgnore } from '$lib/reader/input/gesture-target';
-  import { dispatchKey, type KeyHandler, type KeyResolver } from '$lib/keys/dispatch';
-  import { keyHint, keymap } from '$lib/keys/live';
-  import type { ActionId, EditActionId, ReaderActionId, ReaderMode } from '$lib/keys/actions';
-  import { quickMenuIds, quickMenuItems } from '$lib/keys/quick-menu';
-  import { registerAnnouncer, type AnnounceAction } from '$lib/keys/announce';
-  import { appKeyHandlers } from '$lib/keys/app-actions';
-  import { applySettingOp, runSettingAction, settingToggleOn } from '$lib/keys/setting-actions';
-  import { settingDef } from '$lib/settings/setting-defs';
-  import { anyModalOpen } from '$lib/util/delete-shortcut';
+  import { pagedZoom } from '#lib/reader/paged-zoom.js';
+  import { spreadContentSize } from '#lib/reader/paged-zoom-layout.js';
+  import { setInstantAnimations } from '#lib/reader/animator.js';
+  import { keyboardShouldIgnore } from '#lib/reader/input/gesture-target.js';
+  import { dispatchKey, type KeyHandler, type KeyResolver } from '#lib/keys/dispatch.js';
+  import { keyHint, keymap } from '#lib/keys/live.js';
+  import type { ActionId, EditActionId, ReaderActionId, ReaderMode } from '#lib/keys/actions.js';
+  import { quickMenuIds, quickMenuItems } from '#lib/keys/quick-menu.js';
+  import { registerAnnouncer, type AnnounceAction } from '#lib/keys/announce.js';
+  import { appKeyHandlers } from '#lib/keys/app-actions.js';
+  import { applySettingOp, runSettingAction, settingToggleOn } from '#lib/keys/setting-actions.js';
+  import { settingDef } from '#lib/settings/setting-defs.js';
+  import { anyModalOpen } from '#lib/util/delete-shortcut.js';
   import ReaderNotification, { type ReaderNotice } from './ReaderNotification.svelte';
-  import { toggleFullScreen } from '$lib/util/fullscreen';
+  import { toggleFullScreen } from '#lib/util/fullscreen.js';
   import {
     effectiveVolumeSettings,
     imageFilter,
@@ -36,16 +36,16 @@
     volumes,
     type VolumeSettings,
     type ContinuousZoomMode
-  } from '$lib/settings';
-  import { clamp, fireExstaticEvent, resetScrollPosition } from '$lib/util';
+  } from '#lib/settings/index.js';
+  import { clamp, fireExstaticEvent, resetScrollPosition } from '#lib/util/index.js';
   import RereadPromptModal from './RereadPromptModal.svelte';
   import PositionOfferBanner from './PositionOfferBanner.svelte';
   import LongPausePrompt from './LongPausePrompt.svelte';
-  import { shouldOfferReread } from '$lib/metadata/reread';
-  import { getSeriesMetadataForTitle } from '$lib/metadata/store';
-  import { getSeriesReadingState } from '$lib/settings/series-data';
-  import { normalizeSeriesKey } from '$lib/metadata/series-key';
-  import { resolveDisplayTitle } from '$lib/metadata/display-title';
+  import { shouldOfferReread } from '#lib/metadata/reread.js';
+  import { getSeriesMetadataForTitle } from '#lib/metadata/store.js';
+  import { getSeriesReadingState } from '#lib/settings/series-data.js';
+  import { normalizeSeriesKey } from '#lib/metadata/series-key.js';
+  import { resolveDisplayTitle } from '#lib/metadata/display-title.js';
   import { Input, Popover, Range, Spinner } from 'flowbite-svelte';
   import MangaPage from './MangaPage.svelte';
   import TextBoxContextMenu from './TextBoxContextMenu.svelte';
@@ -59,10 +59,10 @@
     getModelConfig,
     coverImageDataUrl,
     type VolumeMetadata
-  } from '$lib/anki-connect';
-  import { ankiUrlRefusal } from '$lib/anki-connect/url-trust';
-  import { db } from '$lib/catalog/db';
-  import { showSnackbar } from '$lib/util';
+  } from '#lib/anki-connect/index.js';
+  import { ankiUrlRefusal } from '#lib/anki-connect/url-trust.js';
+  import { db } from '#lib/catalog/db.js';
+  import { showSnackbar } from '#lib/util/index.js';
   import {
     BackwardStepSolid,
     CaretLeftSolid,
@@ -71,74 +71,83 @@
   } from 'flowbite-svelte-icons';
   import TextBoxPicker from './TextBoxPicker.svelte';
   import { showTextBoxPicker } from './text-box-picker';
-  import { displayableImageBlob } from '$lib/util/raster-image';
-  import { spreadPageIndices, spreadText } from '$lib/reader/page-text';
+  import { displayableImageBlob } from '#lib/util/raster-image.js';
+  import { spreadPageIndices, spreadText } from '#lib/reader/page-text.js';
   import SettingsButton from './SettingsButton.svelte';
-  import { getCharCount } from '$lib/util/count-chars';
-  import { recordPagedPageView } from '$lib/reader/paged-progress';
-  import { toggleVolumeRead } from '$lib/reader/volume-read';
-  import { isVolumeComplete } from '$lib/util/volume-helpers';
+  import { getCharCount } from '#lib/util/count-chars.js';
+  import { recordPagedPageView } from '#lib/reader/paged-progress.js';
+  import { toggleVolumeRead } from '#lib/reader/volume-read.js';
+  import { isVolumeComplete } from '#lib/util/volume-helpers.js';
   import QuickActions from './QuickActions.svelte';
   import EditToolbar from './Edit/EditToolbar.svelte';
-  import { EditSession, type LineRef } from '$lib/reader/edit/edit-session.svelte';
+  import { EditSession, type LineRef } from '#lib/reader/edit/edit-session.svelte.js';
   import {
     editCommandState,
     type EditCommand,
     type EditCommandState
-  } from '$lib/reader/edit/edit-commands';
-  import { ORIGINAL_LAYER_ID, hasOriginalLayer } from '$lib/reader/edit/edit-persist';
-  import { miscSettings, updateMiscSetting } from '$lib/settings/misc';
-  import type { Page } from '$lib/types';
+  } from '#lib/reader/edit/edit-commands.js';
+  import { ORIGINAL_LAYER_ID, hasOriginalLayer } from '#lib/reader/edit/edit-persist.js';
+  import { miscSettings, updateMiscSetting } from '#lib/settings/misc.js';
+  import type { Page } from '#lib/types/index.js';
   import {
     layerSummaries,
     nextLayerId,
     prevLayerId,
     primaryLayerName,
     type LayerSummary
-  } from '$lib/reader/edit/layer-list';
-  import { forkIntoEditLayer, loadLayerPages, persistLayerPageEdit } from '$lib/reader/edit/layers';
-  import { pullOwnEditLayerBeforeEdit } from '$lib/metadata/layer-sync';
-  import { forksOnEdit, layerActionAvailable } from '$lib/reader/edit/layer-kind';
-  import { EDIT_LAYER_ID } from '$lib/reader/edit/layer-names';
-  import { activeProviderStatus } from '$lib/util/sync/active-provider-status';
-  import { canPublishCuratedVolume } from '$lib/util/sync/account-capabilities';
+  } from '#lib/reader/edit/layer-list.js';
+  import {
+    forkIntoEditLayer,
+    loadLayerPages,
+    persistLayerPageEdit
+  } from '#lib/reader/edit/layers.js';
+  import { pullOwnEditLayerBeforeEdit } from '#lib/metadata/layer-sync.js';
+  import { forksOnEdit, layerActionAvailable } from '#lib/reader/edit/layer-kind.js';
+  import { EDIT_LAYER_ID } from '#lib/reader/edit/layer-names.js';
+  import { activeProviderStatus } from '#lib/util/sync/active-provider-status.js';
+  import { canPublishCuratedVolume } from '#lib/util/sync/account-capabilities.js';
   import { layerNamePrompt, runLayerAction, type LayerAction } from './Layers/layer-actions';
   import LayerNameModal from './Layers/LayerNameModal.svelte';
-  import { editModeRequest, setEditModeActive } from '$lib/reader/edit/edit-mode';
+  import { editModeRequest, setEditModeActive } from '#lib/reader/edit/edit-mode.js';
   import {
     flushOnPageHide,
     layerUiKeyAction,
     registerBeforeLayerMutation
-  } from '$lib/reader/edit/reader-edit-rules';
+  } from '#lib/reader/edit/reader-edit-rules.js';
   import VerticalScrollReader from './VerticalScrollReader.svelte';
   import HorizontalScrollReader from './HorizontalScrollReader.svelte';
-  import { nav, navigateBack } from '$lib/util/hash-router';
+  import { nav, navigateBack } from '#lib/util/hash-router.js';
   import { onMount, onDestroy, tick } from 'svelte';
-  import { activityTracker } from '$lib/util/activity-tracker';
-  import { shouldShowSinglePage } from '$lib/reader/page-mode-detection';
-  import { needsDownload } from '$lib/catalog/volume-state';
-  import { calculateForwardTarget, calculateBackwardTarget } from '$lib/reader/page-nav';
-  import { ImageCache, matchFilesToPages } from '$lib/reader/image-cache';
-  import { cancelInkPrefetch, prefetchPageInk } from '$lib/reader/ink-color';
-  import { ViewTracker, viewKey } from '$lib/reading-history/view-tracker';
-  import { endedView, endedViewMs, liveView, readingPaused } from '$lib/reading-history/live-view';
+  import { activityTracker } from '#lib/util/activity-tracker.js';
+  import { shouldShowSinglePage } from '#lib/reader/page-mode-detection.js';
+  import { needsDownload } from '#lib/catalog/volume-state.js';
+  import { calculateForwardTarget, calculateBackwardTarget } from '#lib/reader/page-nav.js';
+  import { ImageCache, matchFilesToPages } from '#lib/reader/image-cache.js';
+  import { cancelInkPrefetch, prefetchPageInk } from '#lib/reader/ink-color.js';
+  import { ViewTracker, viewKey } from '#lib/reading-history/view-tracker.js';
+  import {
+    endedView,
+    endedViewMs,
+    liveView,
+    readingPaused
+  } from '#lib/reading-history/live-view.js';
   import {
     describeView,
     rangeScopeKey,
     type ContinuousRange
-  } from '$lib/reading-history/describe-view';
-  import { recordView } from '$lib/reading-history/record';
-  import { PauseWatch, livePause } from '$lib/reading-history/pause-watch';
-  import { answerPause, type PauseAnswer } from '$lib/reading-history/pause-answer';
-  import { readingStats } from '$lib/reading-history/stats-store';
+  } from '#lib/reading-history/describe-view.js';
+  import { recordView } from '#lib/reading-history/record.js';
+  import { PauseWatch, livePause } from '#lib/reading-history/pause-watch.js';
+  import { answerPause, type PauseAnswer } from '#lib/reading-history/pause-answer.js';
+  import { readingStats } from '#lib/reading-history/stats-store.js';
   import {
     askOnLongPause,
     idleSettings,
     setAskOnLongPause,
     widenIdleK
-  } from '$lib/settings/tracking-data';
-  import { buildPageCharCounts } from '$lib/catalog/page-char-counts';
-  import '$lib/styles/page-transitions.css';
+  } from '#lib/settings/tracking-data.js';
+  import { buildPageCharCounts } from '#lib/catalog/page-char-counts.js';
+  import '#lib/styles/page-transitions.css';
 
   // TODO: Refactor this whole mess
   interface Props {
@@ -279,6 +288,28 @@
     return seriesVolumes[currentVolumeIndex + delta];
   }
 
+  /**
+   * Page Down / Space (#283): with "Page Up/Down scroll tall pages before
+   * turning" on, a page (or spread) taller than the screen scrolls down a
+   * screenful first; the page turns once its bottom is in view. Off: turn.
+   */
+  function pageKeyForward(): void {
+    if ($settings.pageKeysScrollFirst && $pagedZoom?.pageKeyScroll('forward')) return;
+    navigateForward(true);
+  }
+
+  /** Page Up — the mirror; the previous page then opens at its bottom. */
+  function pageKeyBackward(): void {
+    if ($settings.pageKeysScrollFirst && $pagedZoom) {
+      if ($pagedZoom.pageKeyScroll('backward')) return;
+      const target = calculateBackwardTarget(page, pageNavContext());
+      // Only a turn within this volume lands anywhere (the edge goes to the
+      // previous volume, which opens where its own progress says).
+      if (target >= 1 && target < page) $pagedZoom.landAtEndOf(target);
+    }
+    navigateBackward(true);
+  }
+
   function changePage(newPage: number, ingoreTimeOut = false) {
     const end = new Date();
     const clickDuration = ingoreTimeOut ? 0 : end.getTime() - start?.getTime();
@@ -368,9 +399,9 @@
     'reader.page-right': () =>
       keyMode() === 'paged' ? right(null, true) : scrollReaderKey('reader.page-right'),
     'reader.page-prev': () =>
-      keyMode() === 'paged' ? navigateBackward(true) : scrollReaderKey('reader.page-prev'),
+      keyMode() === 'paged' ? pageKeyBackward() : scrollReaderKey('reader.page-prev'),
     'reader.page-next': () =>
-      keyMode() === 'paged' ? navigateForward(true) : scrollReaderKey('reader.page-next'),
+      keyMode() === 'paged' ? pageKeyForward() : scrollReaderKey('reader.page-next'),
     'reader.page-first': () =>
       keyMode() === 'paged' ? changePage(1, true) : scrollReaderKey('reader.page-first'),
     'reader.page-last': () => {
@@ -1146,7 +1177,7 @@
   }
 
   // ---- layer switching and actions (the picker and the settings panel) ----
-  let primaryName = $derived(primaryLayerName(volume?.mokuro_version));
+  let primaryName = $derived(primaryLayerName(volume));
 
   function layerDisplayName(layerId: string | null): string {
     if (layerId === null) return primaryName;
@@ -1901,7 +1932,7 @@
   // Callback for ContinuousReader page changes
   function handleContinuousPageChange(newPage: number, charCount: number, isComplete: boolean) {
     if (!volume) return;
-    updateProgress(volume.volume_uuid, newPage, charCount, isComplete);
+    updateProgress(volume.volume_uuid, newPage, charCount, isComplete, pages.length || undefined);
     activityTracker.recordActivity();
   }
 

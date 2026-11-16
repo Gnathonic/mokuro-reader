@@ -1,21 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { get, readable } from 'svelte/store';
-import { ProviderError } from '$lib/util/sync/provider-interface';
+import { ProviderError } from '#lib/util/sync/provider-interface.js';
 import type {
   CloudFileMetadata,
   ProviderStatus,
   SyncProvider
-} from '$lib/util/sync/provider-interface';
+} from '#lib/util/sync/provider-interface.js';
 
-vi.mock('$app/environment', () => ({ browser: true }));
+vi.mock('$app/env', () => ({ browser: true }));
 
 const getCache = vi.fn();
-vi.mock('$lib/util/sync/cache-manager', () => ({
+vi.mock('#lib/util/sync/cache-manager.js', () => ({
   cacheManager: { getCache: (...args: unknown[]) => getCache(...args) }
 }));
 const blindUploadFile = vi.fn(async (_path: string, _blob: Blob) => ({ fileId: 'uploaded-id' }));
 const getActiveProvider = vi.fn();
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: {
     blindUploadFile: (path: string, blob: Blob) => blindUploadFile(path, blob),
     getActiveProvider: () => getActiveProvider()
@@ -23,17 +23,17 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
 }));
 const syncReady = vi.fn(() => true);
 const providerTokenValid = vi.fn(() => true);
-vi.mock('$lib/util/sync/foreground-sync', () => ({
+vi.mock('#lib/util/sync/foreground-sync.js', () => ({
   syncReady: () => syncReady(),
   providerTokenValid: () => providerTokenValid()
 }));
-vi.mock('$lib/util/snackbar', () => ({ showSnackbar: vi.fn() }));
-vi.mock('$lib/reading-history/history-db', () => ({ historyDb: () => ({}) }));
-vi.mock('$lib/reading-history/record', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('$lib/reading-history/record')>()),
+vi.mock('#lib/util/snackbar.js', () => ({ showSnackbar: vi.fn() }));
+vi.mock('#lib/reading-history/history-db.js', () => ({ historyDb: () => ({}) }));
+vi.mock('#lib/reading-history/record.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('#lib/reading-history/record.js')>()),
   getOrCreateDeviceId: async () => 'me'
 }));
-vi.mock('$lib/reading-history/device-stats', () => ({
+vi.mock('#lib/reading-history/device-stats.js', () => ({
   devices: readable(
     new Map([
       [
@@ -52,7 +52,7 @@ vi.mock('$lib/reading-history/device-stats', () => ({
 const rehomeVisit = vi.hoisted(() => vi.fn());
 vi.mock('./visit', () => ({ rehomeVisit: (volume: string) => rehomeVisit(volume) }));
 const pageCounts = vi.hoisted(() => new Map<string, number>());
-vi.mock('$lib/catalog/db', () => ({
+vi.mock('#lib/catalog/db.js', () => ({
   db: {
     volumes: {
       get: vi.fn(async (uuid: string) =>
@@ -63,8 +63,8 @@ vi.mock('$lib/catalog/db', () => ({
   }
 }));
 
-import { showSnackbar } from '$lib/util/snackbar';
-import { clearVolumes, updateProgress, volumesWithTrash } from '$lib/settings/volume-data';
+import { showSnackbar } from '#lib/util/snackbar.js';
+import { clearVolumes, updateProgress, volumesWithTrash } from '#lib/settings/volume-data.js';
 import { _resetEscapesForTests, newestUploaded, watchEscapes } from './escapes';
 import { _resetPositionTracking, changedVolumes, initPositionTracking } from './positions-local';
 import { noteReaderClosed, noteReaderOpened } from './reader-open';
@@ -78,7 +78,7 @@ import {
   probePositions,
   syncPositions
 } from './positions-sync';
-import { _resetRemoteReadsForTests, remoteReads } from '$lib/reading-history/remote-reads';
+import { _resetRemoteReadsForTests, remoteReads } from '#lib/reading-history/remote-reads.js';
 
 const now = Date.parse('2026-10-16T12:00:00.000Z');
 
@@ -467,7 +467,7 @@ describe('syncPositions', () => {
 
 describe('adoption cost', () => {
   it('reads a catalog row only for the open volume, never one per adopted entry', async () => {
-    const { db } = await import('$lib/catalog/db');
+    const { db } = await import('#lib/catalog/db.js');
     stubCache([listed('a')]);
     pageCounts.set('v', 200);
     noteReaderOpened('v', Date.now());

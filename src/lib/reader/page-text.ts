@@ -9,7 +9,7 @@
  * order, which is mokuro's reading order, and each block is its lines joined
  * as they are stored (one sentence, however the print broke it).
  */
-import type { Page } from '$lib/types';
+import type { Page } from '#lib/types/index.js';
 
 /** The page indices on screen, in reading order. */
 export function spreadPageIndices(index: number, secondPage: boolean, pageCount: number): number[] {

@@ -1,10 +1,10 @@
 <script lang="ts">
-  import type { Page } from '$lib/types';
-  import type { EditSession } from '$lib/reader/edit/edit-session.svelte';
+  import type { Page } from '#lib/types/index.js';
+  import type { EditSession } from '#lib/reader/edit/edit-session.svelte.js';
   import TextBoxes from './TextBoxes.svelte';
   import EditOverlay from './Edit/EditOverlay.svelte';
-  import { acquireBlobUrl, blobForUrl, releaseBlobUrl } from '$lib/reader/blob-urls';
-  import { pageInkSetting } from '$lib/settings';
+  import { acquireBlobUrl, blobForUrl, releaseBlobUrl } from '#lib/reader/blob-urls.js';
+  import { pageInkSetting } from '#lib/settings/index.js';
   import {
     INK_GATE_MAX_MS,
     INK_PALETTE,
@@ -12,7 +12,7 @@
     inkColorFor,
     pageNeedsInk,
     peekPageInk
-  } from '$lib/reader/ink-color';
+  } from '#lib/reader/ink-color.js';
 
   interface ContextMenuData {
     x: number;

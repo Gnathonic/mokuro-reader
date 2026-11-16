@@ -13,10 +13,10 @@ import {
   sim,
   type SimLogEntry
 } from '../cloudsim';
-import { setCloudTestBases } from '$lib/util/sync/cloud-test-hooks';
-import type { CloudFileMetadata } from '$lib/util/sync/provider-interface';
+import { setCloudTestBases } from '#lib/util/sync/cloud-test-hooks.js';
+import type { CloudFileMetadata } from '#lib/util/sync/provider-interface.js';
 
-vi.mock('$app/environment', () => ({ browser: true, dev: false, building: false }));
+vi.mock('$app/env', () => ({ browser: true, dev: false, building: false }));
 
 const ACCOUNT = 'reader-mega';
 const EMAIL = 'reader@cloudsim.test';
@@ -24,7 +24,7 @@ const PASSWORD = 'cloudsim-password';
 const VOLUME = new Uint8Array(200_003).map((_, i) => (i * 13) % 251);
 
 describe.skipIf(!cloudsimForSuite())('MEGA provider against cloudsim', () => {
-  type Provider = import('$lib/util/sync/providers/mega/mega-provider').MegaProvider;
+  type Provider = import('#lib/util/sync/providers/mega/mega-provider.js').MegaProvider;
   let MegaProviderClass: new () => Provider;
   let provider: Provider;
   const opened: Provider[] = [];
@@ -48,7 +48,7 @@ describe.skipIf(!cloudsimForSuite())('MEGA provider against cloudsim', () => {
     setCloudTestBases(sim.bases());
     localStorage.removeItem('mega_session');
     ({ MegaProvider: MegaProviderClass } =
-      await import('$lib/util/sync/providers/mega/mega-provider'));
+      await import('#lib/util/sync/providers/mega/mega-provider.js'));
     await sim.megaAccount(ACCOUNT, EMAIL, PASSWORD);
     await sim.seed(
       'mega',
@@ -131,7 +131,7 @@ describe.skipIf(!cloudsimForSuite())('MEGA provider against cloudsim', () => {
   });
 
   it('worker transfers reach the simulator with the gateway from their credentials', async () => {
-    const { megaCore } = await import('$lib/util/sync/core/providers/mega-core');
+    const { megaCore } = await import('#lib/util/sync/core/providers/mega-core.js');
     const vol = await find(provider, 'Series A/Vol 1.cbz');
     const down = await provider.getWorkerDownloadCredentials(vol.fileId);
     // The saved session has no gateway (previous test): only the credentials do.

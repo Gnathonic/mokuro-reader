@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('$app/environment', () => ({ browser: true }));
+vi.mock('$app/env', () => ({ browser: true }));
 const syncProgress = vi.hoisted(() => vi.fn(async () => ({})));
 vi.mock('./sync/unified-cloud-manager', () => ({
   unifiedCloudManager: { getActiveProvider: vi.fn(() => ({ type: 'webdav' })), syncProgress }

@@ -13,9 +13,9 @@ import {
   isCuratedLayerId,
   isPersonalLayerId,
   isServerKeepsakeLayerId
-} from '$lib/reader/edit/layer-names';
-import { isCloudModelOutput } from '$lib/reader/edit/layer-kind';
-import type { VolumeOcrLayer, VolumeOcrLayerKind } from '$lib/types';
+} from '#lib/reader/edit/layer-names.js';
+import { isCloudModelOutput } from '#lib/reader/edit/layer-kind.js';
+import type { VolumeOcrLayer, VolumeOcrLayerKind } from '#lib/types/index.js';
 
 const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
 

@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { settings, updateSetting } from '$lib/settings';
-  import { listOptions, sliderDef } from '$lib/settings/setting-defs';
+  import { settings, updateSetting } from '#lib/settings/index.js';
+  import { listOptions, sliderDef } from '#lib/settings/setting-defs.js';
   import { Button, Label, Range, Select } from 'flowbite-svelte';
   import {
     INK_PALETTE,
@@ -10,8 +10,8 @@
     inkLayerColor,
     sanitizeInkColor,
     type InkColorSetting
-  } from '$lib/reader/ink-color';
-  import { clampPageAdjust } from '$lib/reader/page-filter';
+  } from '#lib/reader/ink-color.js';
+  import { clampPageAdjust } from '#lib/reader/page-filter.js';
 
   // Every label, option list, limit, step and reset value below is the
   // setting definition's (#55): the same data the key actions step by.

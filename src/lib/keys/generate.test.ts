@@ -13,7 +13,7 @@ import {
   resolveOptions,
   settingDef,
   type SettingDef
-} from '$lib/settings/setting-defs';
+} from '#lib/settings/setting-defs.js';
 
 const defs = SETTING_DEFS as readonly SettingDef[];
 const generated = generateSettingActions(defs);

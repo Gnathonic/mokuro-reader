@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { writable } from 'svelte/store';
 
-vi.mock('$lib/settings', () => ({
+vi.mock('#lib/settings/index.js', () => ({
   settings: writable({
     ankiConnectSettings: {
       url: 'http://127.0.0.1:8765',
@@ -22,8 +22,8 @@ vi.mock('$lib/settings', () => ({
   DEFAULT_MODEL_CONFIGS: {}
 }));
 
-vi.mock('$lib/util', () => ({ showSnackbar: vi.fn() }));
-vi.mock('$lib/util/platform', () => ({ isMobilePlatform: () => false }));
+vi.mock('#lib/util/index.js', () => ({ showSnackbar: vi.fn() }));
+vi.mock('#lib/util/platform.js', () => ({ isMobilePlatform: () => false }));
 
 import {
   createCard,

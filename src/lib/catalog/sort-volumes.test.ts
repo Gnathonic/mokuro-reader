@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { VolumeMetadata } from '$lib/types';
+import type { VolumeMetadata } from '#lib/types/index.js';
 import { sortVolumes } from './sort-volumes';
 
 // Helper function to create mock volume metadata

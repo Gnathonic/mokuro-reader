@@ -7,7 +7,7 @@ import {
   profiles,
   settings,
   updateSetting
-} from '$lib/settings/settings';
+} from '#lib/settings/settings.js';
 import type { KeyActionDef } from './actions';
 import { currentKeymap } from './live';
 import { actionDef, allActions } from './registry';

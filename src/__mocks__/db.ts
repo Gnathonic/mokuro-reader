@@ -3,7 +3,7 @@
  */
 
 import { vi } from 'vitest';
-import type { VolumeMetadata } from '$lib/types';
+import type { VolumeMetadata } from '#lib/types/index.js';
 
 // ============================================================================
 // Mock Data Storage
@@ -174,7 +174,7 @@ export function createSeededMockDb(volumes: VolumeMetadata[]) {
  * ```typescript
  * const mockDb = createMockDb();
  *
- * vi.mock('$lib/catalog/db', () => ({
+ * vi.mock('#lib/catalog/db.js', () => ({
  *   db: mockDb
  * }));
  *

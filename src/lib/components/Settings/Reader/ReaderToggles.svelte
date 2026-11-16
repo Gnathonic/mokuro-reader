@@ -6,15 +6,15 @@
     grayscaleActive,
     type SettingsKey,
     updateSetting
-  } from '$lib/settings';
-  import { listOptions, settingDef, type WheelMode } from '$lib/settings/setting-defs';
+  } from '#lib/settings/index.js';
+  import { listOptions, settingDef, type WheelMode } from '#lib/settings/setting-defs.js';
   import { Label, Select, Toggle } from 'flowbite-svelte';
   import ScheduledFilterCard from './ScheduledFilterCard.svelte';
   import PageAdjustCard from './PageAdjustCard.svelte';
   import ReadingTimerSetting from './ReadingTimerSetting.svelte';
   import KeyHint from '../Keys/KeyHint.svelte';
-  import type { ActionId } from '$lib/keys/actions';
-  import { editModeActive, requestEditMode } from '$lib/reader/edit/edit-mode';
+  import type { ActionId } from '#lib/keys/actions.js';
+  import { editModeActive, requestEditMode } from '#lib/reader/edit/edit-mode.js';
 
   let isContinuous = $derived($settings.continuousScroll);
 
@@ -59,6 +59,11 @@
         { key: 'mobile', text: 'Mobile', value: $settings.mobile },
         { key: 'showTimer', text: 'Show timer', value: $settings.showTimer },
         { key: 'quickActions', text: 'Show quick actions', value: $settings.quickActions },
+        {
+          key: 'pageKeysScrollFirst',
+          text: 'Page Up/Down scroll tall pages before turning',
+          value: $settings.pageKeysScrollFirst
+        },
         {
           key: 'disableAnimations',
           text: 'Disable animations (e-ink)',

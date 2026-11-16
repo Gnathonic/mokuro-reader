@@ -2,26 +2,26 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 
-vi.mock('$lib/settings', async () => {
+vi.mock('#lib/settings/index.js', async () => {
   const { writable } = await import('svelte/store');
   return { volumes: writable({}) };
 });
-vi.mock('$lib/settings/reading-speed', async () => {
+vi.mock('#lib/settings/reading-speed.js', async () => {
   const { writable } = await import('svelte/store');
   return { personalizedReadingSpeed: writable({ charsPerMinute: 100 }) };
 });
-vi.mock('$lib/catalog', async () => {
+vi.mock('#lib/catalog/index.js', async () => {
   const { writable } = await import('svelte/store');
   return { currentVolume: writable(null), currentVolumeCharacterCount: writable(0) };
 });
-vi.mock('$lib/util/reading-speed', () => ({ calculateVolumeTimeToFinish: () => null }));
-vi.mock('$lib/reading-history/series-speeds', async () => {
+vi.mock('#lib/util/reading-speed.js', () => ({ calculateVolumeTimeToFinish: () => null }));
+vi.mock('#lib/reading-history/series-speeds.js', async () => {
   const { writable } = await import('svelte/store');
   return { seriesSpeeds: writable(new Map()) };
 });
 // What the stats have counted for v1 so far (the store re-emits to apply it).
 const countedMs = vi.hoisted(() => ({ value: 0 }));
-vi.mock('$lib/reading-history/stats-store', async () => {
+vi.mock('#lib/reading-history/stats-store.js', async () => {
   const { writable } = await import('svelte/store');
   return {
     // 300 ms/char: a 400-char page expects 2 min, so its cap at k = 3 is 6 min.
@@ -30,8 +30,8 @@ vi.mock('$lib/reading-history/stats-store', async () => {
   };
 });
 
-import { endedView, liveView, readingPaused } from '$lib/reading-history/live-view';
-import { readingStats } from '$lib/reading-history/stats-store';
+import { endedView, liveView, readingPaused } from '#lib/reading-history/live-view.js';
+import { readingStats } from '#lib/reading-history/stats-store.js';
 import type { Writable } from 'svelte/store';
 import Timer from '../Timer.svelte';
 

@@ -8,7 +8,6 @@ import {
   getOrCreateDeviceId,
   onEventsRecorded,
   recordEvent,
-  recordResolve,
   recordView
 } from './record';
 import type { PagePayload, ReadingEvent } from './types';
@@ -202,21 +201,5 @@ describe('recordView', () => {
     await expect(recordView(page(1), 1, { count: 'none', t: 2 }, db)).resolves.toBeNull();
     await expect(recordEvent(page(2), 3, db)).resolves.toBeNull();
     expect(warn).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe('recordResolve', () => {
-  it('records an answer aimed at a page of any device (the review list)', async () => {
-    const db = freshDb();
-    const e = await recordResolve('vol-1', ['dev-b', 41], 'none', 700, db);
-    expect(e).toMatchObject({
-      kind: 'resolve',
-      volume: 'vol-1',
-      target: ['dev-b', 41],
-      count: 'none',
-      seq: 1,
-      t: 700
-    });
-    expect(await db.reading_events.get([e!.device, 1])).toEqual(e);
   });
 });

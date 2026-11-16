@@ -1,8 +1,8 @@
 <script lang="ts">
   import { Label, Select } from 'flowbite-svelte';
-  import type { SettingsKey } from '$lib/settings';
-  import { settings, updateSetting } from '$lib/settings';
-  import { listOptions } from '$lib/settings/setting-defs';
+  import type { SettingsKey } from '#lib/settings/index.js';
+  import { settings, updateSetting } from '#lib/settings/index.js';
+  import { listOptions } from '#lib/settings/setting-defs.js';
   import KeyHint from '../Keys/KeyHint.svelte';
 
   let isContinuous = $derived($settings.continuousScroll);

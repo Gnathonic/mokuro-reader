@@ -9,14 +9,14 @@
  * settings-open flag, Open upload opens the NavBar's dialog.
  */
 import { get } from 'svelte/store';
-import { openSettings, uploadModalOpen } from '$lib/settings/settings-open';
-import { nav } from '$lib/util/hash-router';
-import { showSnackbar } from '$lib/util/snackbar';
-import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
+import { openSettings, uploadModalOpen } from '#lib/settings/settings-open.js';
+import { nav } from '#lib/util/hash-router.js';
+import { showSnackbar } from '#lib/util/snackbar.js';
+import { unifiedCloudManager } from '#lib/util/sync/unified-cloud-manager.js';
 import {
   unifiedProviderState,
   type UnifiedProviderState
-} from '$lib/util/sync/unified-provider-state';
+} from '#lib/util/sync/unified-provider-state.js';
 import type { AppCommandId } from './actions';
 import { announce } from './announce';
 import type { KeyHandler } from './dispatch';

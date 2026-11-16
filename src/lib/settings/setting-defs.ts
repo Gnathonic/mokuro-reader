@@ -26,8 +26,8 @@
  * `QUICK_MENU_DEFAULT` (`$lib/keys/quick-menu.ts`).
  */
 import { get, type Writable } from 'svelte/store';
-import type { ActionGroup, KeyScope, PinnedActionId, ReaderMode } from '$lib/keys/actions';
-import type { IconName } from '$lib/keys/icon-names';
+import type { ActionGroup, KeyScope, PinnedActionId, ReaderMode } from '#lib/keys/actions.js';
+import type { IconName } from '#lib/keys/icon-names.js';
 import {
   INK_COLOR_SETTINGS,
   INK_STRENGTH_DEFAULT,
@@ -43,15 +43,15 @@ import {
   clampPaperAge,
   clampPaperTint,
   sanitizeInkColor
-} from '$lib/reader/ink-color';
+} from '#lib/reader/ink-color.js';
 import {
   PAGE_ADJUST_DEFAULT,
   PAGE_ADJUST_MAX,
   PAGE_ADJUST_MIN,
   PAGE_ADJUST_STEP,
   clampPageAdjust
-} from '$lib/reader/page-filter';
-import { GAP_WHEEL_STEP_SIZE, MAX_PAGE_GAP } from '$lib/reader/zoom-math';
+} from '#lib/reader/page-filter.js';
+import { GAP_WHEEL_STEP_SIZE, MAX_PAGE_GAP } from '#lib/reader/zoom-math.js';
 import { applyCatalogPreset, markCatalogPresetCustom } from './catalog-presets';
 import { miscSettings, updateMiscSetting, type MiscSettingsKey } from './misc';
 import { seriesSortMode, seriesViewMode } from './series-view-prefs';

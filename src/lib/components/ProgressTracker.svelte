@@ -1,8 +1,8 @@
 <script lang="ts">
   import { Progressbar } from 'flowbite-svelte';
   import { CaretDownSolid, CaretUpSolid } from 'flowbite-svelte-icons';
-  import { formatBytes } from '$lib/util';
-  import { progressTrackerStore } from '$lib/util/progress-tracker';
+  import { formatBytes } from '#lib/util/index.js';
+  import { progressTrackerStore } from '#lib/util/progress-tracker.js';
 
   let expanded = $state(true);
 

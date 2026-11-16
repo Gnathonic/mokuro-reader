@@ -2,10 +2,10 @@
  * Series merge functionality for consolidating volumes with different series UUIDs
  */
 
-import { db } from '$lib/catalog/db';
-import { volumes as volumeDataStore } from '$lib/settings/volume-data';
+import { db } from '#lib/catalog/db.js';
+import { volumes as volumeDataStore } from '#lib/settings/volume-data.js';
 import { get } from 'svelte/store';
-import type { VolumeMetadata } from '$lib/types';
+import type { VolumeMetadata } from '#lib/types/index.js';
 
 export interface SeriesConflict {
   seriesTitle: string;
@@ -201,7 +201,7 @@ export async function executeMergeSeries(
     // Execute LocalStorage updates
     if (preview.localStorageChanges.length > 0) {
       // Import the update function we need
-      const { updateVolumeMetadata } = await import('$lib/settings/volume-data');
+      const { updateVolumeMetadata } = await import('#lib/settings/volume-data.js');
 
       for (const change of preview.localStorageChanges) {
         updateVolumeMetadata(change.volumeUuid, change.newValue);

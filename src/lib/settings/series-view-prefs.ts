@@ -4,7 +4,7 @@
  * and write them. Same localStorage keys and values as before, so nobody's
  * choice is lost.
  */
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 import { writable, type Writable } from 'svelte/store';
 
 export type SeriesViewMode = 'grid' | 'list';

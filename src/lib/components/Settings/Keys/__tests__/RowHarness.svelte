@@ -1,9 +1,9 @@
 <script lang="ts">
   // Test harness: one KeyActionRow with its own bindings state, the way
   // KeyboardShortcuts.svelte holds it (minus the profile store).
-  import type { ActionId } from '$lib/keys/actions';
-  import type { KeyBindings } from '$lib/keys/keymap';
-  import { actionDef, allActions } from '$lib/keys/registry';
+  import type { ActionId } from '#lib/keys/actions.js';
+  import type { KeyBindings } from '#lib/keys/keymap.js';
+  import { actionDef, allActions } from '#lib/keys/registry.js';
   import KeyActionRow from '../KeyActionRow.svelte';
 
   let {

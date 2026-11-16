@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { IntersectionObserverStub } from '$lib/catalog/__tests__/intersection-observer-stub';
+import { IntersectionObserverStub } from '#lib/catalog/__tests__/intersection-observer-stub.js';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { get } from 'svelte/store';
-import { createEmptySeriesMetadata } from '$lib/metadata/types';
-import type { VolumeMetadata } from '$lib/types';
+import { createEmptySeriesMetadata } from '#lib/metadata/types.js';
+import type { VolumeMetadata } from '#lib/types/index.js';
 
 // vi.hoisted: `vi.mock` factories are hoisted above every other top-level
 // statement (including this file's own imports), so the stores the factories
@@ -64,38 +64,38 @@ const h = vi.hoisted(() => {
   };
 });
 
-vi.mock('$lib/catalog', () => ({ catalog: h.catalog }));
-vi.mock('$lib/util/series-rename', () => ({ executeRenameSeries: h.executeRenameSeries }));
-vi.mock('$lib/metadata/store', () => ({
+vi.mock('#lib/catalog/index.js', () => ({ catalog: h.catalog }));
+vi.mock('#lib/util/series-rename.js', () => ({ executeRenameSeries: h.executeRenameSeries }));
+vi.mock('#lib/metadata/store.js', () => ({
   seriesMetadataMap: h.seriesMetadataMap,
   updateSeriesMetadata: vi.fn(),
   unlinkSeries: vi.fn()
 }));
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: { cloudFiles: h.noopStore }
 }));
-vi.mock('$lib/util/sync', () => ({ providerManager: { status: h.providerStatus } }));
-vi.mock('$lib/util', async () => {
+vi.mock('#lib/util/sync/index.js', () => ({ providerManager: { status: h.providerStatus } }));
+vi.mock('#lib/util/index.js', async () => {
   // `$lib/util` re-exports `./modals`; the confirmation popup reads its store through the
   // barrel while the panel imports it directly, and both must see the SAME store instance.
-  const modals = await vi.importActual<typeof import('$lib/util/modals')>('$lib/util/modals');
+  const modals = await vi.importActual<typeof import('#lib/util/modals.js')>('#lib/util/modals.js');
   return { ...modals, showSnackbar: vi.fn() };
 });
-vi.mock('$lib/util/hash-router', () => ({
+vi.mock('#lib/util/hash-router.js', () => ({
   nav: { toSeries: h.toSeries },
   currentView: h.currentView
 }));
-vi.mock('$lib/settings/settings', () => ({
+vi.mock('#lib/settings/settings.js', () => ({
   preferredTitleLanguage: h.preferredTitleLanguage,
   catalogSettings: h.catalogSettings
 }));
 // The modal mounts SeriesTrackingPanel; these keep its module graph (IndexedDB,
 // the AniList tracker) out of a test about the modal itself.
-vi.mock('$lib/settings/volume-data', () => ({
+vi.mock('#lib/settings/volume-data.js', () => ({
   volumes: h.volumesData,
   progress: h.progressData
 }));
-vi.mock('$lib/metadata/progress-tracker', () => ({
+vi.mock('#lib/metadata/progress-tracker.js', () => ({
   computeLocalPassState: () => ({
     passProgress: 0,
     allCompleted: false,
@@ -105,10 +105,10 @@ vi.mock('$lib/metadata/progress-tracker', () => ({
   }),
   onReadCountChanged: vi.fn(async () => 'nothing')
 }));
-vi.mock('$lib/metadata/reread', () => ({ restartSeries: vi.fn() }));
+vi.mock('#lib/metadata/reread.js', () => ({ restartSeries: vi.fn() }));
 // The nested SeriesLinkModal kicks off a debounced AniList search as soon as it opens;
 // stub the search driver so opening it in a test never reaches the network.
-vi.mock('$lib/metadata/link-search', () => ({
+vi.mock('#lib/metadata/link-search.js', () => ({
   createLinkSearch: () => ({ setQuery: vi.fn(), cancel: vi.fn() }),
   describeSearchError: (e: unknown) => String(e)
 }));
@@ -117,11 +117,11 @@ vi.mock('$lib/metadata/link-search', () => ({
 // keep that graph out of a test about the modal (the shelf's own suite,
 // `SeriesSpineShowcase.test.ts`, covers its cover-request behaviour, and
 // `cover-service.test.ts` covers delivery).
-vi.mock('$lib/catalog/cover-service', () => ({
+vi.mock('#lib/catalog/cover-service.js', () => ({
   requestCover: vi.fn(),
   isCoverFetchTarget: vi.fn(() => false)
 }));
-vi.mock('$lib/metadata/anilist-auth', () => ({
+vi.mock('#lib/metadata/anilist-auth.js', () => ({
   getAniListClientId: () => h.auth.clientId,
   getAniListToken: () => null,
   anilistUser: h.anilistUser,
@@ -129,16 +129,16 @@ vi.mock('$lib/metadata/anilist-auth', () => ({
 }));
 
 import SeriesEditorModal from '../SeriesEditorModal.svelte';
-import ConfirmationPopup from '$lib/components/ConfirmationPopup.svelte';
+import ConfirmationPopup from '#lib/components/ConfirmationPopup.svelte';
 import {
   seriesEditorModalStore,
   promptSeriesEditor,
   closeSeriesEditor,
   promptConfirmation,
   confirmationPopupStore
-} from '$lib/util/modals';
-import { showSnackbar } from '$lib/util';
-import { updateSeriesMetadata, unlinkSeries } from '$lib/metadata/store';
+} from '#lib/util/modals.js';
+import { showSnackbar } from '#lib/util/index.js';
+import { updateSeriesMetadata, unlinkSeries } from '#lib/metadata/store.js';
 
 function volume(seriesTitle: string, title: string, isPlaceholder = false): VolumeMetadata {
   return {

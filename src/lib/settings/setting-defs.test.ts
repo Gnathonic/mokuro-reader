@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { get } from 'svelte/store';
-import { GROUP_ORDER, PINNED_ACTIONS, SCOPES } from '$lib/keys/actions';
-import { ICON_NAMES } from '$lib/keys/icon-names';
-import { INK_COLOR_SETTINGS } from '$lib/reader/ink-color';
-import { PAGE_ADJUST_MAX, PAGE_ADJUST_MIN, PAGE_ADJUST_STEP } from '$lib/reader/page-filter';
-import { MAX_PAGE_GAP } from '$lib/reader/zoom-math';
+import { GROUP_ORDER, PINNED_ACTIONS, SCOPES } from '#lib/keys/actions.js';
+import { ICON_NAMES } from '#lib/keys/icon-names.js';
+import { INK_COLOR_SETTINGS } from '#lib/reader/ink-color.js';
+import { PAGE_ADJUST_MAX, PAGE_ADJUST_MIN, PAGE_ADJUST_STEP } from '#lib/reader/page-filter.js';
+import { MAX_PAGE_GAP } from '#lib/reader/zoom-math.js';
 import {
   SETTING_DEFS,
   findSettingDef,
