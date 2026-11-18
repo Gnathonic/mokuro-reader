@@ -1452,6 +1452,7 @@ Rules:
 | Reading goals, custom goals, closed-period snapshots               | `goals.json`                              | `lastUpdated` per key; snapshots union |
 | Per-volume reading deadlines                                       | `goals.json` → `volumeDeadlines`          | `lastUpdated` per volume uuid          |
 | Idle cutoff (automatic / manual override, `k`), long-pause default | `volume-data.json` → `tracking` section   | `lastUpdated` per key                  |
+| Mark-as-read policy (`tracking.markRead`: ask / count / skip)      | `volume-data.json` → `tracking` section   | `lastUpdated` per key                  |
 | Pre-history reading snapshot (`legacyStats`)                       | `volume-data.json` (volume uuid keys)     | later `before` wins                    |
 | Device names, class corrections, merges                            | `volume-data.json` → `tracking.devices`   | `lastUpdated` per device id            |
 | Newest reading position (30 days)                                  | `positions.json`                          | newest `t` per volume                  |
@@ -1673,7 +1674,8 @@ uncapped `dwell_ms`, emitted when the view ends via `ViewTracker`; a hidden
 tab has no view), `adjust` (volume editor time/chars edits), `restart`
 ("restart series"), `forget` (delete stats), `position` (an answer to a
 cross-device position offer — see below), `resolve` (an answer about a long
-pause — see below). Record through `recordEvent` (`recordView` for a view and
+pause — see below), `credit` / `retract` / `reset` (pages counted by "Mark as
+read", and the editor's Reset All — see below). Record through `recordEvent` (`recordView` for a view and
 its answer in one transaction, `recordResolve` for a later answer), which
 never throw and load the DB module lazily (`volume-data.ts` imports it; many
 suites mock `dexie` bare).
@@ -1731,8 +1733,8 @@ freeze) + history after` (`figuresFor`, via the engine's per-volume
   pace until it moves > 2%, and the pace / recent speed take volumes newest
   first (`estimatePace`, `recentSpeed`) — never sort the whole library there.
 - `timeReadInMinutes` is frozen: parsed, never written. The volume editor
-  edits the derived time and records the difference as an `adjust` event (no
-  record stamp). The reader timer is that figure plus the open view counted by
+  edits the derived MEASURED time (never what "mark as read" counted, #224)
+  and records the difference as an `adjust` event (no record stamp). The reader timer is that figure plus the open view counted by
   the same rule (`countedDwell`: up to its cap); clicking it ends the view
   until the next page.
 - Recent speed = the newest 8 h of counted reading, by time (no per-volume
@@ -1866,6 +1868,115 @@ merged_into?, lastUpdated}`, `tracking-data.ts`) — never in `device.json`,
   a device this one knows nothing about keeps "on another device".
 - `e2e/devices.spec.ts` drives the offer's device name: browser contexts on
   the WebDAV stub (`device.json` + an encoded month).
+
+**Mark as read credits (#224).** "Mark as read" may count the pages this app
+never saw read (spec `2026-11-07-mark-as-read-credit-design.md`;
+`mark-read-flow.ts`, `credit.ts`, `MarkReadSheet.svelte`). Rules that must hold:
+
+- The mark itself is the same either way; the count is a `credit` event
+  beside it (`pages`, `page_chars`, `time_ms`), and Undo, un-read and the
+  editor's Remove take it back with a `retract` aimed at `[device, seq]`.
+  Nothing is ever edited.
+- Real reading always wins (`stats-engine.ts`): a credit claims only the pages
+  no counting view read in its pass and no earlier credit claimed. Credits
+  never feed samples, the pace or any speed — an estimate uses measured
+  reading only, and a speed that rounds below 1 char/min is no speed.
+- **Credits sit on top of the measured figures, never inside them.** The
+  engine keeps views, `adjust`s and resets apart (`measuredMs`,
+  `measuredChars`; per pass `measuredChars`); `figuresFor` adds the baseline,
+  clamps THAT at zero (`figures.measured`), and only then adds the credits —
+  per pass likewise (`passFiguresFor().measuredChars`), and a pass's budget is
+  the volume less its measured characters held at zero. The volume editor
+  (`editor-stats.ts`: `editorStats` / `editorSave`, the modal only renders
+  them) shows and edits the MEASURED time and characters; what marking read
+  counted is its own line ("Also counted when marked read … Remove"). So an
+  editor edit is always a difference from a measured figure, and no later
+  change to a credit — Reset All, Mark as unread, Remove, Undo, a retract or
+  credit synced in — can meet it: with every credit gone the figures are those
+  of the same history without credits, to the bit. (An edit made from a
+  figure holding a credit's time took that time off a second time when the
+  credit went, and a re-read came up short.) v1.11.0's edits were made from
+  measured figures (no credits then) and keep their meaning; drafts of this
+  feature that edited the total never shipped. Never let a credit decide an
+  edit or a gate: whatever the editor records must be the same with and
+  without credits. Pinned by `credit-edits.property.test.ts` (one user's run
+  of reading, marks, editor saves below a credit's time, Reset All, un-read,
+  Remove, Undo, v1.11.0 time/characters edits, restarts, re-reads and syncs
+  between devices, in a world that counts its marks and one that does not)
+  and `editor-stats.test.ts`.
+- **A credit never takes a pass past the volume.** Page claiming alone does
+  not bound it: the pre-history baseline, an `adjust`, a converted turn (a
+  stretch of pages under its first) and a page counted at an older OCR all
+  count characters a credit's pages cannot see. So every credit carries
+  `total_chars` (the volume's, same count as `page_chars`; `appendEvent`
+  refuses one without it) and the engine gives each pass a budget — the
+  newest credit's `total_chars` less the pass's views and adjusts — that
+  takes the excess off the credits' LOWEST pages (`coverFirstPages`: what a
+  pass counts without pages is reading from the start). The store does the
+  same for the frozen baseline's share of the pass it was frozen in
+  (`baselineOf`: its position part — archived reads being passes of their
+  own — less what that pass's OWN events from before the freeze explain,
+  `passTimelines`), and the sheet offers only what is left
+  (`pagesNotReadHere` takes page characters). The lifetime must never hold
+  more than its passes plus the archived reads, or a bound per pass is no
+  bound: the lifetime sets EVERY pre-freeze event against the snapshot, so a
+  pass that added the whole position on top of its own pre-freeze events
+  disagreed with it — after a v1.11.0 Reset All (a negative edit) and a
+  snapshot frozen later by a stale device, the pass showed 0 while the
+  lifetime showed the volume, and a credit filled the pass on top (12,000 /
+  6,000). One pass, nothing archived: the lifetime IS the pass. A credit row without `total_chars` (pre-release builds)
+  decodes but counts nothing. Per-volume "X / volume" figures are the
+  CURRENT pass (`passFiguresFor`); `figuresFor` is the lifetime, re-reads
+  included. Pinned by `credit-bound.test.ts` (real states through the flow)
+  and `credit-bound.property.test.ts` (a seeded sweep, snapshots frozen at
+  any point of the history).
+- **A credit never explains the baseline.** The engine's timeline (what
+  `totalsBefore` gives `unexplained`) holds views and edits only, and its
+  skims ignore claims. A record merge can keep a snapshot frozen AFTER other
+  devices' views; were a credit on a page skimmed before that freeze to stop
+  the skim explaining the snapshot, the baseline would grow by the page and
+  the credit's characters would come back as measured "Before history"
+  reading — past the budget, into speed, and out of reach of Remove. So the
+  baseline, and every measured figure, is the same with or without credits.
+  An UNFROZEN snapshot (`before: Infinity`) is explained and cut exactly as
+  freezing it now would, so the freeze changes no figure; and a mark freezes
+  the record's snapshot as it stood BEFORE it (`withFrozenBaselines`, the
+  mark-read flow) — the live count a mark moved to the whole volume would
+  otherwise hold the mark's pages as old reading and cut the credit to
+  nothing. The cut is computed once, per credit (`baselineOf`): the figures,
+  the editor's "Also counted when marked read" and Remove all read it.
+- **Reset All is a `reset` event**, not a characters adjust: it ends its pass
+  (a pass for the stats only — no archive, no position offer, unlike
+  `restart`) and takes that pass to zero, the baseline's share included; its
+  credits claim nothing. Pages may then be read or credited again. (An adjust
+  of minus the pass left every page "read in this pass": reading the volume
+  again counted nothing, and the editor sat at 0 / N for good.) Time is the
+  editor's own adjust, from the measured time it showed. Recorded only when
+  the pass MEASURED something to end (`resetEndsPass`: a page a view read,
+  any characters in its measured count, the baseline's share — never a
+  credit: a reset of a pass holding only credits would move later reading
+  into another pass than the same history without them) — a format-2 event
+  in a month makes format-1-only builds skip that whole device-month. Never
+  gate on the clamped pass figure: a v1.11.0 Reset All's negative adjust
+  holds it at 0 while the pass's pages are read. Every live credit goes by a
+  `retract` each (`editorSave`) — this pass's, as Remove does, and EARLIER
+  passes' too: Reset All takes the card's time to what the field saved, and
+  a credit's time cannot go without its characters (an earlier pass's
+  measured characters stay, as in v1.11.0). The editor shows earlier passes'
+  credits as a line of their own ("Counted when marked read in earlier
+  read-throughs"), so its time plus its lines is the card's time; Remove and
+  Mark as unread stay this read-through's (an Undo re-records a credit NOW,
+  in the current pass, so it could not restore an earlier pass's). "Count pages read
+  elsewhere…" is off while a Reset All waits for Save, and records no freeze
+  of the snapshot (it marks nothing, and a credit must not change the record).
+- A `credit`, `retract` or `reset` makes its month segment format 2; every other
+  segment stays format 1 byte for byte. Because every other device refuses
+  a whole device-month over one bad row, forever, `appendEvent` refuses a
+  credit no segment could carry (`creditRuns`: finite non-negative time and
+  page chars, ascending pages, runs under `MAX_CREDIT_RUN`) before storing it.
+- The sheet appears only from the mark actions, never from reader completion,
+  sync or position adoption. While the Undo shows the completion is held from
+  AniList (`markVolumesRead`); hiding or closing the tab hands it on.
 
 **Cloud (phase 2a).** Each device uploads ONLY its own events, one file per UTC
 month, `history/<device>/<YYYY-MM>.events` (deflated, versioned rows —

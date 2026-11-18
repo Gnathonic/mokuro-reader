@@ -10,7 +10,12 @@ vi.mock('#lib/catalog/db.js', () => ({
 }));
 
 import { get } from 'svelte/store';
-import { VolumeData, clearVolumes, volumesWithTrash } from '#lib/settings/volume-data.js';
+import {
+  VolumeData,
+  clearVolumes,
+  volumesWithTrash,
+  type LegacyStats
+} from '#lib/settings/volume-data.js';
 import { HistoryDexie } from './history-db';
 import { notifyEventsRecorded } from './record';
 import { _resetHistoryTurns, loadHistoryTurns } from './turns-store';
@@ -22,13 +27,20 @@ import {
   freezeLegacyBaselines,
   flushReadingStats,
   initReadingStats,
+  creditsFor,
+  measuredFigures,
+  pagesNotReadHere,
+  passFiguresFor,
   readingStats,
   readingStatsReady,
   recentReadingSpeed,
+  resetEndsPass,
   seriesReadingSpeed,
   seriesSpeed,
-  unexplainedBaseline
+  unexplainedBaseline,
+  withFrozenBaselines
 } from './stats-store';
+import { editorSave, editorStats } from './editor-stats';
 import type { ReadingEvent } from './types';
 
 const MIN = 60_000;
@@ -150,6 +162,469 @@ describe('figuresFor', () => {
     expect(figuresFor(get(readingStats), 'v1', { legacyStats })).toMatchObject({
       timeMs: 0,
       chars: 0
+    });
+  });
+});
+
+describe('credits (#224)', () => {
+  const credit = (
+    volume: string,
+    t: number,
+    pages: number[],
+    chars: number[],
+    ms: number,
+    total_chars: number
+  ) =>
+    ({
+      device: 'dev-a',
+      seq: ++seq,
+      t,
+      kind: 'credit',
+      volume,
+      pages,
+      page_chars: chars,
+      time_ms: ms,
+      total_chars
+    }) as ReadingEvent;
+  const restart = (volume: string, t: number): ReadingEvent => ({
+    device: 'dev-a',
+    seq: ++seq,
+    t,
+    kind: 'restart',
+    volume
+  });
+  /** Six pages of 1,000 characters. */
+  const SIX = [1000, 1000, 1000, 1000, 1000, 1000];
+
+  it('figures carry what credits counted, inside the totals; measured figures leave it out', async () => {
+    await record([
+      view('v1', 0, 1, 300, 3 * MIN),
+      credit('v1', MIN, [2, 3], [200, 100], 10 * MIN, 600)
+    ]);
+    const figures = figuresFor(get(readingStats), 'v1');
+    expect(figures).toMatchObject({
+      timeMs: 13 * MIN,
+      chars: 600,
+      credit: { timeMs: 10 * MIN, chars: 300 }
+    });
+    expect(measuredFigures(figures)).toEqual({ timeMs: 3 * MIN, chars: 300 });
+    expect(figuresFor(get(readingStats), 'none').credit).toEqual({ timeMs: 0, chars: 0 });
+  });
+
+  it('pages not read here: every page no view read and no credit claimed in this pass', async () => {
+    await record([
+      view('v1', 0, 2, 300, 3 * MIN),
+      view('v1', 5 * MIN, 3, 300, 3 * MIN),
+      credit('v1', 10 * MIN, [5], [100], MIN, 1000)
+    ]);
+    const pageChars = [100, 300, 300, 100, 100, 100];
+    expect(pagesNotReadHere(get(readingStats), 'v1', pageChars)).toEqual([1, 4, 6]);
+    expect(pagesNotReadHere(get(readingStats), 'never-read', [5, 5, 5])).toEqual([1, 2, 3]);
+  });
+
+  it('pre-history reading covers the first pages, whatever the position says now', async () => {
+    const legacyStats = { time_ms: 30 * MIN, chars: 4000, before: 1 };
+    // No events: the old lump is four pages' worth, read from the start.
+    expect(pagesNotReadHere(get(readingStats), 'old', SIX, { legacyStats })).toEqual([5, 6]);
+    // Un-read since (the page back at 0) or paged back: still four pages read.
+    expect(
+      pagesNotReadHere(get(readingStats), 'old', SIX, { legacyStats, chars: 0, completed: false })
+    ).toEqual([5, 6]);
+    // Nothing unexplained: nothing covered.
+    expect(pagesNotReadHere(get(readingStats), 'old', SIX, {})).toEqual([1, 2, 3, 4, 5, 6]);
+    // A page only partly covered goes too: a credit may undercount, never overcount.
+    const partial = { ...legacyStats, chars: 3500 };
+    expect(pagesNotReadHere(get(readingStats), 'old', SIX, { legacyStats: partial })).toEqual([
+      5, 6
+    ]);
+    // After a restart since the freeze the old lump belongs to an earlier pass.
+    await record([restart('old', 5)]);
+    expect(pagesNotReadHere(get(readingStats), 'old', SIX, { legacyStats })).toEqual([
+      1, 2, 3, 4, 5, 6
+    ]);
+  });
+
+  it("an archived pre-history read is its own pass: only the position's part is this pass's", async () => {
+    // Read once (archived, a restart at `at`), then four pages again, all before history.
+    const at = -10;
+    const record0 = {
+      legacyStats: { time_ms: 60 * MIN, chars: 6000 + 4000, before: 1 },
+      archivedReads: [{ at, chars: 6000 }]
+    };
+    await record([restart('old', at)]);
+    expect(pagesNotReadHere(get(readingStats), 'old', SIX, record0)).toEqual([5, 6]);
+    expect(passFiguresFor(get(readingStats), 'old', record0)).toMatchObject({
+      pass: 1,
+      chars: 4000
+    });
+  });
+
+  it('the baseline cuts the credits in its pass to what the volume has left, from the first pages', async () => {
+    const legacyStats = { time_ms: 30 * MIN, chars: 4000, before: 1 };
+    // Counted on a device that did not know the old reading: every page.
+    await record([
+      credit('old', 10, [1, 2, 3], [1000, 1000, 1000], 30 * MIN, 6000),
+      credit('old', 20, [4, 5, 6], [1000, 1000, 1000], 30 * MIN, 6000)
+    ]);
+    const stats = get(readingStats);
+    const figures = figuresFor(stats, 'old', { legacyStats });
+    // 4,000 before history + what the volume has left: 2,000.
+    expect(figures.chars).toBe(6000);
+    expect(figures.credit).toEqual({ timeMs: 20 * MIN, chars: 2000 });
+    expect(measuredFigures(figures)).toEqual({ timeMs: 30 * MIN, chars: 4000 });
+    // The old reading covers the first pages: the credits keep pages 5 and 6.
+    expect(creditsFor(stats, 'old', { legacyStats }).map((c) => [c.pages, c.chars, c.ms])).toEqual([
+      [[], 0, 0],
+      [[5, 6], 2000, 20 * MIN]
+    ]);
+    expect(passFiguresFor(stats, 'old', { legacyStats })).toEqual({
+      pass: 0,
+      chars: 6000,
+      measuredChars: 4000,
+      credit: { timeMs: 20 * MIN, chars: 2000 }
+    });
+  });
+
+  it('a credit in a later pass is not cut', async () => {
+    await record([restart('v1', 5), credit('v1', 10, [1, 2, 3, 4, 5, 6], SIX, 60 * MIN, 6000)]);
+    const frozen = { legacyStats: { time_ms: 30 * MIN, chars: 6000, before: 1 } };
+    expect(figuresFor(get(readingStats), 'v1', frozen)).toMatchObject({
+      chars: 12_000,
+      credit: { chars: 6000 }
+    });
+    expect(passFiguresFor(get(readingStats), 'v1', frozen).chars).toBe(6000);
+  });
+
+  it('an unfrozen snapshot counts as freezing it now would: a credit never moves its baseline', async () => {
+    // A record on the old minute counter (another device's), not frozen yet.
+    const unfrozen = { timeReadInMinutes: 30, chars: 4000 };
+    await record([view('v2', 0, 1, 1000, 5 * MIN)]);
+    const before = figuresFor(get(readingStats), 'v2', unfrozen);
+    expect(before).toMatchObject({ chars: 4000, baseline: { timeMs: 25 * MIN, chars: 3000 } });
+    // Counted on a device that did not know the old reading: every other page.
+    await record([credit('v2', 10, [2, 3, 4, 5, 6], SIX.slice(1), 50 * MIN, 6000)]);
+    const stats = get(readingStats);
+    const figures = figuresFor(stats, 'v2', unfrozen);
+    expect(figures).toMatchObject({
+      chars: 6000,
+      baseline: before.baseline,
+      credit: { chars: 2000, timeMs: 20 * MIN }
+    });
+    expect(measuredFigures(figures)).toEqual(measuredFigures(before));
+    // The freeze changes no figure, and no credit's share.
+    const frozen = { legacyStats: { time_ms: 30 * MIN, chars: 4000, before: Date.now() } };
+    expect(figuresFor(stats, 'v2', frozen)).toEqual(figures);
+    expect(creditsFor(stats, 'v2', frozen)).toEqual(creditsFor(stats, 'v2', unfrozen));
+    expect(passFiguresFor(stats, 'v2', frozen)).toEqual(passFiguresFor(stats, 'v2', unfrozen));
+  });
+
+  it('a figure, what a credit shows and what Remove takes back are one computation', async () => {
+    // Two credits at very different minutes per character; the baseline cuts
+    // the first one's pages only.
+    const legacyStats = { time_ms: 30 * MIN, chars: 2000, before: 1 };
+    await record([
+      credit('one', 10, [1, 2, 3], [1000, 1000, 1000], 90 * MIN, 6000),
+      credit('one', 20, [4, 5, 6], [1000, 1000, 1000], 3 * MIN, 6000)
+    ]);
+    const stats = get(readingStats);
+    const credits = creditsFor(stats, 'one', { legacyStats });
+    expect(credits.map((c) => [c.pages, c.chars, c.ms])).toEqual([
+      [[3], 1000, 30 * MIN],
+      [[4, 5, 6], 3000, 3 * MIN]
+    ]);
+    const shown = credits.reduce((n, c) => ({ ms: n.ms + c.ms, chars: n.chars + c.chars }), {
+      ms: 0,
+      chars: 0
+    });
+    expect(figuresFor(stats, 'one', { legacyStats }).credit).toEqual({
+      timeMs: shown.ms,
+      chars: shown.chars
+    });
+    expect(passFiguresFor(stats, 'one', { legacyStats }).credit).toEqual({
+      timeMs: shown.ms,
+      chars: shown.chars
+    });
+    expect(figuresFor(stats, 'one', { legacyStats }).timeMs).toBe(30 * MIN + shown.ms);
+  });
+
+  /**
+   * The review's counterexample: native views from before the freeze (a
+   * record merge kept a later device's snapshot), pages 1–4 read and 5–10
+   * skimmed, all of it in the old counter's 1,000.
+   */
+  const readThenSkimmed = (volume: string) => [
+    ...[1, 2, 3, 4].map((page) => view(volume, page * MIN, page, 100, MIN)),
+    ...[5, 6, 7, 8, 9, 10].map((page) => view(volume, (10 + page) * MIN, page, 100, 500))
+  ];
+  const frozenAfter = { legacyStats: { time_ms: 10 * MIN, chars: 1000, before: 30 * MIN } };
+  const TEN = Array.from({ length: 10 }, () => 100);
+
+  it('a credit on pages skimmed before the freeze counts as a credit, never as baseline', async () => {
+    await record(readThenSkimmed('sk'));
+    const before = figuresFor(get(readingStats), 'sk', frozenAfter);
+    expect(before).toMatchObject({ chars: 400, baseline: { chars: 0 } });
+    // The sheet offers the skimmed pages: they were never read.
+    expect(pagesNotReadHere(get(readingStats), 'sk', TEN, frozenAfter)).toEqual([
+      5, 6, 7, 8, 9, 10
+    ]);
+    await record([credit('sk', 40 * MIN, [5, 6, 7, 8, 9, 10], TEN.slice(4), 6 * MIN, 1000)]);
+    const after = figuresFor(get(readingStats), 'sk', frozenAfter);
+    expect(after).toMatchObject({
+      chars: 1000,
+      baseline: { chars: 0 },
+      credit: { chars: 600, timeMs: 6 * MIN }
+    });
+    // Speed: the same reading as before the mark.
+    expect(measuredFigures(after)).toEqual(measuredFigures(before));
+    expect(creditsFor(get(readingStats), 'sk', frozenAfter)[0].chars).toBe(600);
+  });
+
+  it('… and with an older editor’s adjust filling the pass, the credit adds nothing', async () => {
+    const adjust: ReadingEvent = {
+      device: 'dev-c',
+      seq: ++seq,
+      t: 35 * MIN,
+      kind: 'adjust',
+      volume: 'sa',
+      time_delta_ms: 0,
+      chars_delta: 600
+    };
+    await record([...readThenSkimmed('sa'), adjust]);
+    const before = figuresFor(get(readingStats), 'sa', frozenAfter);
+    expect(before.chars).toBe(1000);
+    await record([credit('sa', 40 * MIN, [5, 6, 7, 8, 9, 10], TEN.slice(4), 6 * MIN, 1000)]);
+    const stats = get(readingStats);
+    expect(figuresFor(stats, 'sa', frozenAfter)).toMatchObject({
+      chars: 1000,
+      credit: { chars: 0 }
+    });
+    expect(passFiguresFor(stats, 'sa', frozenAfter).chars).toBe(1000);
+    expect(measuredFigures(figuresFor(stats, 'sa', frozenAfter))).toEqual(measuredFigures(before));
+  });
+
+  it('Reset All takes the pass to zero, the baseline’s share included; reading again counts again', async () => {
+    const legacyStats = { time_ms: 30 * MIN, chars: 4000, before: 1 };
+    await record([
+      view('rs', 10, 5, 1000, 5 * MIN),
+      credit('rs', 20, [6], [1000], 5 * MIN, 6000),
+      { device: 'dev-a', seq: ++seq, t: 30, kind: 'reset', volume: 'rs' }
+    ]);
+    let stats = get(readingStats);
+    expect(passFiguresFor(stats, 'rs', { legacyStats })).toMatchObject({ pass: 1, chars: 0 });
+    expect(figuresFor(stats, 'rs', { legacyStats })).toMatchObject({
+      chars: 0,
+      baseline: { chars: 0 },
+      credit: { chars: 0 }
+    });
+    expect(pagesNotReadHere(stats, 'rs', SIX, { legacyStats })).toEqual([1, 2, 3, 4, 5, 6]);
+    // Read through again in the app.
+    await record([1, 2, 3, 4, 5, 6].map((page) => view('rs', 100 + page * MIN, page, 1000, MIN)));
+    stats = get(readingStats);
+    expect(passFiguresFor(stats, 'rs', { legacyStats }).chars).toBe(6000);
+    expect(figuresFor(stats, 'rs', { legacyStats }).chars).toBe(6000);
+    expect(pagesNotReadHere(stats, 'rs', SIX, { legacyStats })).toEqual([]);
+  });
+
+  /**
+   * The editor's Reset All save, as `updateVolumeStats` records it
+   * (`editorSave`): the time field (0) less the measured time it showed as
+   * an adjust, the reset when the pass measured something to end, and a
+   * retract of each credit of the pass.
+   */
+  async function resetAll(volume: string, t: number, source?: { legacyStats: LegacyStats }) {
+    const stats = get(readingStats);
+    const save = editorSave(stats, volume, source, {
+      shownMinutes: editorStats(stats, volume, source).minutes,
+      toMinutes: 0,
+      resetAll: true
+    });
+    const events: ReadingEvent[] = [
+      {
+        device: 'dev-a',
+        seq: ++seq,
+        t,
+        kind: 'adjust',
+        volume,
+        time_delta_ms: (save.timeRead.to - save.timeRead.from) * MIN,
+        chars_delta: 0
+      }
+    ];
+    if (save.reset) events.push({ device: 'dev-a', seq: ++seq, t: t + 1, kind: 'reset', volume });
+    for (const target of save.retract) {
+      events.push({ device: 'dev-a', seq: ++seq, t: t + 2, kind: 'retract', volume, target });
+    }
+    await record(events);
+  }
+
+  /** A shipped v1.11.0 editor's Reset All: the record's characters as a negative adjust. */
+  const v111Reset = (volume: string, t: number, chars: number): ReadingEvent => ({
+    device: 'dev-c',
+    seq: ++seq,
+    t,
+    kind: 'adjust',
+    volume,
+    time_delta_ms: 0,
+    chars_delta: -chars
+  });
+
+  it('Reset All ends a pass a v1.11.0 Reset All left at ≤ 0 characters: reading again counts', async () => {
+    await record([
+      view('ra', 0, 1, 1000, MIN),
+      view('ra', MIN, 2, 1000, MIN),
+      view('ra', 2 * MIN, 3, 1000, MIN),
+      v111Reset('ra', 3 * MIN, 3000)
+    ]);
+    let stats = get(readingStats);
+    // Nothing shows in the pass, yet its pages are read: there is a pass to end.
+    expect(passFiguresFor(stats, 'ra').chars).toBe(0);
+    expect(resetEndsPass(stats, 'ra')).toBe(true);
+    await resetAll('ra', 10 * MIN);
+    await record([1, 2, 3].map((page) => view('ra', 20 * MIN + page * MIN, page, 1000, MIN)));
+    stats = get(readingStats);
+    expect(passFiguresFor(stats, 'ra').chars).toBe(3000);
+    expect(figuresFor(stats, 'ra')).toMatchObject({ timeMs: 3 * MIN, chars: 3000 });
+    // The re-read's views are real samples, not 0-character ones.
+    expect(
+      stats.byVolume
+        .get('ra')!
+        .samples.slice(-3)
+        .map((s) => s.chars)
+    ).toEqual([1000, 1000, 1000]);
+  });
+
+  it('… and with a credit in it: the credit sits on top, its time comes off once', async () => {
+    await record([
+      v111Reset('rb', 0, 6000),
+      credit('rb', MIN, [1, 2, 3, 4, 5, 6], SIX, 60 * MIN, 6000)
+    ]);
+    let stats = get(readingStats);
+    // The old edit holds what the pass measured at zero; the credit counts on top.
+    expect(passFiguresFor(stats, 'rb')).toMatchObject({ chars: 6000, measuredChars: 0 });
+    expect(resetEndsPass(stats, 'rb')).toBe(true);
+    await resetAll('rb', 70 * MIN);
+    await record(
+      [1, 2, 3, 4, 5, 6].map((page) => view('rb', 80 * MIN + page * MIN, page, 1000, MIN))
+    );
+    stats = get(readingStats);
+    const figures = figuresFor(stats, 'rb');
+    expect(figures).toMatchObject({ timeMs: 6 * MIN, chars: 6000, credit: { timeMs: 0 } });
+    expect(measuredFigures(figures)).toEqual({ timeMs: 6 * MIN, chars: 6000 });
+  });
+
+  it('a pass with nothing in it, or only skims, has nothing for Reset All to end', async () => {
+    expect(resetEndsPass(get(readingStats), 'rn')).toBe(false);
+    // 1000 characters in 2 s: a skim, not reading.
+    await record([view('rn', 10, 1, 1000, 2000)]);
+    expect(resetEndsPass(get(readingStats), 'rn')).toBe(false);
+    // The pre-history baseline's share in the pass is something to end.
+    const legacyStats = { time_ms: MIN, chars: 500, before: 1 };
+    expect(resetEndsPass(get(readingStats), 'rn', { legacyStats })).toBe(true);
+  });
+
+  it("Reset All takes a credit's time off once: reading again counts in full", async () => {
+    await record([
+      view('rt', 0, 1, 1000, 5 * MIN),
+      credit('rt', MIN, [2, 3], [1000, 1000], 5 * MIN, 3000)
+    ]);
+    expect(figuresFor(get(readingStats), 'rt')).toMatchObject({
+      timeMs: 10 * MIN,
+      credit: { timeMs: 5 * MIN }
+    });
+    await resetAll('rt', 10 * MIN);
+    let figures = figuresFor(get(readingStats), 'rt');
+    expect(figures).toMatchObject({ timeMs: 0, chars: 0, credit: { timeMs: 0, chars: 0 } });
+    // Read the volume again: 3 pages, 3 minutes, all of it counted.
+    await record([1, 2, 3].map((page) => view('rt', 20 * MIN + page * MIN, page, 1000, MIN)));
+    figures = figuresFor(get(readingStats), 'rt');
+    expect(figures).toMatchObject({ timeMs: 3 * MIN, chars: 3000 });
+    expect(measuredFigures(figures)).toEqual({ timeMs: 3 * MIN, chars: 3000 });
+  });
+
+  /**
+   * The review's counterexample: a v1.11.0 Reset All (a negative edit) on
+   * one device, and a snapshot frozen LATER on another device that never saw
+   * it (`volume-record-merge.ts` keeps the later freeze). The snapshot holds
+   * the old reading; the edit is explained by it. The pass and the lifetime
+   * must agree on that, or a credit fills the pass and lands on top of a
+   * lifetime figure that already holds the volume.
+   */
+  it('a negative edit a later-frozen snapshot explains: the pass holds what the lifetime holds', async () => {
+    const legacyStats = { time_ms: 120 * MIN, chars: 6000, before: 3 * MIN };
+    await record([
+      { ...v111Reset('ln', 2 * MIN, 6000), time_delta_ms: -120 * MIN } as ReadingEvent
+    ]);
+    let stats = get(readingStats);
+    expect(figuresFor(stats, 'ln', { legacyStats }).chars).toBe(6000);
+    // One pass, nothing archived: the pass is the lifetime.
+    expect(passFiguresFor(stats, 'ln', { legacyStats })).toMatchObject({
+      chars: 6000,
+      measuredChars: 6000
+    });
+    expect(editorStats(stats, 'ln', { legacyStats }).passChars).toBe(6000);
+    expect(pagesNotReadHere(stats, 'ln', SIX, { legacyStats })).toEqual([]);
+    // Counted anyway, on a device that offered every page: nothing to add.
+    await record([credit('ln', 4 * MIN, [1, 2, 3, 4, 5, 6], SIX, 60 * MIN, 6000)]);
+    stats = get(readingStats);
+    expect(figuresFor(stats, 'ln', { legacyStats })).toMatchObject({
+      chars: 6000,
+      timeMs: 120 * MIN,
+      credit: { chars: 0, timeMs: 0 }
+    });
+  });
+
+  it('… the smaller shape: two pages, a negative edit, a snapshot of one or both', async () => {
+    const pages = [300, 300];
+    await record([v111Reset('ls', 2 * MIN, 300)]);
+    for (const chars of [300, 600]) {
+      const source = { legacyStats: { time_ms: 0, chars, before: 3 * MIN } };
+      const stats = get(readingStats);
+      const lifetime = figuresFor(stats, 'ls', source).chars;
+      expect(passFiguresFor(stats, 'ls', source).chars).toBe(lifetime);
+      const offered = pagesNotReadHere(stats, 'ls', pages, source);
+      expect(offered.reduce((n, page) => n + pages[page - 1], 0)).toBe(600 - lifetime);
+    }
+    await record([credit('ls', 4 * MIN, [1, 2], pages, 2 * MIN, 600)]);
+    for (const chars of [300, 600]) {
+      const source = { legacyStats: { time_ms: 0, chars, before: 3 * MIN } };
+      expect(figuresFor(get(readingStats), 'ls', source).chars).toBe(600);
+    }
+  });
+
+  it("the pass's share of the snapshot is its position less what that pass's own events explain", async () => {
+    // Read once before history (archived: its own pass), then 4,000 more,
+    // 1,000 of which history holds (a view before the freeze).
+    const source = {
+      legacyStats: { time_ms: 60 * MIN, chars: 6000 + 4000, before: 10 * MIN },
+      archivedReads: [{ at: -10, chars: 6000 }]
+    };
+    await record([restart('ap', -10), view('ap', MIN, 1, 1000, MIN)]);
+    const stats = get(readingStats);
+    // Not 1,000 + 4,000: the view is part of the old position.
+    expect(passFiguresFor(stats, 'ap', source).chars).toBe(4000);
+    expect(figuresFor(stats, 'ap', source).chars).toBe(10_000);
+    expect(pagesNotReadHere(stats, 'ap', SIX, source)).toEqual([5, 6]);
+  });
+
+  it('a negative edit in an EARLIER pass never inflates the snapshot’s pass', async () => {
+    await record([v111Reset('ep', MIN, 6000), restart('ep', 2 * MIN)]);
+    const source = { legacyStats: { time_ms: 0, chars: 3000, before: 3 * MIN } };
+    const stats = get(readingStats);
+    expect(passFiguresFor(stats, 'ep', source).chars).toBe(3000);
+    expect(figuresFor(stats, 'ep', source).chars).toBe(3000);
+  });
+
+  it('… also when the baseline had cut the credit', async () => {
+    const legacyStats = { time_ms: 30 * MIN, chars: 4000, before: 1 };
+    await record([credit('rc', 10, [1, 2, 3, 4, 5, 6], SIX, 60 * MIN, 6000)]);
+    expect(figuresFor(get(readingStats), 'rc', { legacyStats })).toMatchObject({
+      timeMs: 50 * MIN,
+      credit: { timeMs: 20 * MIN, chars: 2000 }
+    });
+    await resetAll('rc', 20, { legacyStats });
+    await record([view('rc', 100, 1, 1000, MIN)]);
+    expect(figuresFor(get(readingStats), 'rc', { legacyStats })).toMatchObject({
+      timeMs: MIN,
+      chars: 1000
     });
   });
 });
@@ -294,6 +769,32 @@ describe('freezeLegacyBaselines', () => {
     });
     freezeLegacyBaselines();
     expect(get(volumesWithTrash).v.legacyStats).toMatchObject({ time_ms: 0, chars: 2100 });
+  });
+
+  it('a mark freezes the snapshot as it stood before it (#224)', () => {
+    setRecords({ old: { progress: 4, chars: 4000, timeReadInMinutes: 30 } });
+    const mark = (id: string) =>
+      volumesWithTrash.update((all) => ({
+        ...all,
+        [id]: new VolumeData({ ...all[id], progress: 6, chars: 6000, completed: true })
+      }));
+    expect(withFrozenBaselines(['old', 'new'], () => (mark('old'), mark('new'), 'done'), 5)).toBe(
+      'done'
+    );
+    // Not the mark's 6,000: that is the credit's to count.
+    expect(get(volumesWithTrash).old.legacyStats).toEqual({
+      time_ms: 30 * MIN,
+      chars: 4000,
+      before: 5
+    });
+    // No reading before the mark (this device's first pass): an empty snapshot.
+    expect(get(volumesWithTrash).new.legacyStats).toEqual({ time_ms: 0, chars: 0, before: 5 });
+    // A frozen record keeps its snapshot; after the first pass a record
+    // with no old minutes gets none.
+    freezeLegacyBaselines();
+    setRecords({ fresh: { progress: 1, chars: 100 } });
+    withFrozenBaselines(['fresh'], () => mark('fresh'));
+    expect(get(volumesWithTrash).fresh.legacyStats).toBeUndefined();
   });
 });
 

@@ -1125,7 +1125,8 @@
     </Card>
   {:else if hasReadingData && $personalizedReadingSpeed.confidence === 'none' && $volumeSpeedData.length === 0}
     <!-- Collecting Data Message - Has page turns but not enough time yet -->
-    {@const minutesNeeded = 30 - $stats.totalTimeMinutes}
+    <!-- Measured time: what "mark as read" counted never makes a speed (#224). -->
+    {@const minutesNeeded = Math.ceil(30 - $stats.measuredTimeMinutes)}
     <Card class="mb-6 py-8 text-center">
       <ClockSolid size="lg" class="mx-auto mb-3 text-gray-500" />
       <h2 class="mb-2 text-lg font-semibold text-gray-300">Collecting Reading Data...</h2>
@@ -1168,6 +1169,11 @@
                 {formatNumber($stats.totalSkippedChars)} skimmed (not counted)
               </p>
             {/if}
+            {#if $stats.creditChars > 0}
+              <p class="text-xs text-gray-500" data-testid="credit-chars">
+                {formatNumber($stats.creditChars)} counted when marked read
+              </p>
+            {/if}
           </div>
           <ChartLineUpOutline size="lg" class="text-blue-500" />
         </div>
@@ -1191,6 +1197,11 @@
           <div>
             <p class="mb-1 text-sm text-gray-400">Total Time</p>
             <p class="text-2xl font-bold">{formatDuration($stats.totalTimeMinutes)}</p>
+            {#if $stats.creditTimeMinutes >= 1}
+              <p class="text-xs text-gray-500" data-testid="credit-time">
+                {formatDuration($stats.creditTimeMinutes)} counted when marked read
+              </p>
+            {/if}
             {#if $stats.speedTrend !== 0}
               {@const TrendIcon = getTrendIcon($stats.speedTrend)}
               <div class="mt-1 flex items-center gap-1 text-xs">

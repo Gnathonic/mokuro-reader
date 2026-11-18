@@ -35,6 +35,46 @@ import { eventKey, lookupVisits } from './visits';
  * - **Look-ups** (`visits.ts`). The views of a look-up visit that showed no
  *   page of its home view count their time but are skips: no characters
  *   read, no speed sample. Its home views count as any other.
+ * - **Credits** (#224: "Mark as read" counting pages not read in the app)
+ *   fill the gaps, and real reading always wins. Taken in time order, a
+ *   credit CLAIMS each of its pages that no counting view read in its pass
+ *   and no earlier credit claimed. A claimed page is not skimmed.
+ * - **A credit never takes a pass past the volume.** Page-exact claiming
+ *   alone does not bound a pass: an `adjust` carries no pages, a converted
+ *   turn carries a whole stretch's characters under its first page, and a
+ *   page's characters as a view recorded them can differ from the credit's
+ *   (an OCR upgrade, a placeholder's even spread). So each pass also has a
+ *   character BUDGET: the volume's characters as its newest credit counted
+ *   them (`total_chars`), less what its views and adjusts count (held at
+ *   zero, below). What its
+ *   credits claim beyond that comes off their LOWEST pages, across all of
+ *   them (`coverFirstPages`: what a pass counts without pages is reading from
+ *   the start), and a credit's time is `time_ms × counted chars / its
+ *   declared chars`. Real reading is never cut. The pre-history baseline is
+ *   the store's to set against the same pass (`stats-store.ts`).
+ *   A credit without `total_chars` (written by a pre-release build) counts
+ *   nothing. Credits never touch views: samples, the pace, pauses and
+ *   first/last read are the same with or without them. A `retract` cancels
+ *   its target whatever the order the two arrive in.
+ * - **Credits sit on top of what was measured.** Views, adjusts and resets
+ *   are the MEASURED totals (`measuredMs`, `measuredChars`; per pass
+ *   `measuredChars`), the same numbers with or without any credit; credits
+ *   are added after them, never mixed in. An editor edit is a difference
+ *   from a measured figure, so a credit made, cut or taken back later can
+ *   never meet one: a pass's budget is the volume less its measured
+ *   characters held at zero (an older editor's negative edit leaves the
+ *   whole volume to credit), and the store clamps the measured figures
+ *   before it adds the credits (`figuresFor`).
+ * - **Credits never explain the baseline.** The timeline (`totalsBefore`,
+ *   what the pre-history snapshot's events explain) holds views and edits
+ *   only, and its skims ignore claims. Otherwise a credit on a page skimmed
+ *   before the freeze would grow the unexplained baseline by that page, and
+ *   the credit's characters would come back as measured "Before history"
+ *   reading — past the budget, and into speed.
+ * - **Reset.** The volume editor's "Reset All" (`reset`) ends its pass like
+ *   a restart, and takes that pass to zero characters: an edit of the
+ *   resetting device by whatever its views and edits counted; its credits
+ *   claim nothing. Its pages may then be read (or credited) again.
  */
 
 export const DEFAULT_K = 3;
@@ -88,10 +128,33 @@ export interface PreparedView {
   answer: PauseCount | null;
 }
 
+/** A live (not retracted) credit, in its pass. */
+export interface PreparedCredit {
+  t: number;
+  device: string;
+  seq: number;
+  pass: number;
+  /** Its pages and their characters, as recorded. */
+  pages: Array<[page: number, chars: number]>;
+  timeMs: number;
+  /** Σ of its pages' characters, as recorded. */
+  declaredChars: number;
+  /** The volume's characters when it was counted (`total_chars`). */
+  volumeChars: number;
+}
+
 export interface PreparedVolume {
   views: PreparedView[];
+  /** Live credits, in time order (ties by device, then seq). */
+  credits: PreparedCredit[];
+  /** The latest pass (restarts so far). */
+  pass: number;
+  /** When each pass began: its `restart`'s `t` (−Infinity for the first). */
+  passStarts: number[];
   /** Volume-editor edits, in time order, with the device that made each. */
-  adjusts: Array<{ t: number; ms: number; chars: number; device: string }>;
+  adjusts: Array<{ t: number; ms: number; chars: number; device: string; pass: number }>;
+  /** "Reset All"s, in time order: each ends the pass it names (`ResetPayload`). */
+  resets: Array<{ t: number; device: string; pass: number }>;
   /** This volume's newest views usable for the pace, `[t, ms per char]`, newest first. */
   paceTail: Array<[t: number, rate: number]>;
 }
@@ -123,8 +186,9 @@ export interface Pause {
 
 /**
  * One device's share of a volume (phase 4). The parts sum to the volume:
- * Σ (`timeMs` + `adjustMs`) = `VolumeTotals.timeMs`, Σ (`readChars` +
- * `adjustChars`) = `readChars`, Σ `skippedChars` = `skippedChars`. A page's
+ * Σ (`timeMs` + `adjustMs` + `creditMs`) = `VolumeTotals.timeMs`,
+ * Σ (`readChars` + `adjustChars` + `creditChars`) = `readChars`,
+ * Σ `skippedChars` = `skippedChars`. A page's
  * characters go to the device whose view credited them (first view wins).
  */
 export interface DeviceTotals {
@@ -138,6 +202,9 @@ export interface DeviceTotals {
   /** Its volume-editor edits — kept apart: they are not reading. */
   adjustMs: number;
   adjustChars: number;
+  /** What its credits ("mark as read") claimed — kept apart: not measured reading. */
+  creditMs: number;
+  creditChars: number;
   /** Earliest view start and latest view end; `null` when it only edited. */
   firstReadAt: number | null;
   lastReadAt: number | null;
@@ -145,17 +212,27 @@ export interface DeviceTotals {
 
 export interface VolumeTotals {
   /**
-   * RAW totals: a negative `adjust` (an editor edit below what history
-   * holds) may take them below zero — the pre-history baseline is added
-   * before anything is clamped (`figuresFor`).
+   * RAW totals, credits included: `measured…` + `credit…`. The measured part
+   * may be below zero (an `adjust`: an editor edit below what history
+   * holds) — the store adds the pre-history baseline, clamps, and only then
+   * adds the credits (`figuresFor`).
    */
   timeMs: number;
   readChars: number;
+  /** What views, editor edits and resets count: everything but the credits. */
+  measuredMs: number;
+  measuredChars: number;
   skippedChars: number;
   lastReadAt: number | null;
   /** Latest end among `samples` (−Infinity without any). */
   newestSampleEnd: number;
   timeline: TimelinePoint[];
+  /**
+   * `timeline` per pass (index = pass): each pass's own entries, totalled
+   * within it — what the pre-history snapshot's pass explains of its
+   * position (`stats-store.ts`).
+   */
+  passTimelines: TimelinePoint[][];
   /** Non-skip views that counted time, oldest first. */
   samples: SpeedSample[];
   /** Native views over their cap or answered, oldest first. Legacy never. */
@@ -165,6 +242,56 @@ export interface VolumeTotals {
    * converted turn under the one key `LEGACY_DEVICE_PREFIX`.
    */
   byDevice: Map<string, DeviceTotals>;
+  /** What credits claimed — also inside `timeMs` and `readChars`. */
+  creditMs: number;
+  creditChars: number;
+  /** Every live credit with what it claims now (possibly nothing), oldest first. */
+  credits: CreditTotals[];
+  /** The latest pass. */
+  pass: number;
+  /** The latest pass's pages read by a counting view or claimed by a credit. */
+  passRead: Set<number>;
+  /** Of those, the pages a counting view read (what a "Reset All" has to end). */
+  passReadByViews: Set<number>;
+  /** Each pass's characters, index = pass (`passes.length === pass + 1`). */
+  passes: PassTotals[];
+}
+
+export interface CreditTotals {
+  device: string;
+  seq: number;
+  t: number;
+  pass: number;
+  /**
+   * Effective: what it counts now — the pages real reading left it, within
+   * the pass's budget. `pages` are the pages it counts (a partly counted
+   * page included), never more than its claimed ones.
+   */
+  ms: number;
+  chars: number;
+  pages: number[];
+  /** What it counts of each of `pages` (the first possibly in part). */
+  pageChars: number[];
+}
+
+/** One pass of a volume (`VolumeTotals.passes`). */
+export interface PassTotals {
+  /** When it began: its `restart`'s `t`; −Infinity for the first pass. */
+  start: number;
+  /**
+   * What its views, adjusts and reset count — RAW, so an older editor's
+   * negative edit may take it below zero.
+   */
+  measuredChars: number;
+  /** What it counts: `measuredChars` held at zero, plus what its credits count. */
+  chars: number;
+  /** Of `chars`, what its credits count, and their time. */
+  creditChars: number;
+  creditMs: number;
+  /** The volume's characters as its newest credit counted them; `null` without a credit. */
+  volumeChars: number | null;
+  /** A "Reset All" ended it: it counts no characters (`chars` is 0). */
+  reset: boolean;
 }
 
 export interface SpeedEstimate {
@@ -190,9 +317,13 @@ export function prepareVolume(events: ReadingEvent[]): PreparedVolume {
   // `live` is in time order (ties by device, then seq), so the last answer
   // set for a view is the latest — the same on every device.
   const answers = new Map<string, PauseCount>();
+  // Retracts are a set: their order, and a repeat, do not matter.
+  const retracted = new Set<string>();
   for (const e of live) {
     if (e.kind === 'resolve')
       answers.set(pauseKey({ device: e.target[0], seq: e.target[1] }), e.count);
+    else if (e.kind === 'retract')
+      retracted.add(pauseKey({ device: e.target[0], seq: e.target[1] }));
   }
 
   const native = live.filter(
@@ -215,15 +346,36 @@ export function prepareVolume(events: ReadingEvent[]): PreparedVolume {
   }
 
   const views: PreparedView[] = [];
+  const credits: PreparedCredit[] = [];
   const adjusts: PreparedVolume['adjusts'] = [];
+  const resets: PreparedVolume['resets'] = [];
+  const passStarts = [-Infinity];
   let pass = 0;
   for (const e of live) {
-    if (e.kind === 'restart') {
+    if (e.kind === 'restart' || e.kind === 'reset') {
+      if (e.kind === 'reset') resets.push({ t: e.t, device: e.device, pass });
       pass++;
+      passStarts.push(e.t);
+      continue;
+    }
+    if (e.kind === 'credit') {
+      // No volume size, no budget: a pre-release credit counts nothing.
+      if (retracted.has(pauseKey(e)) || e.total_chars === undefined) continue;
+      const pages = e.pages.map((page, i): [number, number] => [page, e.page_chars[i] ?? 0]);
+      credits.push({
+        t: e.t,
+        device: e.device,
+        seq: e.seq,
+        pass,
+        pages,
+        timeMs: e.time_ms,
+        declaredChars: pages.reduce((sum, [, c]) => sum + c, 0),
+        volumeChars: e.total_chars
+      });
       continue;
     }
     if (e.kind === 'adjust') {
-      adjusts.push({ t: e.t, ms: e.time_delta_ms, chars: e.chars_delta, device: e.device });
+      adjusts.push({ t: e.t, ms: e.time_delta_ms, chars: e.chars_delta, device: e.device, pass });
       continue;
     }
     if (e.kind !== 'page') continue;
@@ -259,7 +411,7 @@ export function prepareVolume(events: ReadingEvent[]): PreparedVolume {
     paceTail.push([v.t, v.dwell / v.chars]);
   }
   paceTail.sort((a, b) => b[0] - a[0]);
-  return { views, adjusts, paceTail };
+  return { views, credits, pass, passStarts, adjusts, resets, paceTail };
 }
 
 /** Median ms per character over the newest usable views of every volume. */
@@ -355,7 +507,7 @@ export function countVolume(
   pace: number | null,
   idle: IdleSettings
 ): VolumeTotals {
-  let timeMs = 0;
+  let measuredMs = 0;
   let lastReadAt: number | null = null;
   const counted: Array<{ view: PreparedView; ms: number; reads: boolean }> = [];
   const pauses: Pause[] = [];
@@ -386,41 +538,82 @@ export function countVolume(
         answer: view.answer
       });
     }
-    timeMs += ms;
+    measuredMs += ms;
     lastReadAt = Math.max(lastReadAt ?? view.end, view.end);
     counted.push({ view, ms, reads });
   }
 
   // Per pass: a page is read when any counting non-skip view showed it,
   // skipped when only skip views did (an unread legacy turn does neither).
-  let readChars = 0;
+  let measuredChars = 0;
   let skippedChars = 0;
-  const entries: Array<[t: number, ms: number, read: number, skipped: number]> = [];
+  const entries: Array<[t: number, ms: number, read: number, skipped: number, pass: number]> = [];
   const samples: SpeedSample[] = [];
   const credited = new Set<string>();
   const readPages = new Set<string>();
   for (const { view, reads } of counted) {
     if (reads) for (const [page] of view.pages) readPages.add(`${view.pass}|${page}`);
   }
+  // Credits fill what no counting view read, oldest first: each page once. A
+  // pass a "Reset All" ended counts no characters, so its credits claim nothing.
+  const resetPasses = new Set(prepared.resets.map((r) => r.pass));
+  const claimed = new Set<string>();
+  const creditParts: Array<{ credit: PreparedCredit; pages: Array<[number, number]> }> = [];
+  for (const credit of prepared.credits) {
+    const pages: Array<[number, number]> = [];
+    if (resetPasses.has(credit.pass)) {
+      creditParts.push({ credit, pages });
+      continue;
+    }
+    for (const [page, c] of credit.pages) {
+      const key = `${credit.pass}|${page}`;
+      if (readPages.has(key) || claimed.has(key)) continue;
+      claimed.add(key);
+      pages.push([page, c]);
+    }
+    creditParts.push({ credit, pages });
+  }
   const skippedSeen = new Set<string>();
+  // The timeline's skims ignore credits: what the pre-history snapshot's
+  // events explain must not move when a credit claims a skimmed page, or the
+  // baseline would take the credit's characters back as measured reading.
+  const skimmedSeen = new Set<string>();
   const byDevice = new Map<string, DeviceTotals>();
+  const passes: PassTotals[] = prepared.passStarts.map((start, pass) => ({
+    start,
+    measuredChars: 0,
+    chars: 0,
+    creditChars: 0,
+    creditMs: 0,
+    volumeChars: null,
+    reset: resetPasses.has(pass)
+  }));
   for (const { view, ms, reads } of counted) {
     let fresh = 0;
     let skimmed = 0;
+    let skimmedAny = 0;
     for (const [page, chars] of view.pages) {
       const key = `${view.pass}|${page}`;
       if (reads) {
         if (credited.has(key)) continue;
         credited.add(key);
         fresh += chars;
-      } else if (view.skip && !readPages.has(key) && !skippedSeen.has(key)) {
+        continue;
+      }
+      if (!view.skip || readPages.has(key)) continue;
+      if (!skimmedSeen.has(key)) {
+        skimmedSeen.add(key);
+        skimmedAny += chars;
+      }
+      if (!claimed.has(key) && !skippedSeen.has(key)) {
         skippedSeen.add(key);
         skimmed += chars;
       }
     }
-    readChars += fresh;
+    measuredChars += fresh;
     skippedChars += skimmed;
-    entries.push([view.t, ms, fresh, skimmed]);
+    passes[view.pass].measuredChars += fresh;
+    entries.push([view.t, ms, fresh, skimmedAny, view.pass]);
     const part = deviceTotals(byDevice, view.device);
     part.timeMs += ms;
     part.readChars += fresh;
@@ -434,37 +627,184 @@ export function countVolume(
     }
   }
   for (const a of prepared.adjusts) {
-    timeMs += a.ms;
-    readChars += a.chars;
-    entries.push([a.t, a.ms, a.chars, 0]);
+    measuredMs += a.ms;
+    measuredChars += a.chars;
+    passes[a.pass].measuredChars += a.chars;
+    entries.push([a.t, a.ms, a.chars, 0, a.pass]);
     const part = deviceTotals(byDevice, a.device);
     part.adjustMs += a.ms;
     part.adjustChars += a.chars;
   }
+  // Each pass's budget: the volume as its newest credit counted it, less
+  // what the pass measured (its views and adjusts) held at zero — credits sit
+  // on top of the measured figure, never inside it, so an older editor's
+  // negative edit neither swallows a credit nor lets one past the volume.
+  // What the credits claim beyond it comes off their lowest pages
+  // (`coverFirstPages`).
+  const kept: CountedPages[] = new Array(creditParts.length);
+  for (const { credit } of creditParts) passes[credit.pass].volumeChars = credit.volumeChars;
+  for (let pass = 0; pass < passes.length; pass++) {
+    const here = creditParts.flatMap((part, i) => (part.credit.pass === pass ? [i] : []));
+    if (here.length === 0) continue;
+    const claimedPages = here.map((i) => creditParts[i].pages);
+    let claimedChars = 0;
+    for (const pages of claimedPages) for (const [, c] of pages) claimedChars += c;
+    const measured = Math.max(0, passes[pass].measuredChars);
+    const room = Math.max(0, (passes[pass].volumeChars ?? 0) - measured);
+    const covered = coverFirstPages(claimedPages, claimedChars - room);
+    here.forEach((i, k) => (kept[i] = covered[k]));
+  }
+  let creditMs = 0;
+  let creditChars = 0;
+  const credits: CreditTotals[] = [];
+  for (let i = 0; i < creditParts.length; i++) {
+    const { credit } = creditParts[i];
+    const { pages, pageChars, chars } = kept[i];
+    const ms = creditShare(credit, pages.length, chars);
+    creditMs += ms;
+    creditChars += chars;
+    passes[credit.pass].creditChars += chars;
+    passes[credit.pass].creditMs += ms;
+    // Not in the timeline: what explains the pre-history snapshot is reading
+    // and edits only, so a credit never moves the baseline (`totalsBefore`).
+    const part = deviceTotals(byDevice, credit.device);
+    part.creditMs += ms;
+    part.creditChars += chars;
+    credits.push({
+      device: credit.device,
+      seq: credit.seq,
+      t: credit.t,
+      pass: credit.pass,
+      ms,
+      chars,
+      pages,
+      pageChars
+    });
+  }
+  // "Reset All" takes its pass to zero characters: an edit of the device that
+  // reset, by whatever the pass measured (views and edits — its credits
+  // claimed nothing). Time is the editor's own adjust.
+  for (const reset of prepared.resets) {
+    const chars = -passes[reset.pass].measuredChars;
+    if (chars === 0) continue;
+    measuredChars += chars;
+    passes[reset.pass].measuredChars = 0;
+    entries.push([reset.t, 0, chars, 0, reset.pass]);
+    deviceTotals(byDevice, reset.device).adjustChars += chars;
+  }
 
   entries.sort((a, b) => a[0] - b[0]);
   const timeline: TimelinePoint[] = [];
+  const passTimelines: TimelinePoint[][] = passes.map(() => []);
   let [t0, r0, s0] = [0, 0, 0];
-  for (const [t, ms, read, skipped] of entries) {
+  for (const [t, ms, read, skipped, pass] of entries) {
     t0 += ms;
     r0 += read;
     s0 += skipped;
     timeline.push([t, t0, r0, s0]);
+    const own = passTimelines[pass];
+    const [, pt, pr, ps] = own[own.length - 1] ?? [0, 0, 0, 0];
+    own.push([t, pt + ms, pr + read, ps + skipped]);
   }
+
+  for (const p of passes) p.chars = Math.max(0, p.measuredChars) + p.creditChars;
 
   let newestSampleEnd = -Infinity;
   for (const sample of samples) if (sample.end > newestSampleEnd) newestSampleEnd = sample.end;
+  const passReadByViews = new Set<number>();
+  const passPrefix = `${prepared.pass}|`;
+  for (const key of readPages)
+    if (key.startsWith(passPrefix)) passReadByViews.add(Number(key.slice(passPrefix.length)));
+  const passRead = new Set(passReadByViews);
+  for (const key of claimed)
+    if (key.startsWith(passPrefix)) passRead.add(Number(key.slice(passPrefix.length)));
   return {
-    timeMs,
-    readChars,
+    timeMs: measuredMs + creditMs,
+    readChars: measuredChars + creditChars,
+    measuredMs,
+    measuredChars,
     skippedChars,
     lastReadAt,
     newestSampleEnd,
     timeline,
+    passTimelines,
     samples,
     pauses,
-    byDevice
+    byDevice,
+    creditMs,
+    creditChars,
+    credits,
+    pass: prepared.pass,
+    passRead,
+    passReadByViews,
+    passes
   };
+}
+
+/** What a credit counts: its pages and each one's characters (the first possibly in part). */
+export interface CountedPages {
+  pages: number[];
+  pageChars: number[];
+  chars: number;
+}
+
+/**
+ * Credits' pages (one pass, each page in one credit at most) once `over`
+ * characters come off them, LOWEST PAGE FIRST across all of them: what a
+ * pass measures without pages — an adjust, the pre-history baseline, a
+ * converted turn's stretch, a count from an older OCR — is reading from the
+ * start, so it is the first pages it already holds. A page it covers in full
+ * goes; the page it covers in part keeps the rest.
+ */
+export function coverFirstPages(
+  credits: Array<Array<[page: number, chars: number]>>,
+  over: number
+): CountedPages[] {
+  const taken = credits.map((pages) => pages.map(() => -1));
+  if (over > 0) {
+    const order: Array<[page: number, credit: number, index: number]> = [];
+    credits.forEach((pages, i) => pages.forEach(([page], j) => order.push([page, i, j])));
+    order.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    let left = over;
+    for (const [, i, j] of order) {
+      if (left <= 0) break;
+      const take = Math.min(credits[i][j][1], left);
+      taken[i][j] = take;
+      left -= take;
+    }
+  }
+  return credits.map((claimed, i) => {
+    const pages: number[] = [];
+    const pageChars: number[] = [];
+    let chars = 0;
+    claimed.forEach(([page, c], j) => {
+      const take = taken[i][j];
+      if (take >= c && take >= 0) return;
+      const kept = c - Math.max(0, take);
+      pages.push(page);
+      pageChars.push(kept);
+      chars += kept;
+    });
+    return { pages, pageChars, chars };
+  });
+}
+
+/**
+ * A credit's time for what it counts: its time × counted chars / its
+ * declared chars (by pages when it declared none — an art-only credit).
+ */
+function creditShare(
+  credit: Pick<PreparedCredit, 'pages' | 'timeMs' | 'declaredChars'>,
+  countedPages: number,
+  countedChars: number
+): number {
+  if (credit.declaredChars > 0) {
+    return countedChars >= credit.declaredChars
+      ? credit.timeMs
+      : (credit.timeMs * countedChars) / credit.declaredChars;
+  }
+  if (countedPages === credit.pages.length) return credit.timeMs;
+  return credit.pages.length > 0 ? (credit.timeMs * countedPages) / credit.pages.length : 0;
 }
 
 /** The running share of `device` (converted turns all share one key), created empty. */
@@ -480,6 +820,8 @@ function deviceTotals(byDevice: Map<string, DeviceTotals>, device: string): Devi
       sampleChars: 0,
       adjustMs: 0,
       adjustChars: 0,
+      creditMs: 0,
+      creditChars: 0,
       firstReadAt: null,
       lastReadAt: null
     };

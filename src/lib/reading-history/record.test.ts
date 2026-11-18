@@ -84,6 +84,39 @@ describe('appendEvent', () => {
   });
 });
 
+describe('appendEvent: credits', () => {
+  const credit = {
+    kind: 'credit' as const,
+    volume: 'vol-1',
+    pages: [1, 2],
+    page_chars: [5, 6],
+    total_chars: 40
+  };
+
+  it('stores a credit a segment can carry', async () => {
+    const db = freshDb();
+    await expect(appendEvent(db, { ...credit, time_ms: 60_000 }, 1)).resolves.toMatchObject({
+      seq: 1
+    });
+  });
+
+  it.each([
+    ['an Infinity time', { time_ms: Infinity }],
+    ['a NaN time', { time_ms: NaN }],
+    ['a page char that is not finite', { time_ms: 0, page_chars: [5, Infinity] }],
+    ['pages out of order', { time_ms: 0, pages: [2, 1] }],
+    // The stats bound a pass by it: a credit without it would count nothing.
+    ['no volume size', { time_ms: 0, total_chars: undefined }],
+    ['a volume smaller than its own pages', { time_ms: 0, total_chars: 10 }],
+    ['a volume size that is not finite', { time_ms: 0, total_chars: Infinity }]
+  ])('refuses %s before storing anything, and spends no seq', async (_label, patch) => {
+    const db = freshDb();
+    await expect(appendEvent(db, { ...credit, ...patch } as never, 1)).rejects.toThrow();
+    expect(await db.reading_events.count()).toBe(0);
+    expect((await appendEvent(db, page(1), 2)).seq).toBe(1);
+  });
+});
+
 describe('recordEvent', () => {
   it('writes through to the given database', async () => {
     const db = freshDb();

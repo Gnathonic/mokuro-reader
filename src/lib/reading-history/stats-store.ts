@@ -11,6 +11,8 @@ import {
   prepareVolume,
   recentSpeed,
   totalsBefore,
+  coverFirstPages,
+  type CreditTotals,
   type IdleSettings,
   type PreparedVolume,
   type SpeedEstimate,
@@ -33,6 +35,13 @@ import {
  *
  * Components read these figures through `figuresFor` and the speed helpers;
  * none of them runs the engine.
+ *
+ * What "mark as read" counted (#224) sits ON TOP of what the app measured:
+ * the measured figures (history, the pre-history baseline, editor edits) are
+ * clamped at zero first, and credits are added after. Every editor edit is a
+ * difference from a measured figure (`editor-stats.ts`), so making, cutting
+ * or taking back a credit can never meet an edit: with every credit gone, the
+ * figures are those of the same history without credits, to the bit.
  */
 
 export interface ReadingStatsState {
@@ -54,6 +63,17 @@ export interface VolumeFigures {
   lastReadAt: number | null;
   /** The pre-history snapshot's share of the above (`unexplainedBaseline`). */
   baseline: { timeMs: number; chars: number };
+  /**
+   * What the app measured: history and the baseline, editor edits included,
+   * held at zero — the same with or without any credit. What every speed is
+   * made of, and what the volume editor shows and edits.
+   */
+  measured: { timeMs: number; chars: number };
+  /**
+   * What "mark as read" counted (#224), on top of `measured`: `timeMs` and
+   * `chars` are the two added.
+   */
+  credit: { timeMs: number; chars: number };
 }
 
 const RECOMPUTE_DELAY_MS = 500;
@@ -186,7 +206,7 @@ export type BaselineSource = {
   timeReadInMinutes?: number;
   chars?: number;
   completed?: boolean;
-  archivedReads?: Array<{ chars: number }>;
+  archivedReads?: Array<{ chars: number; at?: number }>;
 };
 
 /**
@@ -213,6 +233,14 @@ function snapshotOf(
  * What a snapshot holds beyond the events from before its freeze: the old
  * counter's reading that history does not explain (a skim counts as
  * explained — it was in the old lifetime count, and it is not re-read).
+ *
+ * It is explained by the reading and edits from before its freeze only (the
+ * engine's timeline: never a credit, #224). An unfrozen snapshot (`before:
+ * Infinity`) is explained exactly as freezing it now would: by every view
+ * and edit so far, never a credit — so the freeze changes no figure, and a
+ * credit never moves the baseline in the meantime. (This device freezes a
+ * record before it marks it with a credit, `withFrozenBaselines`: a live
+ * count a mark already moved to the whole volume would cut the credit.)
  */
 function unexplained(
   snapshot: LegacyStats,
@@ -237,16 +265,138 @@ export function unexplainedBaseline(
   volume: string,
   record?: BaselineSource
 ): { timeMs: number; chars: number } {
-  const snapshot = snapshotOf(record, !baselinesFrozen);
-  if (!snapshot) return { timeMs: 0, chars: 0 };
-  return unexplained(snapshot, stats.byVolume.get(volume));
+  return baselineOf(stats.byVolume.get(volume), record).baseline;
+}
+
+const NO_BASELINE = { timeMs: 0, chars: 0 };
+
+/** A volume's baseline and what it does to the volume's credits (`baselineOf`). */
+interface Baseline {
+  baseline: { timeMs: number; chars: number };
+  lump: { pass: number; chars: number } | null;
+  /** Every live credit with what it counts once cut (the engine's when nothing is). */
+  credits: CreditTotals[];
 }
 
 /**
- * A volume's time and characters: its history, plus whatever of the
- * pre-history snapshot the events from before its freeze do not explain.
- * Clamped only here, after the snapshot is added, so an editor edit below
- * the old figure takes effect.
+ * A volume's baseline, and how it meets the volume's credits (#224).
+ *
+ * The baseline is a lump without pages, so the engine cannot set it against
+ * a credit's pages; this does, by characters. Its share of ONE pass is the
+ * old counter's POSITION part — the snapshot less the reads archived before
+ * the freeze, each a pass of its own (`convertLegacyRecord` made them
+ * restarts) — less what that pass's own events from before the freeze
+ * explain of it, in the pass the record was on when it was frozen (`lump`).
+ * The rest of the baseline is the archived reads' and belongs to no pass:
+ * with what the earlier passes measured, never more than they hold — so
+ * the lifetime figure never holds more than
+ * its passes plus the archived reads, and a credit bounded per pass is
+ * bounded for the lifetime too (one pass, nothing archived: the lifetime
+ * IS the pass).
+ * A credit in that pass gives up what would take the pass past the
+ * volume's characters with the lump in it — the pass's measured characters
+ * and the lump held at zero together, as `passFiguresFor` counts them (`cut`,
+ * off the lowest pages the pass's credits hold, as the engine does). A pass a
+ * "Reset All" ended keeps none of the lump.
+ *
+ * Credits never explain the snapshot, frozen or not (the engine's timeline
+ * leaves them out), so its baseline is the same with or without them and
+ * what they count is never measured reading.
+ *
+ * The cut is computed here ONCE, per credit (`credits`): each keeps the
+ * pages `coverFirstPages` leaves it and its time in proportion to the
+ * characters it keeps. The figures (`figuresFor`, `passFiguresFor`) are
+ * their sum, so they and what a credit shows or Remove takes back
+ * (`creditsFor`) are the same computation.
+ */
+function baselineOf(
+  totals: VolumeTotals | undefined,
+  record: BaselineSource | undefined
+): Baseline {
+  const engine = totals?.credits ?? [];
+  const snapshot = snapshotOf(record, !baselinesFrozen);
+  if (!snapshot) return { baseline: NO_BASELINE, lump: null, credits: engine };
+  const baseline = unexplained(snapshot, totals);
+  const none = { baseline, lump: null, credits: engine };
+  if (baseline.chars <= 0) return none;
+  let archived = 0;
+  for (const read of record?.archivedReads ?? []) {
+    if ((read.at ?? -Infinity) < snapshot.before) archived += read.chars;
+  }
+  let pass = 0;
+  const passes = totals?.passes ?? [];
+  for (let p = 1; p < passes.length; p++) if (passes[p].start < snapshot.before) pass = p;
+  const inPass = passes[pass];
+  // The pass's share: the old POSITION less what this pass's own events
+  // from before the freeze explain of it — never below zero, never more
+  // than the baseline. Not the position alone: the lifetime figure sets ALL
+  // of those events against the snapshot (an older editor's negative edit
+  // before a later freeze included), so a pass that kept them and added the
+  // whole position would count less, or more, than the lifetime holds of it
+  // — and a credit would fill a pass the lifetime already holds in full.
+  const own = totals?.passTimelines[pass];
+  const explainedHere = own
+    ? totalsBefore({ timeline: own }, snapshot.before)
+    : { readChars: 0, skippedChars: 0 };
+  const position = snapshot.chars - archived;
+  const chars = Math.min(
+    baseline.chars,
+    Math.max(0, position - explainedHere.readChars - explainedHere.skippedChars)
+  );
+  if (chars <= 0) return none;
+  // "Reset All" ended that pass: its share of the lump counts nothing either.
+  if (inPass?.reset) {
+    return {
+      baseline: { timeMs: baseline.timeMs, chars: baseline.chars - chars },
+      lump: { pass, chars: 0 },
+      credits: engine
+    };
+  }
+  const lump = { pass, chars };
+  const uncut = { baseline, lump, credits: engine };
+  if (!inPass || inPass.creditChars <= 0) return uncut;
+  const measured = Math.max(0, inPass.measuredChars + chars);
+  const over = measured + inPass.creditChars - (inPass.volumeChars ?? Infinity);
+  const cutChars = Math.min(inPass.creditChars, Math.max(0, over));
+  if (cutChars <= 0) return uncut;
+  // Reading from the start: the cut covers the lowest pages the pass's credits hold.
+  const here = engine.flatMap((credit, i) => (credit.pass === pass ? [i] : []));
+  const kept = coverFirstPages(
+    here.map((i) => {
+      const { pages, pageChars } = engine[i];
+      return pages.map((page, j): [number, number] => [page, pageChars[j] ?? 0]);
+    }),
+    cutChars
+  );
+  const credits = [...engine];
+  here.forEach((i, k) => {
+    const credit = engine[i];
+    const ms = credit.chars > 0 ? (credit.ms * kept[k].chars) / credit.chars : credit.ms;
+    credits[i] = { ...credit, ms, ...kept[k] };
+  });
+  return { baseline, lump, credits };
+}
+
+/** What credits count, summed: their time and characters (never below zero). */
+function sumCredits(credits: CreditTotals[]): { timeMs: number; chars: number } {
+  let timeMs = 0;
+  let chars = 0;
+  for (const credit of credits) {
+    timeMs += credit.ms;
+    chars += credit.chars;
+  }
+  return { timeMs, chars };
+}
+
+/**
+ * A volume's time and characters. MEASURED: its history (views and editor
+ * edits), plus whatever of the pre-history snapshot the events from before
+ * its freeze do not explain — clamped only here, after the snapshot is
+ * added, so an editor edit below the old figure takes effect. Then what
+ * "mark as read" counted, ON TOP: a credit never meets the clamp, so taking
+ * one back leaves exactly the figures the history has without it. A credit
+ * never takes a pass past the volume (the engine's budget, and `baselineOf`
+ * for the baseline's pass).
  */
 export function figuresFor(
   stats: ReadingStatsState,
@@ -254,17 +404,149 @@ export function figuresFor(
   record?: BaselineSource
 ): VolumeFigures {
   const totals = stats.byVolume.get(volume);
-  const baseline = unexplainedBaseline(stats, volume, record);
-  const timeMs = Math.max(0, (totals?.timeMs ?? 0) + baseline.timeMs);
-  const chars = (totals?.readChars ?? 0) + baseline.chars;
+  const { baseline, credits } = baselineOf(totals, record);
+  const measured = {
+    timeMs: Math.max(0, (totals?.measuredMs ?? 0) + baseline.timeMs),
+    chars: Math.max(0, (totals?.measuredChars ?? 0) + baseline.chars)
+  };
+  const credit = sumCredits(credits);
+  const timeMs = measured.timeMs + credit.timeMs;
   return {
     timeMs,
     minutes: Math.floor(timeMs / 60_000),
-    chars: Math.max(0, chars),
+    chars: measured.chars + credit.chars,
     skippedChars: totals?.skippedChars ?? 0,
     lastReadAt: totals?.lastReadAt ?? null,
-    baseline
+    baseline,
+    measured,
+    credit
   };
+}
+
+/**
+ * Whether the volume editor's "Reset All" has a pass to end — whether it
+ * records a `reset` (#224). Asked of what the pass MEASURED only: a credit
+ * is taken back by the editor's own retracts, so whether a pass ends never
+ * depends on one (a reset of a pass that held only credits would move later
+ * reading into another pass than the same history without them). Not "the
+ * pass shows characters" either: that figure is held at zero, and a v1.11.0
+ * Reset All's negative characters edit holds it there while the pass's
+ * pages are read — unended, such a pass would count a re-read as nothing.
+ * So: a page a view read in the pass, any characters in its measured count
+ * (an edit either way), or the pre-history baseline's share in it.
+ */
+export function resetEndsPass(
+  stats: ReadingStatsState,
+  volume: string,
+  record?: BaselineSource
+): boolean {
+  const totals = stats.byVolume.get(volume);
+  if (totals) {
+    if (totals.passReadByViews.size > 0) return true;
+    if ((totals.passes[totals.pass]?.measuredChars ?? 0) !== 0) return true;
+  }
+  return passFiguresFor(stats, volume, record).measuredChars > 0;
+}
+
+/** The current pass of a volume: what it counts, and of that what credits count. */
+export interface PassFigures {
+  /** The latest pass (restarts so far). */
+  pass: number;
+  /**
+   * Its characters: `measuredChars`, plus what its credits count on top. A
+   * credit never takes it past the volume's characters.
+   */
+  chars: number;
+  /**
+   * What the pass measured: its views and editor edits, plus the baseline's
+   * share when the record was on this pass when it was frozen — held at zero.
+   * The same with or without any credit.
+   */
+  measuredChars: number;
+  credit: { timeMs: number; chars: number };
+}
+
+/**
+ * The volume's CURRENT PASS as the stats count it (#224) — the reading of
+ * this time through the volume, which never exceeds it once credits are in;
+ * `figuresFor` is the lifetime (every pass, re-reads included). `which`
+ * names an earlier pass instead (tests sweep every one).
+ */
+export function passFiguresFor(
+  stats: ReadingStatsState,
+  volume: string,
+  record?: BaselineSource,
+  which?: number
+): PassFigures {
+  const totals = stats.byVolume.get(volume);
+  const pass = which ?? totals?.pass ?? 0;
+  const current = totals?.passes[pass];
+  const { lump, credits } = baselineOf(totals, record);
+  const share = lump?.pass === pass ? lump.chars : 0;
+  const measuredChars = Math.max(0, (current?.measuredChars ?? 0) + share);
+  const credit = sumCredits(credits.filter((c) => c.pass === pass));
+  return { pass, chars: measuredChars + credit.chars, measuredChars, credit };
+}
+
+/**
+ * Every live credit of a volume with what it counts now, oldest first: the
+ * engine's, less the baseline's cut (`baselineOf`), which — reading from the
+ * start, like everything a pass counts without pages — covers the lowest
+ * pages its pass's credits hold (`coverFirstPages`).
+ */
+export function creditsFor(
+  stats: ReadingStatsState,
+  volume: string,
+  record?: BaselineSource
+): CreditTotals[] {
+  const totals = stats.byVolume.get(volume);
+  if (!totals || totals.credits.length === 0) return [];
+  return baselineOf(totals, record).credits;
+}
+
+/**
+ * A volume's figures without what "mark as read" counted: the reading this
+ * app measured (plus the pre-history baseline and editor edits, as before).
+ * What every speed figure is made of.
+ */
+export function measuredFigures(figures: Pick<VolumeFigures, 'measured'>): {
+  timeMs: number;
+  chars: number;
+} {
+  return { ...figures.measured };
+}
+
+/**
+ * The pages of a volume this app never saw read in its current pass (#224),
+ * `pageChars` its pages' characters (page p at index p − 1): 1..N minus the
+ * pass's pages read by a counting view or claimed by a live credit — and
+ * never more characters than the pass has left of the volume
+ * (`passFiguresFor`). What the pass counts beyond its pages' (the
+ * pre-history baseline, an older editor's adjusts, a converted turn's
+ * stretch, a recount) is reading from the start, so the FIRST of those pages
+ * go: a page only partly left goes too — a credit may count less than was
+ * read elsewhere, never more.
+ */
+export function pagesNotReadHere(
+  stats: ReadingStatsState,
+  volume: string,
+  pageChars: number[],
+  record?: BaselineSource
+): number[] {
+  const read = stats.byVolume.get(volume)?.passRead;
+  const pages: number[] = [];
+  let unread = 0;
+  let size = 0;
+  for (let page = 1; page <= pageChars.length; page++) {
+    size += pageChars[page - 1];
+    if (read?.has(page)) continue;
+    pages.push(page);
+    unread += pageChars[page - 1];
+  }
+  let over = unread - Math.max(0, size - passFiguresFor(stats, volume, record).chars);
+  let first = 0;
+  while (first < pages.length && over > 0) over -= pageChars[pages[first++] - 1];
+  return first > 0 ? pages.slice(first) : pages;
 }
 
 /** A series' own speed, once it has an hour of reading; else `null`. */
@@ -377,6 +659,45 @@ export function freezeLegacyBaselines(now: number = Date.now()): number {
   baselinesFrozen = true;
   writeFlag('done');
   return changed;
+}
+
+/**
+ * Run `change` (a mark as read) with the pre-history snapshots of `volumes`
+ * frozen as they stood BEFORE it (#224). An unfrozen snapshot is the
+ * record's live count, and a mark moves that to the whole volume: frozen
+ * after it, the snapshot would hold the mark's pages as old reading and
+ * the mark's credit would be cut to nothing — its characters measured as
+ * "Before history". A record that has no snapshot yet but would get one at
+ * this device's first pass (`snapshotOf`) gets an empty one, which records
+ * that it was frozen. Not a user action: no new stamp.
+ */
+export function withFrozenBaselines<T>(
+  volumes: Iterable<string>,
+  change: () => T,
+  now: number = Date.now()
+): T {
+  const firstPass = !baselinesFrozen;
+  const records = get(volumesWithTrash);
+  const snapshots = new Map<string, LegacyStats>();
+  for (const id of volumes) {
+    const record = records[id];
+    if (record?.legacyStats || record?.deletedOn) continue;
+    const snapshot = snapshotOf(record, firstPass);
+    if (snapshot) snapshots.set(id, { ...snapshot, before: now });
+    else if (firstPass) snapshots.set(id, { time_ms: 0, chars: 0, before: now });
+  }
+  const result = change();
+  if (snapshots.size > 0) {
+    volumesWithTrash.update((all) => {
+      const next = { ...all };
+      for (const [id, legacyStats] of snapshots) {
+        const record = next[id];
+        if (record && !record.legacyStats) next[id] = new VolumeData({ ...record, legacyStats });
+      }
+      return next;
+    });
+  }
+  return result;
 }
 
 function readFlag(): string | null {

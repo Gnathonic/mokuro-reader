@@ -2,8 +2,14 @@
   // Shared across all VolumeItem instances to ensure only one dropdown is open at a time
   const menuCloseCallbacks = new Set<() => void>();
 
-  function closeAllMenus() {
-    menuCloseCallbacks.forEach((cb) => cb());
+  /**
+   * Close every OTHER card's menu. Never the one being opened: the popper opens
+   * its own on mousedown after a debounce (~200 ms), so a press held longer
+   * than that (a slow tap, or a busy page) opened the menu and this click
+   * closed it again on release.
+   */
+  function closeAllMenus(except?: () => void) {
+    menuCloseCallbacks.forEach((cb) => cb !== except && cb());
   }
 </script>
 
@@ -12,11 +18,10 @@
     deleteVolume as deleteVolumeStats,
     progress,
     volumes as readingVolumes,
-    settings,
-    markVolumeAsComplete,
-    markVolumeAsUnread
+    settings
   } from '#lib/settings/index.js';
-  import { volumes as catalogVolumes } from '#lib/catalog/index.js';
+  import { currentSeries, volumes as catalogVolumes } from '#lib/catalog/index.js';
+  import { markRead, markReadBulk, markUnread } from '#lib/reading-history/mark-read-flow.js';
   import { personalizedReadingSpeed } from '#lib/settings/reading-speed.js';
   import { figuresFor, readingStats } from '#lib/reading-history/stats-store.js';
   import { seriesSpeeds } from '#lib/reading-history/series-speeds.js';
@@ -492,19 +497,19 @@
 
     return parts.length > 0 ? parts.join(' ') : null;
   });
+  // "Mark as read" asks about the pages this app never saw read (#224, mark-read-flow).
   function onToggleStatusClicked(e?: Event) {
     e?.stopPropagation();
-    if (isComplete) {
-      markVolumeAsUnread(volume_uuid);
-      showSnackbar(`Marked ${volName} as unread`);
-    } else {
-      if (volume.page_count) {
-        markVolumeAsComplete(volume_uuid, volume.page_count, totalChars);
-        showSnackbar(`Marked ${volName} as read`);
-      } else {
-        showSnackbar('Error: Missing page count data');
-      }
-    }
+    closeMenu();
+    const target = { ...liveVolume, page_count: liveVolume.page_count || volume.page_count };
+    if (isComplete) void markUnread(target);
+    else void markRead(target);
+  }
+
+  function onMarkReadUpToHere(e?: Event) {
+    e?.stopPropagation();
+    closeMenu();
+    void markReadBulk(get(currentSeries) ?? [], volume_uuid);
   }
   async function onDeleteClicked(e?: Event) {
     e?.stopPropagation();
@@ -950,7 +955,7 @@
         onclick={(e) => {
           e.preventDefault();
           e.stopPropagation();
-          closeAllMenus();
+          closeAllMenus(closeMenu);
         }}
       >
         <DotsVerticalOutline class="h-4 w-4 text-white" />
@@ -1039,6 +1044,13 @@
             <span class="flex-1 text-left">Mark as unread</span>
           </DropdownItem>
         {/if}
+        <DropdownItem
+          onclick={onMarkReadUpToHere}
+          class="flex w-full items-center text-gray-700 dark:text-gray-200"
+        >
+          <CheckCircleOutline class="me-2 h-5 w-5 flex-shrink-0" />
+          <span class="flex-1 text-left">Mark as read up to here</span>
+        </DropdownItem>
         <DropdownItem
           onclick={onDeleteClicked}
           class="flex w-full items-center text-red-500 hover:!text-red-500 dark:hover:!text-red-500"

@@ -11,6 +11,7 @@ import {
   deviceLabels,
   foldableTracking,
   idleSettings,
+  markReadPolicy,
   mergeDevice,
   mergeDeviceLabels,
   mergeTrackingSections,
@@ -21,6 +22,7 @@ import {
   setDeviceClass,
   setIdleOverride,
   setAskOnLongPause,
+  setMarkReadPolicy,
   setTrackingStates,
   trackingState,
   unmergeDevice,
@@ -245,6 +247,76 @@ describe('asking about long pauses', () => {
 });
 
 const FUTURE = '2999-01-01T00:00:00.000Z';
+
+describe('mark as read: pages not read here (#224)', () => {
+  it('asks by default, and when the entry is absent or unreadable', () => {
+    expect(get(markReadPolicy)).toBe('ask');
+    expect(parseTrackingSection({ markRead: { unread: 'sometimes', lastUpdated: T1 } })).toEqual({
+      markRead: { unread: 'ask', lastUpdated: T1 }
+    });
+    expect(parseTrackingSection({ markRead: 'count' })).toEqual({});
+  });
+
+  it('parses each policy and survives its own wire format', () => {
+    for (const unread of ['ask', 'count', 'skip'] as const) {
+      expect(parseTrackingSection({ markRead: { unread, lastUpdated: T1 } }).markRead).toEqual({
+        unread,
+        lastUpdated: T1
+      });
+    }
+    setMarkReadPolicy('count');
+    const stored = JSON.parse(window.localStorage.getItem('tracking-data')!);
+    expect(stored.markRead.unread).toBe('count');
+    expect(parseTrackingSection(stored)).toEqual(get(trackingState));
+  });
+
+  it('follows the setting and stamps past a future stamp already stored', () => {
+    setTrackingStates({ markRead: { unread: 'skip', lastUpdated: '2026-12-31T00:00:00.000Z' } });
+    expect(get(markReadPolicy)).toBe('skip');
+    setMarkReadPolicy('ask');
+    expect(get(markReadPolicy)).toBe('ask');
+    // Back to Ask is written, so it beats an older choice from another device.
+    expect(get(trackingState).markRead!.lastUpdated > '2026-12-31T00:00:00.000Z').toBe(true);
+    // Nothing else moves.
+    expect(get(trackingState).idle).toBeUndefined();
+  });
+
+  it('merges apart from the other keys: newest wins, a tie keeps local', () => {
+    const merged = mergeTrackingSections(
+      { markRead: { unread: 'count', lastUpdated: T1 }, pauses: { ask: true, lastUpdated: T2 } },
+      { markRead: { unread: 'skip', lastUpdated: T2 }, pauses: { ask: false, lastUpdated: T1 } }
+    );
+    expect(merged).toEqual({
+      markRead: { unread: 'skip', lastUpdated: T2 },
+      pauses: { ask: true, lastUpdated: T2 }
+    });
+    expect(
+      mergeTrackingSections(
+        { markRead: { unread: 'count', lastUpdated: T1 } },
+        { markRead: { unread: 'skip', lastUpdated: T1 } }
+      ).markRead?.unread
+    ).toBe('count');
+  });
+
+  it('a bogus (future) cloud stamp forfeits to local, but is adopted when local has none', () => {
+    const raw = { markRead: { unread: 'skip', lastUpdated: FUTURE } };
+    const bogus = detectBogusTrackingKeys(raw);
+    expect([...bogus]).toEqual(['markRead']);
+    const cloud = parseTrackingSection(raw);
+    const local = { markRead: { unread: 'count' as const, lastUpdated: T1 } };
+    expect(mergeTrackingSections(local, cloud, bogus).markRead?.unread).toBe('count');
+    expect(mergeTrackingSections({}, cloud, bogus).markRead?.unread).toBe('skip');
+    // The duplicate-file fold drops it where another copy holds it honestly.
+    const folded = foldableTracking(
+      [
+        { tracking: cloud, bogus },
+        { tracking: { markRead: { unread: 'ask', lastUpdated: T2 } }, bogus: new Set() }
+      ],
+      0
+    );
+    expect(folded.markRead).toBeUndefined();
+  });
+});
 
 describe('tracking.devices: parse', () => {
   it('keeps a valid label, name trimmed', () => {

@@ -227,12 +227,28 @@ export function updateVolumeStats(
     progress?: number;
     chars?: number;
     /**
-     * Time read, in minutes: `from` is what the stats showed when the editor
-     * opened (history + baseline), `to` what the user entered. The difference
-     * is recorded as an `adjust` event; the retired minute counter is never
-     * written.
+     * Time read, in minutes: `from` is the MEASURED time the editor showed
+     * (history + baseline, never what marking read counted — `editorStats`),
+     * `to` what the user entered. The difference is recorded as an `adjust`
+     * event, which the stats apply to the measured time only (#224); the
+     * retired minute counter is never written.
      */
     timeRead?: { from: number; to: number };
+    /**
+     * "Reset All": the current pass's characters go to zero, and its pages
+     * may be read again — recorded as a `reset` event, which the stats apply
+     * on every device (#224). Only when the pass measured something to end
+     * (`resetEndsPass`: a page a view read, any edit, the baseline's share —
+     * never a credit, and not the clamped figure shown, which an older
+     * editor's negative edit can hold at 0): a reset is a format-2 event,
+     * and a build that reads format 1 only skips the whole device-month it
+     * lands in. A page edit is NOT a characters edit: the record's `chars` is
+     * the position's count, and a mark-as-read set it to the whole volume's —
+     * the difference was never reading.
+     */
+    reset?: boolean;
+    /** Credits to retract, `[device, seq]`: Reset All takes what was counted when marked read. */
+    retract?: Array<[device: string, seq: number]>;
     completed?: boolean;
     /**
      * When the current pass was finished, as the user corrected it (#304). An
@@ -246,26 +262,16 @@ export function updateVolumeStats(
   }
 ): void {
   let timeDeltaMs = 0;
-  let charsDelta = 0;
 
   volumesWithTrash.update((prev: Volumes) => {
     const currentVolume = prev[volumeUuid] || new VolumeData();
     if (updates.timeRead) {
       timeDeltaMs = (updates.timeRead.to - updates.timeRead.from) * 60000;
     }
-    // The modal re-sends `chars` as a linear estimate on every save; only a
-    // real progress edit makes its chars a user edit.
-    if (
-      updates.chars !== undefined &&
-      updates.progress !== undefined &&
-      updates.progress !== currentVolume.progress
-    ) {
-      charsDelta = updates.chars - currentVolume.chars;
-    }
     // A stat edit is a user action and must win the next merge like a page
     // turn does; without a fresh stamp the other device's older copy replaced
     // it. Only a real change counts: the modal re-sends every field on save
-    // (chars as a linear re-estimate), and a rename on a device that missed a
+    // (chars as the position's count), and a rename on a device that missed a
     // sync must not outrank reading done elsewhere. A time edit is history
     // (an `adjust` event), not record state, so it needs no stamp.
     const datable = currentVolume.completed || !!currentVolume.completedAt;
@@ -310,13 +316,17 @@ export function updateVolumeStats(
   });
 
   // Reading history: the edit is an event, so every device's stats can apply it.
-  if (timeDeltaMs !== 0 || charsDelta !== 0) {
+  if (timeDeltaMs !== 0) {
     void recordEvent({
       kind: 'adjust',
       volume: volumeUuid,
       time_delta_ms: timeDeltaMs,
-      chars_delta: charsDelta
+      chars_delta: 0
     });
+  }
+  if (updates.reset) void recordEvent({ kind: 'reset', volume: volumeUuid });
+  for (const target of updates.retract ?? []) {
+    void recordEvent({ kind: 'retract', volume: volumeUuid, target });
   }
 }
 
