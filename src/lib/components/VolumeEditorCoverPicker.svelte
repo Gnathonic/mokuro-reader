@@ -10,6 +10,7 @@
     sniffRasterBlob
   } from '#lib/util/raster-image.js';
   import ImageCropper from './ImageCropper.svelte';
+  import { canvasBlobNow } from '#lib/util/canvas-encode.js';
   import {
     cropZoneToRect,
     initialCoverCrop,
@@ -206,14 +207,9 @@
     img1.close();
     img2.close();
 
-    const blob = await new Promise<Blob | null>((resolve) =>
-      canvas.toBlob(resolve, 'image/jpeg', 0.95)
-    );
-    if (!blob) {
-      throw new Error('Failed to stitch images');
-    }
-
-    return new File([blob], 'appended-cover.jpg', { type: 'image/jpeg' });
+    // Encoded now, not through toBlob's idle task: see canvas-encode.ts.
+    const blob = canvasBlobNow(canvas, 'image/jpeg', 0.95);
+    return new File([blob], 'appended-cover.jpg', { type: blob.type });
   }
 
   async function appendSecondImage() {
@@ -249,21 +245,24 @@
     appendedPageIndex = null;
   }
 
-  /** The crop as a JPEG at 0.9, at the image's natural resolution. */
-  async function croppedCoverFile(): Promise<File | null> {
+  /**
+   * The crop as a JPEG at 0.9, at the image's natural resolution — encoded now,
+   * in the click's own task, not in toBlob's idle task (up to 6.7 s of a dead
+   * button under load; see canvas-encode.ts). Synchronous, so the picker closes
+   * in the same task and a second click has nothing left to press.
+   */
+  function croppedCoverFile(): File | null {
     const canvas = cropper?.toCanvas();
     if (!canvas) return null;
-    const blob = await new Promise<Blob | null>((resolve) =>
-      canvas.toBlob(resolve, 'image/jpeg', 0.9)
-    );
-    return blob ? new File([blob], 'cover.jpg', { type: 'image/jpeg' }) : null;
+    const blob = canvasBlobNow(canvas, 'image/jpeg', 0.9);
+    return new File([blob], 'cover.jpg', { type: blob.type });
   }
 
-  async function handleCropConfirm() {
+  function handleCropConfirm() {
     if (!cropper) return;
 
     try {
-      const file = await croppedCoverFile();
+      const file = croppedCoverFile();
       if (file) {
         onSelect(file, {
           pageIndex: selectedPageIndex,
@@ -273,6 +272,7 @@
       }
     } catch (err) {
       console.error('Error cropping image:', err);
+      showSnackbar('Failed to crop image');
     }
   }
 
@@ -312,11 +312,11 @@
     if (rect) cropper.setCrop(rect);
   }
 
-  async function handleCropConfirmAndNext() {
+  function handleCropConfirmAndNext() {
     if (!cropper || !onSelectAndNext) return;
 
     try {
-      const file = await croppedCoverFile();
+      const file = croppedCoverFile();
       if (file) {
         onSelectAndNext(file, {
           pageIndex: selectedPageIndex,
@@ -326,6 +326,7 @@
       }
     } catch (err) {
       console.error('Error cropping image for next volume:', err);
+      showSnackbar('Failed to crop image');
     }
   }
 
