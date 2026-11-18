@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
+import { get } from 'svelte/store';
 
 const mocks = vi.hoisted(() => ({ updateSetting: vi.fn() }));
 
@@ -13,6 +14,8 @@ vi.mock('#lib/settings/index.js', async () => {
 });
 
 import PageAdjustCard from '../PageAdjustCard.svelte';
+import { closePageAdjustPanel, pageAdjustPanelOpen } from '#lib/reader/page-adjust-panel.js';
+import { currentView } from '#lib/util/hash-router.js';
 import { settings } from '#lib/settings/index.js';
 import type { Writable } from 'svelte/store';
 
@@ -23,36 +26,56 @@ afterEach(() => {
   cleanup();
   mocks.updateSetting.mockReset();
   store.set({ ...base });
+  closePageAdjustPanel();
+  currentView.set({ type: 'catalog' });
 });
 
 describe('PageAdjustCard (#256)', () => {
-  it('shows each value with a 50–200 step-5 slider', () => {
-    const { getByLabelText } = render(PageAdjustCard);
-    const brightness = getByLabelText('Brightness: 130%') as HTMLInputElement;
-    expect(brightness.value).toBe('130');
-    expect(brightness.min).toBe('50');
-    expect(brightness.max).toBe('200');
-    expect(brightness.step).toBe('5');
-    expect((getByLabelText('Contrast: 100%') as HTMLInputElement).value).toBe('100');
-  });
-
-  it('writes the setting live while dragging', async () => {
-    const { getByLabelText } = render(PageAdjustCard);
-    const contrast = getByLabelText('Contrast: 100%') as HTMLInputElement;
-    contrast.value = '150';
-    await fireEvent.input(contrast);
-    expect(mocks.updateSetting).toHaveBeenCalledWith('pageContrast', 150);
-  });
-
-  it('resets a changed value to 100 and disables reset at 100', async () => {
-    const { getByRole } = render(PageAdjustCard);
-    const resetBrightness = getByRole('button', { name: 'Reset brightness' });
-    const resetContrast = getByRole('button', { name: 'Reset contrast' });
-    expect(resetBrightness.hasAttribute('disabled')).toBe(false);
-    expect(resetContrast.hasAttribute('disabled')).toBe(true);
-    await fireEvent.click(resetBrightness);
+  it('shows the current brightness and contrast', async () => {
+    const { getByText } = render(PageAdjustCard);
+    expect(getByText('Brightness 130% · Contrast 100%')).toBeTruthy();
+    store.set({ ...base, pageBrightness: 'junk', pageContrast: 150 });
     await tick();
-    expect(mocks.updateSetting).toHaveBeenCalledWith('pageBrightness', 100);
+    // Unset or garbage reads as 100%, like the filter itself.
+    expect(getByText('Brightness 100% · Contrast 150%')).toBeTruthy();
+  });
+
+  it('has no brightness/contrast sliders: they live over the page (#363)', () => {
+    const { queryByRole } = render(PageAdjustCard);
+    expect(queryByRole('slider', { name: /Brightness/ })).toBeNull();
+    expect(queryByRole('slider', { name: /Contrast/ })).toBeNull();
+  });
+
+  it('in the reader, opens the page image panel (#363)', async () => {
+    currentView.set({ type: 'reader', seriesId: 's', volumeId: 'v' });
+    const { getByRole } = render(PageAdjustCard);
+    expect(get(pageAdjustPanelOpen)).toBe(false);
+    await fireEvent.click(getByRole('button', { name: /Adjust over the page/ }));
+    expect(get(pageAdjustPanelOpen)).toBe(true);
+    // Opening it writes nothing.
+    expect(mocks.updateSetting).not.toHaveBeenCalled();
+  });
+
+  it('outside the reader, says where the values are adjusted instead', () => {
+    const { queryByRole, getByText } = render(PageAdjustCard);
+    expect(queryByRole('button', { name: /Adjust over the page/ })).toBeNull();
+    expect(getByText(/in the reader: press A/)).toBeTruthy();
+  });
+
+  it('switches the adjustment off and on without touching the values (#362)', async () => {
+    const { getByRole } = render(PageAdjustCard);
+    const toggle = getByRole('checkbox', { name: /Brightness & contrast/ }) as HTMLInputElement;
+    expect(toggle.checked).toBe(true);
+    await fireEvent.click(toggle);
+    expect(mocks.updateSetting).toHaveBeenCalledWith('pageAdjustEnabled', false);
+    expect(mocks.updateSetting).not.toHaveBeenCalledWith('pageBrightness', expect.anything());
+
+    store.set({ ...base, pageAdjustEnabled: false });
+    await tick();
+    expect(toggle.checked).toBe(false);
+    mocks.updateSetting.mockClear();
+    await fireEvent.click(toggle);
+    expect(mocks.updateSetting).toHaveBeenCalledWith('pageAdjustEnabled', true);
   });
 
   it('offers ink color off/auto/seven colors, showing the stored choice', () => {

@@ -1,5 +1,15 @@
 <script lang="ts">
   import { pageImageUrlFrom } from '#lib/reader/page-image-url.js';
+  import { pageAdjustToggleMessage, sanitizePageAdjustEnabled } from '#lib/reader/page-filter.js';
+  // The page image panel (#363): A opens/closes it here; Escape and the keys
+  // typed inside it are the panel's own (PageAdjustPanel.svelte).
+  import {
+    PAGE_ADJUST_PANEL_KEY,
+    closePageAdjustPanel,
+    pageAdjustPanelOpen,
+    togglePageAdjustPanel
+  } from '#lib/reader/page-adjust-panel.js';
+  import PageAdjustPanel from './PageAdjustPanel.svelte';
   import { run } from 'svelte/legacy';
   import type { TransitionConfig } from 'svelte/transition';
 
@@ -147,6 +157,8 @@
   let rereadPromptOpen = $state(false);
   /** The quick-actions OCR layer picker is up (bound from QuickActions). */
   let layerPickerOpen = $state(false);
+  /** The page-number popover (jump to page) is up. */
+  let pageNumPopoverOpen = $state(false);
   let rereadCheckedFor = $state<string | null>(null);
   let rereadDisplayTitle = $state('');
   let localSeriesVolumes = $derived(($currentSeries || []).filter((v) => !v.isPlaceholder));
@@ -319,6 +331,42 @@
     }
   }
 
+  /**
+   * Escape while the page image panel is open and focus is not in it: if
+   * another non-modal reader control that closes on Escape is up, close THAT
+   * one (it was opened over the panel) and report true; the panel then stops
+   * the key, so it never also reaches the layout's "Escape = back" — which
+   * would leave the reader (PageAdjustPanel.svelte). Same steps those
+   * controls take on Escape themselves. Only controls that hear Escape on the
+   * WINDOW belong here (the panel stops the key before the window): one that
+   * handles it on its own element with the focus — the OCR text editor, a
+   * field — gets the key before the panel even sees it. Modal dialogs
+   * (re-read prompt, layer name) are the panel's own check.
+   */
+  function escapeToOtherControl(): boolean {
+    if (layerPickerOpen) {
+      layerPickerOpen = false;
+      return true;
+    }
+    if (showContextMenu) {
+      showContextMenu = false;
+      return true;
+    }
+    if (pageNumPopoverOpen) {
+      pageNumPopoverOpen = false;
+      return true;
+    }
+    if (editSession?.tool === 'draw') {
+      editSession.tool = 'select';
+      return true;
+    }
+    if (editSession && editSession.selection.length > 0) {
+      editSession.clearSelection();
+      return true;
+    }
+    return false;
+  }
+
   function handleShortcuts(event: KeyboardEvent & { currentTarget: EventTarget & Window }) {
     // The re-read prompt modal owns the keyboard while it's open: its buttons
     // live inside a native <dialog>, and keydowns still bubble past it up to
@@ -464,6 +512,12 @@
       case 'KeyG':
         toggleScheduledFilter('grayscale', 'grayscaleSchedule', 'B&W', 'grayscale');
         return;
+      case 'KeyB':
+        togglePageAdjust();
+        return;
+      case PAGE_ADJUST_PANEL_KEY:
+        togglePageAdjustPanel();
+        return;
       case 'KeyC':
         if (volume) {
           toggleHasCover(volume.volume_uuid);
@@ -581,6 +635,9 @@
 
   // Fire reader closed event when component is destroyed (navigating away)
   onDestroy(() => {
+    // The page image panel is module state: leaving the reader closes it, so
+    // the next volume opened does not start with it up.
+    closePageAdjustPanel();
     if (volume) {
       const { charCount, lineCount } = getCharCount(pages, page);
 
@@ -1598,6 +1655,16 @@
     }
   }
 
+  /** Brightness/contrast on or off, values kept (#362) — e.g. for a cover. */
+  function togglePageAdjust() {
+    const next = !sanitizePageAdjustEnabled($settings.pageAdjustEnabled);
+    updateSetting('pageAdjustEnabled', next);
+    showNotification(
+      pageAdjustToggleMessage(next, $settings.pageBrightness, $settings.pageContrast),
+      'page-adjust-toggle'
+    );
+  }
+
   function rotateScrollMode() {
     const current = $settings.scrollMode;
     const order = ['auto', 'vertical', 'horizontal'] as const;
@@ -1793,6 +1860,7 @@
   <TextBoxPicker />
   {#if overlaysVisible}
     <Popover
+      bind:isOpen={pageNumPopoverOpen}
       placement="bottom"
       trigger="click"
       triggeredBy="#page-num"
@@ -1840,6 +1908,11 @@
         <p class="text-left" class:hidden={!$settings.pageNum}>{pageDisplay}</p>
       {/key}
     </button>
+  {/if}
+  {#if $pageAdjustPanelOpen}
+    <!-- Shares the bottom centre with the long-pause prompt: whichever comes
+         second stacks above the other (reader/bottom-overlay.ts). -->
+    <PageAdjustPanel onToggleAdjust={togglePageAdjust} onEscapeElsewhere={escapeToOtherControl} />
   {/if}
   {#if volume && pages?.length}
     <PositionOfferBanner

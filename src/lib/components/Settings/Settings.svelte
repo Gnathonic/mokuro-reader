@@ -1,3 +1,11 @@
+<script lang="ts" module>
+  // Where the drawer was scrolled to, per context (the reader's drawer holds
+  // other sections than the catalog's), for this page session (#363: the page
+  // image controls sit at the bottom of the reader section, and the drawer is
+  // rebuilt — scrolled to the top — every time it opens).
+  const savedScrollTop = new Map<string, number>();
+</script>
+
 <script lang="ts">
   import { Accordion, Button, Drawer } from 'flowbite-svelte';
   import { UserSettingsSolid } from 'flowbite-svelte-icons';
@@ -15,6 +23,9 @@
   import About from './About.svelte';
   import QuickAccess from './QuickAccess.svelte';
   import AppearanceSettings from './AppearanceSettings.svelte';
+  import { closePageAdjustPanel, pageAdjustPanelOpen } from '#lib/reader/page-adjust-panel.js';
+  import { focusFirstInView } from '#lib/util/focus-in-view.js';
+  import { untrack } from 'svelte';
 
   let transitionParams = {
     x: 320,
@@ -56,6 +67,45 @@
     }
   }
 
+  // Reopen where the user left off. The dialog focuses its first control on
+  // open (a microtask, which scrolls that control into view), so the restore
+  // waits a frame to land after it — and then brings keyboard focus along to
+  // a control in the restored view: left at the top, the first Tab would
+  // scroll the drawer straight back there. (The frame callback runs before
+  // that frame is painted: the drawer is never drawn at the top first.)
+  function rememberScroll(dlg: HTMLElement) {
+    const key = isReader() ? 'reader' : 'app';
+    const saved = savedScrollTop.get(key) ?? 0;
+    const raf =
+      saved > 0
+        ? requestAnimationFrame(() => {
+            dlg.scrollTop = saved;
+            focusFirstInView(dlg);
+          })
+        : 0;
+    const onScroll = () => savedScrollTop.set(key, dlg.scrollTop);
+    dlg.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      cancelAnimationFrame(raf);
+      dlg.removeEventListener('scroll', onScroll);
+    };
+  }
+
+  // The page image panel and this drawer are never up together (#363): the
+  // panel exists so that nothing dims or covers the page while it is being
+  // adjusted. Opening the panel (from this drawer's Page image card) closes
+  // the drawer; opening the drawer closes the panel.
+  let panelWasOpen = false;
+  $effect(() =>
+    pageAdjustPanelOpen.subscribe((panelOpen) => {
+      if (panelOpen && !panelWasOpen) open = false;
+      panelWasOpen = panelOpen;
+    })
+  );
+  $effect(() => {
+    if (open) untrack(closePageAdjustPanel);
+  });
+
   // Close drawer on navigation (hash route change)
   let previousViewType = $state($currentView.type);
   $effect(() => {
@@ -77,6 +127,7 @@
   id="settings"
   outsideclose={false}
   onmousedown={handleBackdropMousedown}
+  {@attach rememberScroll}
 >
   <h5
     id="drawer-label"

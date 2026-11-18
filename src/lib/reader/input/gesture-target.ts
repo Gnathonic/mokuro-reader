@@ -61,6 +61,10 @@ export function gestureTargetRole(target: EventTarget | null): GestureTargetRole
  * the union of the guards that previously drifted apart between Reader.svelte
  * (.textBox / #settings / [data-popover] / inputs) and the scroll readers
  * (INPUT / TEXTAREA / SELECT / contentEditable only).
+ *
+ * `[data-reader-panel]` is a non-modal tool panel floating over the page (the
+ * page image panel, #363): its buttons must not page the reader on Space, and
+ * the panel answers the shortcuts that concern it itself.
  */
 export function keyboardShouldIgnore(target: EventTarget | null): boolean {
   if (!(target instanceof Element)) return false;
@@ -70,6 +74,7 @@ export function keyboardShouldIgnore(target: EventTarget | null): boolean {
   return !!(
     target.closest('.textBox') ||
     target.closest('#settings') ||
-    target.closest('[data-popover]')
+    target.closest('[data-popover]') ||
+    target.closest('[data-reader-panel]')
   );
 }

@@ -10,8 +10,10 @@
     ImageOutline,
     LayersOutline,
     ZoomOutOutline,
-    PlusOutline
+    PlusOutline,
+    SunOutline
   } from 'flowbite-svelte-icons';
+  import { togglePageAdjustPanel } from '#lib/reader/page-adjust-panel.js';
   import LayerPicker from './Layers/LayerPicker.svelte';
   import type { LayerSummary } from '#lib/reader/edit/layer-list.js';
   import type { LayerAction } from './Layers/layer-actions';
@@ -201,6 +203,17 @@
             >
           </button>
         {/if}
+        <button
+          onclick={() => {
+            togglePageAdjustPanel();
+            open = false;
+          }}
+          class="flex h-12 w-12 items-center justify-center rounded-full bg-gray-700 text-gray-300 shadow-lg hover:bg-gray-600 focus:outline-none dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+          aria-label="Brightness and contrast"
+          title="Brightness and contrast (A)"
+        >
+          <SunOutline size="xl" />
+        </button>
         <button
           onclick={() => {
             toggleFullScreen();
