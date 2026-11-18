@@ -24,14 +24,31 @@ interface CanvasBlob {
 }
 
 /**
- * Record every `canvas.toBlob()`: the canvas size, the format asked for and its
- * corner pixels. Must run before the page loads (an init script, over CDP, so
- * outside every page policy).
+ * Record every canvas encode — `canvas.toBlob()` and `canvas.toDataURL()` (the
+ * cover picker encodes synchronously, `canvas-encode.ts`): the canvas size, the
+ * format asked for and its corner pixels. Must run before the page loads (an
+ * init script, over CDP, so outside every page policy).
  */
 export async function recordCanvasBlobs(page: Page) {
   await page.addInitScript(() => {
     const blobs: unknown[] = [];
     (window as unknown as { __e2eCanvasBlobs: unknown[] }).__e2eCanvasBlobs = blobs;
+    const record = (canvas: HTMLCanvasElement, type?: string, quality?: unknown) => {
+      let corners = null;
+      try {
+        const context = canvas.getContext('2d');
+        if (context && canvas.width > 0 && canvas.height > 0) {
+          const at = (x: number, y: number) =>
+            Array.from(context.getImageData(x, y, 1, 1).data).slice(0, 3);
+          const right = canvas.width - 1;
+          const bottom = canvas.height - 1;
+          corners = [at(0, 0), at(right, 0), at(0, bottom), at(right, bottom)];
+        }
+      } catch {
+        // not a 2D canvas
+      }
+      blobs.push({ width: canvas.width, height: canvas.height, type, quality, corners });
+    };
     const toBlob = HTMLCanvasElement.prototype.toBlob;
     HTMLCanvasElement.prototype.toBlob = function (
       this: HTMLCanvasElement,
@@ -39,21 +56,17 @@ export async function recordCanvasBlobs(page: Page) {
       type?: string,
       quality?: number
     ) {
-      let corners = null;
-      try {
-        const context = this.getContext('2d');
-        if (context && this.width > 0 && this.height > 0) {
-          const at = (x: number, y: number) =>
-            Array.from(context.getImageData(x, y, 1, 1).data).slice(0, 3);
-          const right = this.width - 1;
-          const bottom = this.height - 1;
-          corners = [at(0, 0), at(right, 0), at(0, bottom), at(right, bottom)];
-        }
-      } catch {
-        // not a 2D canvas
-      }
-      blobs.push({ width: this.width, height: this.height, type, quality, corners });
+      record(this, type, quality);
       return toBlob.call(this, callback, type, quality);
+    };
+    const toDataURL = HTMLCanvasElement.prototype.toDataURL;
+    HTMLCanvasElement.prototype.toDataURL = function (
+      this: HTMLCanvasElement,
+      type?: string,
+      quality?: unknown
+    ) {
+      record(this, type, quality);
+      return toDataURL.call(this, type, quality);
     };
   });
 }

@@ -1,6 +1,7 @@
 import { showSnackbar } from '#lib/util/index.js';
 import { writable } from 'svelte/store';
-import { blobToBase64, imageResize, type VolumeMetadata } from '.';
+import { imageResize, type VolumeMetadata } from '.';
+import { canvasDataUrlNow } from '#lib/util/canvas-encode.js';
 import type { Settings } from '#lib/settings/settings.js';
 import type { Page, Block } from '#lib/types/index.js';
 
@@ -222,10 +223,7 @@ export async function getCroppedImg(
     settings.ankiConnectSettings.widthField,
     settings.ankiConnectSettings.heightField
   );
-  const blob = await canvas.convertToBlob({
-    type: 'image/jpeg',
-    quality: settings.ankiConnectSettings.qualityField
-  });
-
-  return await blobToBase64(blob);
+  // Encoded now: a main-thread convertToBlob waits for an idle period (up to
+  // 6.7 s under load) while the Create Card button does nothing — canvas-encode.ts.
+  return canvasDataUrlNow(canvas, 'image/jpeg', settings.ankiConnectSettings.qualityField);
 }

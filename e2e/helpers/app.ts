@@ -12,10 +12,23 @@ import { expect, type Page } from '@playwright/test';
  */
 export async function gotoApp(page: Page): Promise<void> {
   await page.goto('/');
+  await waitForBoot(page);
+}
+
+/**
+ * After any document load (`goto`, `reload`): wait until the app's router has
+ * claimed the URL, landing on `hash` (`#/catalog` for `/`, and for an AniList
+ * callback, whose token it scrubs). Every load fetches the app's modules from
+ * the dev server again, so this gets the BOOT budget, not expect's 5 s default:
+ * measured with 16 workers on a machine at load ~105 (48 CPU burners), a second
+ * load of an already warm page claimed the URL 7.2 s (p50) to 9.6 s (max) after
+ * `goto` resolved — and always did; first loads up to 10.7 s.
+ */
+export async function waitForBoot(page: Page, hash = '#/catalog'): Promise<void> {
   await expect
     .poll(() => page.evaluate(() => window.location.hash), {
       timeout: 30000,
       message: 'the app never booted (the router never claimed the URL)'
     })
-    .toBe('#/catalog');
+    .toBe(hash);
 }

@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { gotoApp } from './helpers/app';
+import { gotoApp, waitForBoot } from './helpers/app';
 
 /**
  * The integration-hygiene fixes in a real browser:
@@ -48,7 +48,7 @@ test.describe('AnkiConnect URL trust', () => {
     await gotoApp(page);
     await setProfileAnkiUrl(page, 'https://anki.example.com');
     await page.reload();
-    await expect.poll(() => page.evaluate(() => window.location.hash)).toBe('#/catalog');
+    await waitForBoot(page);
 
     const drawer = await openSettingsSection(page, 'Anki Connect');
     const banner = drawer.getByTestId('anki-url-unconfirmed');
@@ -96,7 +96,8 @@ test.describe('AniList login', () => {
       );
     }, startedMsAgo);
     await page.goto('/?callback=1#access_token=tok-e2e&token_type=Bearer&expires_in=3600');
-    await expect.poll(() => page.evaluate(() => window.location.hash)).toBe('#/catalog');
+    // A fresh document: the router scrubs the token from the URL as it boots.
+    await waitForBoot(page);
   }
 
   test('a callback for a login abandoned over 10 minutes ago stores nothing', async ({ page }) => {

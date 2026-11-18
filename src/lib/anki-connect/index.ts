@@ -17,6 +17,7 @@ import { settings, DEFAULT_MODEL_CONFIGS } from '#lib/settings/index.js';
 import { showSnackbar } from '#lib/util/index.js';
 import { isMobilePlatform } from '#lib/util/platform.js';
 import { displayableCoverBlob } from '#lib/util/raster-image.js';
+import { canvasDataUrlNow } from '#lib/util/canvas-encode.js';
 import { get } from 'svelte/store';
 import { escapeFieldText, placeholderNonce, tagSafeTitle } from './field-html';
 import { effectiveAnkiUrl, isAnkiUrlTrusted, unconfirmedAnkiUrlMessage } from './url-trust';
@@ -668,13 +669,15 @@ export async function imageToWebp(source: File, settings: Settings) {
       settings.ankiConnectSettings.widthField,
       settings.ankiConnectSettings.heightField
     );
-    const blob = await canvas.convertToBlob({
-      type: 'image/jpeg',
-      quality: settings.ankiConnectSettings.qualityField
-    });
+    // Encoded now, not in a main-thread idle task (canvas-encode.ts).
+    const dataUrl = canvasDataUrlNow(
+      canvas,
+      'image/jpeg',
+      settings.ankiConnectSettings.qualityField
+    );
     image.close();
 
-    return await blobToBase64(blob);
+    return dataUrl;
   }
 }
 
@@ -1200,12 +1203,16 @@ export async function cropImageToBounds(
         currentSettings.ankiConnectSettings.heightField
       );
 
-      const blob = await canvas.convertToBlob({
-        type: 'image/jpeg',
-        quality: currentSettings.ankiConnectSettings.qualityField
-      });
-
-      resolve(await blobToBase64(blob));
+      // Encoded now, not in a main-thread idle task (canvas-encode.ts); a
+      // failure answers null like a failed load, never a promise left hanging.
+      try {
+        resolve(
+          canvasDataUrlNow(canvas, 'image/jpeg', currentSettings.ankiConnectSettings.qualityField)
+        );
+      } catch (error) {
+        console.error('Anki crop: could not encode the image', error);
+        resolve(null);
+      }
     };
     img.onerror = () => resolve(null);
     img.src = imageUrl;

@@ -302,12 +302,24 @@ test('one sign-in, a bound HttpOnly cookie, silent renewal, a device sign-out, a
   const consent: { url?: URL } = {};
   await routeGoogle(page, google, consent);
   const backendCalls: { path: string; body: Record<string, unknown> }[] = [];
-  const logoutAnswers: unknown[] = [];
-  page.on('response', async (response) => {
+  // The page's /logout answers, in order. Reading a body is async, so each is
+  // kept as the promise pushed the moment its response arrives, and a step
+  // WAITS for the answer to the sign-out it made (`logoutAnswer`): the UI a
+  // step checks first is no sign the answer was recorded — the token is cleared
+  // before /logout is even sent. (`page.request` calls are not page responses.)
+  const logoutAnswers: Promise<unknown>[] = [];
+  page.on('response', (response) => {
     if (new URL(response.url()).pathname === '/api/gdrive/logout') {
-      logoutAnswers.push(await response.json().catch(() => null));
+      logoutAnswers.push(response.json().catch(() => null));
     }
   });
+  /** The answer to the page's `n`th /logout (0-based), once it has arrived. */
+  const logoutAnswer = async (n: number) => {
+    await expect
+      .poll(() => logoutAnswers.length, { message: `the page's /logout #${n + 1} was answered` })
+      .toBeGreaterThan(n);
+    return logoutAnswers[n];
+  };
   // The browser's own revoke (the fallback when the server could not): it
   // must not be needed when the server confirms it revoked.
   const browserRevokes: string[] = [];
@@ -429,6 +441,7 @@ test('one sign-in, a bound HttpOnly cookie, silent renewal, a device sign-out, a
     await page.goto(`${origin}/#/cloud`);
     expect(await hasDeviceKey(page)).toBe(true);
     const googleCallsBefore = google.requests.length;
+    const answersBefore = logoutAnswers.length;
 
     await page.getByRole('button', { name: 'Log out' }).click();
     await expect.poll(() => storedToken(page), { timeout: 30_000 }).toBeNull();
@@ -438,9 +451,14 @@ test('one sign-in, a bound HttpOnly cookie, silent renewal, a device sign-out, a
       page.getByText('Logged out of Google Drive on this device', { exact: true })
     ).toBeVisible();
 
+    // The answer first: its request event came before it.
+    expect(await logoutAnswer(answersBefore)).toEqual({
+      ok: true,
+      revoked: false,
+      invalidated: true
+    });
     const logout = backendCalls.filter((c) => c.path === '/api/gdrive/logout').at(-1)!;
     expect(logout.body).toEqual({ everywhere: false });
-    expect(logoutAnswers.at(-1)).toEqual({ ok: true, revoked: false, invalidated: true });
     // Google never heard of it: the grant other devices (and a bunko server) use stays live.
     expect(google.requests.slice(googleCallsBefore)).toEqual([]);
     expect(google.revoked.size).toBe(0);
@@ -499,6 +517,7 @@ test('one sign-in, a bound HttpOnly cookie, silent renewal, a device sign-out, a
 
   await test.step('sign out everywhere: confirmed, revoked at Google, cookie and key gone', async () => {
     await page.goto(`${origin}/#/cloud`);
+    const answersBefore = logoutAnswers.length;
     await page.getByRole('button', { name: 'Sign out everywhere…' }).click();
     const confirm = page.getByRole('button', { name: 'Sign out everywhere', exact: true });
     await expect(confirm).toBeVisible();
@@ -509,10 +528,14 @@ test('one sign-in, a bound HttpOnly cookie, silent renewal, a device sign-out, a
     await expect.poll(() => google.revoked.has(REFRESH_TOKEN)).toBe(true);
     await expect.poll(() => hasCookie(context)).toBe(false);
     await expect(page.getByText('Signed out of Google Drive everywhere')).toBeVisible();
+    // The server says it revoked, so the browser had nothing left to revoke.
+    expect(await logoutAnswer(answersBefore)).toEqual({
+      ok: true,
+      revoked: true,
+      invalidated: true
+    });
     const logout = backendCalls.filter((c) => c.path === '/api/gdrive/logout').at(-1)!;
     expect(logout.body).toEqual({ everywhere: true });
-    // The server says it revoked, so the browser had nothing left to revoke.
-    expect(logoutAnswers.at(-1)).toEqual({ ok: true, revoked: true, invalidated: true });
     expect(browserRevokes).toEqual([]);
     expect(await hasDeviceKey(page)).toBe(false);
     expect(await page.evaluate(() => localStorage.getItem('gdrive_logout_pending'))).toBeNull();
