@@ -1,5 +1,5 @@
 import { writable } from 'svelte/store';
-import type { CacheAddMetadata, CloudCache } from '../../cloud-cache-interface';
+import type { CacheAddMetadata, ChangeFeedResult, CloudCache } from '../../cloud-cache-interface';
 import type { CloudFileMetadata } from '../../provider-interface';
 import { CoalescedCacheStore } from '../../coalesced-cache-store';
 import { addMutations, removeMutations, replaceFolderInStore } from '../../listing-mutations';
@@ -11,6 +11,14 @@ import {
 
 /** Dedup-triggered refetches in a row before the cache stops asking (see runDeduplication). */
 const MAX_DEDUP_REFETCHES = 2;
+
+/**
+ * How long the sc stream may stand in for a full tree load — the same safety
+ * net as Google Drive's and OneDrive's `CHANGE_FEED_MAX_AGE_MS`: whatever the
+ * stream could ever miss (a packet megajs could not apply, a bug in our own
+ * replay guards) is corrected at least this often.
+ */
+export const CHANGE_FEED_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 /**
  * MEGA Cache Wrapper
@@ -29,6 +37,14 @@ class MegaCacheManager implements CloudCache<CloudFileMetadata> {
   private loadedFlag = false;
   /** Refetches in a row that a dedup run asked for (see runDeduplication). */
   private dedupRefetches = 0;
+  /**
+   * The provider's `treeVersion()` the installed listing was read at, or -1:
+   * equal to the provider's current value = the listing shows the tree as it
+   * stands (`refreshFromChanges`).
+   */
+  private listedAt = -1;
+  /** Listings installed so far (see `refreshFromChanges`: did a fetch land?). */
+  private installs = 0;
 
   get store() {
     // Return Map grouped by series for efficient series-based operations
@@ -79,6 +95,8 @@ class MegaCacheManager implements CloudCache<CloudFileMetadata> {
   private async load(skipReinitialize: boolean): Promise<void> {
     // Uploads and deletes made while the tree reloads are replayed onto its map.
     const listing = this.cache.beginListing();
+    // Read before listing: a change landing meanwhile leaves this one behind.
+    const treeVersion = megaProvider.treeVersion();
     try {
       // Query MEGA provider (which reads from its internal storage.files cache)
       const volumes = await megaProvider.listCloudVolumes(skipReinitialize);
@@ -100,6 +118,8 @@ class MegaCacheManager implements CloudCache<CloudFileMetadata> {
       // A clear() meanwhile (sign-out): this listing is a dead account's.
       if (!listing.install(cacheMap)) return;
       this.loadedFlag = true;
+      this.listedAt = treeVersion;
+      this.installs++;
       console.log(
         `✅ MEGA cache populated with ${volumes.length} files in ${cacheMap.size} series`
       );
@@ -204,9 +224,57 @@ class MegaCacheManager implements CloudCache<CloudFileMetadata> {
     return this.cache.revision();
   }
 
+  /**
+   * MEGA's change feed is the sc push stream (#288): the session's tree
+   * already holds every change made anywhere on the account, applied by
+   * megajs as the server pushes it, and a debounced rebuild follows each one
+   * (`attachChangeListeners`). So bringing the listing current costs no
+   * request while the poll answers — `'unchanged'` when the tree has not
+   * moved since the listing was read, else a rebuild from the live tree
+   * (`'applied'`), joined if one is already running. A poll quiet for a while
+   * is probed first — one small request (`confirmServerChanges`): megajs puts
+   * no timeout on the long-poll, so one hung on a dead connection would
+   * otherwise freeze the tree without ever erroring. A poll that is not
+   * running, a probe nobody answered, or a tree loaded over a day ago
+   * (`CHANGE_FEED_MAX_AGE_MS`) means the whole tree is loaded again
+   * (`'reset'`).
+   *
+   * REJECTS whenever the listing could not be brought current: a reload that
+   * did not bring the poll back, or no listing installed at all although the
+   * tree moved (each fetch logs and swallows its own failure). A metadata
+   * writer about to prune against the listing must never be told a frozen or
+   * stale one is current (`ensureFreshCloudListing`).
+   */
+  async refreshFromChanges(): Promise<ChangeFeedResult> {
+    const installsBefore = this.installs;
+    let result: ChangeFeedResult = 'applied';
+    const tooOld = Date.now() - megaProvider.treeLoadedAt() > CHANGE_FEED_MAX_AGE_MS;
+    if (tooOld || !(await megaProvider.confirmServerChanges())) {
+      await this.fetch(false);
+      if (this.installs === installsBefore || !megaProvider.hasLiveServerChanges()) {
+        throw new Error('MEGA listing could not be brought current: the tree did not reload');
+      }
+      result = 'reset';
+    } else if (this.listedAt === megaProvider.treeVersion() && !this.running) {
+      return 'unchanged';
+    }
+    // A listing read before the latest change (a rebuild already running, or
+    // the reload above, which counts its own swap): rebuild from the live tree
+    // until it caught up. It does at once unless changes keep landing — then
+    // the newest listing stands, and the debounced rebuild follows them.
+    for (let pass = 0; pass < 3 && this.listedAt !== megaProvider.treeVersion(); pass++) {
+      await this.fetch(true);
+    }
+    if (this.installs === installsBefore && this.listedAt !== megaProvider.treeVersion()) {
+      throw new Error('MEGA listing could not be brought current: no listing was installed');
+    }
+    return result;
+  }
+
   clear(): void {
     this.cache.set(new Map());
     this.loadedFlag = false;
+    this.listedAt = -1;
     // The next fetch lists the new account rather than joining the old one's.
     this.running = null;
     this.runningReloads = false;

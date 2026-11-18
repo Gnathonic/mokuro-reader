@@ -456,13 +456,15 @@ class UnifiedCloudManager {
   /**
    * `fetchAllCloudVolumes({ fromChangeFeed: true })`: a caller that needs the
    * listing CURRENT (a metadata writer about to merge and prune against it),
-   * not walked again, takes it from Google Drive's change feed when the
-   * cache is loaded — one small request when nothing moved. False = no feed
-   * here (another provider, or nothing listed yet): list in full.
+   * not walked again, takes it from the cache's change feed when it has one
+   * (Google Drive's changes.list, OneDrive's delta, MEGA's sc push stream) and
+   * is loaded — one small request (none on MEGA) when nothing moved. The feed throws rather than leave a stale
+   * listing looking current. False = no feed here (a cache without one, or
+   * nothing listed yet): list in full.
    */
   private async refreshFromChangeFeed(): Promise<boolean> {
     const provider = this.getActiveProvider();
-    if (provider?.type !== 'google-drive') return false;
+    if (!provider) return false;
     const cache = cacheManager.getCache(provider.type);
     if (!cache?.refreshFromChanges || !cache.isLoaded()) return false;
     await cache.refreshFromChanges();
@@ -651,8 +653,8 @@ class UnifiedCloudManager {
    * id, mtime, size, version and, on Drive, folder and name); the worker
    * backups refetch once per run on their own (`finishBackupRun`); and the
    * one thing the refetch really did — show other devices' writes — is the
-   * listing's job, done on Drive by the change feed at the top of every sync
-   * and before every metadata write (`refreshFromChanges`). So Drive's upload
+   * listing's job, done on Drive, OneDrive and MEGA by the change feed at the top
+   * of every sync and before every metadata write (`refreshFromChanges`). So Drive's upload
    * no longer refetches, the two paths are the same upload everywhere, and
    * either is fine for any caller. A provider that ever adds post-upload
    * refresh work must implement `blindUploadFile`, and nothing may depend on

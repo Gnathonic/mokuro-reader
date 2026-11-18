@@ -2,7 +2,13 @@ import { writable } from 'svelte/store';
 import type { CacheAddMetadata, CloudCache } from '../../cloud-cache-interface';
 import type { CloudFileMetadata } from '../../provider-interface';
 import { CoalescedCacheStore } from '../../coalesced-cache-store';
-import { addMutations, removeMutations, replaceFolderInStore } from '../../listing-mutations';
+import {
+  addMutations,
+  beginHistoryPatch,
+  removeMutations,
+  replaceFolderInStore,
+  type HistoryListingPatch
+} from '../../listing-mutations';
 import { filesystemProvider } from './filesystem-provider';
 
 /**
@@ -19,6 +25,8 @@ class FilesystemCacheManager implements CloudCache<CloudFileMetadata> {
   /** The listing in flight; every fetch() meanwhile joins it. */
   private fetchPromise: Promise<void> | null = null;
   private loadedFlag = false;
+  /** When the last full listing was installed (epoch ms; 0 = never, or cleared). */
+  private listedAt = 0;
 
   get store() {
     return this.cache;
@@ -69,6 +77,7 @@ class FilesystemCacheManager implements CloudCache<CloudFileMetadata> {
       // A clear() meanwhile (sign-out): this listing is a dead account's.
       if (!listing.install(cacheMap)) return;
       this.loadedFlag = true;
+      this.listedAt = Date.now();
       console.log(
         `✅ Filesystem cache populated with ${volumes.length} files in ${cacheMap.size} series`
       );
@@ -125,6 +134,7 @@ class FilesystemCacheManager implements CloudCache<CloudFileMetadata> {
   clear(): void {
     this.cache.set(new Map());
     this.loadedFlag = false;
+    this.listedAt = 0;
     this.fetchPromise = null;
     this.isFetchingStore.set(false);
   }
@@ -139,6 +149,11 @@ class FilesystemCacheManager implements CloudCache<CloudFileMetadata> {
 
   add(path: string, metadata: CacheAddMetadata<CloudFileMetadata>): void {
     this.cache.update(...addMutations(path, metadata));
+  }
+
+  /** `history/` between full listings — see `CloudCache.beginHistoryPatch`. */
+  beginHistoryPatch(): HistoryListingPatch {
+    return beginHistoryPatch(this.cache, this.listedAt);
   }
 
   removeById(fileId: string): void {

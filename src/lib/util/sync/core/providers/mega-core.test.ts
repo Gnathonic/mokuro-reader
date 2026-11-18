@@ -7,7 +7,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const state = vi.hoisted(() => ({
   lastFileOpts: null as any,
   fileNodeIdAfterConstruct: null as any,
-  chunks: [new Uint8Array([1, 2, 3]), new Uint8Array([4, 5])]
+  chunks: [new Uint8Array([1, 2, 3]), new Uint8Array([4, 5])],
+  /** What `Storage.fromJSON` hands the upload path (see the receipt test). */
+  uploadStorage: null as any
 }));
 
 vi.mock('megajs', () => {
@@ -27,6 +29,9 @@ vi.mock('megajs', () => {
   class MockStorage {
     api: any = { sid: null };
     constructor(_opts: any) {}
+    static fromJSON() {
+      return state.uploadStorage;
+    }
   }
 
   class MockFile extends SimpleEmitter {
@@ -148,5 +153,58 @@ describe('megaCore.downloadFile() (Phase 2)', () => {
     expect(state.fileNodeIdAfterConstruct).toBe('node1'); // owned-node path forced
     expect(new Uint8Array(buf)).toEqual(new Uint8Array([1, 2, 3, 4, 5]));
     expect(onProgress).toHaveBeenLastCalledWith(5, 5);
+  });
+});
+
+// #288: the new node's own size confirms a worker upload. A node holding other
+// than the bytes sent fails it, and goes: left behind it would be the newest
+// same-name copy, the one every other device downloads.
+describe('megaCore.uploadFile receipt', () => {
+  it('fails an upload whose node reports another size, and deletes that node', async () => {
+    const shortNode = {
+      nodeId: 'short-node',
+      timestamp: 1_780_000_000,
+      size: 2,
+      delete: vi.fn((_permanent: boolean, cb: (e: Error | null) => void) =>
+        queueMicrotask(() => cb(null))
+      )
+    };
+    const folder = {
+      nodeId: 'series-folder',
+      directory: true,
+      children: [],
+      upload: vi.fn(() => {
+        const handlers: Record<string, (...args: any[]) => void> = {};
+        return {
+          on(event: string, fn: (...args: any[]) => void) {
+            handlers[event] = fn;
+          },
+          write() {},
+          end() {
+            queueMicrotask(() => handlers.complete?.(shortNode));
+          }
+        };
+      })
+    };
+    state.uploadStorage = {
+      api: { sid: 'worker-sid' },
+      files: { 'series-folder': folder },
+      reload: vi.fn(async () => {})
+    };
+
+    await expect(
+      megaCore.uploadFile({
+        seriesTitle: 'Ippo',
+        filename: 'Ippo 01.cbz',
+        blob: new Blob([new Uint8Array([1, 2, 3])]),
+        credentials: {
+          megaSession: JSON.stringify({ sid: 'worker-sid', key: 'K' }),
+          megaSeriesFolderNodeId: 'series-folder'
+        },
+        mimeType: 'application/zip'
+      } as any)
+    ).rejects.toThrow(/stored 2 of 3 bytes/);
+    expect(shortNode.delete).toHaveBeenCalledOnce();
+    expect(shortNode.delete.mock.calls[0][0]).toBe(true);
   });
 });

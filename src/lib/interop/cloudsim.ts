@@ -32,6 +32,18 @@ export interface SimLogEntry {
   status: number;
 }
 
+export interface SimNode {
+  id: string;
+  parent_id: string | null;
+  name: string;
+  folder: boolean;
+  size: number;
+  sha256: string | null;
+  created: string;
+  modified: string;
+  trashed: boolean;
+}
+
 export interface SimFault {
   provider: SimProvider;
   account?: string;
@@ -124,6 +136,9 @@ export const sim = {
     }),
   files: (provider: SimProvider, account = 'default') =>
     control<SimFile[]>('GET', `files?provider=${provider}&account=${encodeURIComponent(account)}`),
+  /** Every live node but the roots (`/_sim/tree`), by id. */
+  tree: (provider: SimProvider, account = 'default') =>
+    control<SimNode[]>('GET', `tree?provider=${provider}&account=${encodeURIComponent(account)}`),
   fault: (fault: SimFault) => control<{ ok: boolean }>('POST', 'fault', fault),
   knobs: (provider: SimProvider, knobs: Record<string, unknown>, account = 'default') =>
     control<{ ok: boolean }>('POST', 'knobs', { provider, account, ...knobs }),

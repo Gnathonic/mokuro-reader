@@ -150,12 +150,16 @@ describe.skipIf(!cloudsimForSuite())('MEGA provider against cloudsim', () => {
         onProgress: () => {}
       });
       expect(await sha256Hex(new Uint8Array(data))).toBe(await sha256Hex(VOLUME));
-      await megaCore.uploadFile({
+      const uploaded = await megaCore.uploadFile({
         seriesTitle: 'Series A',
         filename: 'Vol 7.mokuro',
         blob: new Blob(['{"v":7}']),
         credentials: up
       });
+      // The receipt (#288): the new node's id, which is also its revision,
+      // and its size — confirmed against the 7 bytes sent.
+      expect(uploaded).toMatchObject({ fileId: expect.any(String), size: 7 });
+      expect(uploaded.revision).toBe(uploaded.fileId);
     } finally {
       setCloudTestBases(sim.bases());
     }
