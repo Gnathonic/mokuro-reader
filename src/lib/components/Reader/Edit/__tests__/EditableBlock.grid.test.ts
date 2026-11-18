@@ -19,6 +19,7 @@ import {
   lineHandlePoints
 } from '#lib/reader/edit/block-geometry.js';
 import { lineFrame } from '#lib/reader/line-grid.js';
+import { expectCssNumber } from '../../__tests__/css-number';
 
 // The editor draws a line the way the viewer does (line-grid.ts): ONE text
 // node on the block's fixed-pitch grid, turned when the quad is tilted. Cells are
@@ -303,10 +304,10 @@ describe('EditableBlock — a tilted quad shows the line turned', () => {
     const at = lineHandlePoints(lineGeometry(block.lines_coords![2]));
     const end = root.querySelector<HTMLElement>('[data-line-handle="end"]')!;
     const side = root.querySelector<HTMLElement>('[data-line-handle="side"]')!;
-    expect(px(end.style.left)).toBeCloseTo(at.end.x - 100 - 5, 6);
-    expect(px(end.style.top)).toBeCloseTo(at.end.y - 100 - 5, 6);
-    expect(px(side.style.left)).toBeCloseTo(at.side.x - 100 - 5, 6);
-    expect(px(side.style.top)).toBeCloseTo(at.side.y - 100 - 5, 6);
+    expectCssNumber(end.style.left, at.end.x - 100 - 5);
+    expectCssNumber(end.style.top, at.end.y - 100 - 5);
+    expectCssNumber(side.style.left, at.side.x - 100 - 5);
+    expectCssNumber(side.style.top, at.side.y - 100 - 5);
 
     end.setPointerCapture = vi.fn();
     end.releasePointerCapture = vi.fn();
