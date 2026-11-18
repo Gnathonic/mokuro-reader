@@ -31,6 +31,7 @@
   import { PointerGestureTracker, zoomGestureConfig } from '#lib/reader/input/pointer-tracker.js';
   import { TapDiscriminator } from '#lib/reader/input/tap.js';
   import type { MotionGate } from '#lib/reader/input/motion-gate.js';
+  import { DeferredPlacement } from '#lib/reader/input/deferred-placement.js';
   import { PageWindow, seedPageWindow } from '#lib/reader/page-window.js';
   import { onMount, onDestroy, tick } from 'svelte';
 
@@ -195,25 +196,34 @@
     onSettled: handleZoomSettled
   });
 
+  /** The opening placement, one frame after mount (see onMount). */
+  const opening = new DeferredPlacement();
+
   /**
    * Interrupt choke points — see MotionGate for the contract. Notable here:
    * beforeNav resyncs the scroller because its state only updates via async
    * scroll events; without sync() the next scrollBy would animate from a
-   * stale position and undo the zoom's final correction.
+   * stale position and undo the zoom's final correction. Every intent first
+   * runs a still-pending opening placement, so input that beats the strip's
+   * first frame acts on the placed view instead of being undone by it.
    */
   const motion: MotionGate = {
     beforeZoom() {
+      opening.flush();
       scroller?.stop();
       tracker.cancelPan();
     },
     beforeManualPan() {
+      opening.flush();
       if (zoomController.isActive) zoomController.finishNow();
       scroller?.stop();
     },
     beforeAnimatedScroll() {
+      opening.flush();
       if (zoomController.isActive) zoomController.finishNow();
     },
     beforeNav() {
+      opening.flush();
       if (!zoomController.isActive) return;
       zoomController.finishNow('nav');
       scroller?.sync();
@@ -413,6 +423,10 @@
   function handleKeydown(e: KeyboardEvent) {
     if (keyboardShouldIgnore(e.target)) return;
     if (!scrollContainer) return;
+    // Several keys below MEASURE the strip (detectCurrentPage) before any
+    // MotionGate intent runs: place the opening view first, or a key pressed
+    // before the strip's first frame turns from the unplaced top instead.
+    opening.flush();
 
     // In fit-to-screen, pages fit viewport — arrows page.
     // In fit-to-width/original, pages can be taller — arrows pan.
@@ -606,13 +620,17 @@
     }
     outerDiv?.addEventListener('wheel', handleWheel, { passive: false });
     tracker.attach();
-    requestAnimationFrame(() => {
+    opening.schedule(() => {
       const el = pageElements[currentPage - 1];
       if (el) el.scrollIntoView({ behavior: 'instant', block: 'start' });
+      // Adopt the placed position now: its scroll event arrives a frame
+      // later, and input flushing this placement scrolls on at once.
+      scroller?.sync();
     });
   });
 
   onDestroy(() => {
+    opening.cancel();
     scroller?.destroy();
     zoomController.destroy();
     pageWindow.detach();

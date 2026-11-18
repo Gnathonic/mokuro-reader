@@ -33,13 +33,14 @@ keyboard shortcuts and supplies intent callbacks (`onPageFlip`,
 
 ## The shared machinery
 
-| Module               | Owns                                                                                                                                                 |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pointer-tracker.ts` | THE pointer state machine: pan threshold, pinch upgrade/downgrade/re-baseline, capture policy, leak-proof window-level release, `wasDrag`/`wasPinch` |
-| `gesture-target.ts`  | Element-role classification (`textbox` / `interactive` / `page`) and the keyboard-ignore guard                                                       |
-| `tap.ts`             | Tap vs double-tap timing (300 ms), deferred vs immediate commit, text-box dismissal swallowing                                                       |
-| `swipe.ts`           | Pure swipe-to-flip classification (edge gating #186, pinch suppression, thresholds)                                                                  |
-| `motion-gate.ts`     | The interrupt contract: what must stop before new motion starts (`beforeZoom` / `beforeManualPan` / `beforeAnimatedScroll` / `beforeNav`)            |
+| Module                  | Owns                                                                                                                                                 |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pointer-tracker.ts`    | THE pointer state machine: pan threshold, pinch upgrade/downgrade/re-baseline, capture policy, leak-proof window-level release, `wasDrag`/`wasPinch` |
+| `gesture-target.ts`     | Element-role classification (`textbox` / `interactive` / `page`) and the keyboard-ignore guard                                                       |
+| `tap.ts`                | Tap vs double-tap timing (300 ms), deferred vs immediate commit, text-box dismissal swallowing                                                       |
+| `swipe.ts`              | Pure swipe-to-flip classification (edge gating #186, pinch suppression, thresholds)                                                                  |
+| `motion-gate.ts`        | The interrupt contract: what must stop before new motion starts (`beforeZoom` / `beforeManualPan` / `beforeAnimatedScroll` / `beforeNav`)            |
+| `deferred-placement.ts` | A next-frame view placement (the continuous strips' opening position) that every gate intent flushes first, so it never lands on top of input        |
 
 Surfaces hold only **policy** (config objects) and **actuation** (scroll
 writes, camera moves); classification and lifecycle live in the shared
@@ -105,6 +106,16 @@ phantom entries get misread as pinches (this was a live production bug).
 Every handler that starts motion opens with the gate call matching its
 intent. Never call `finishNow`/`stop`/`stopPan` combinations inline — add
 to the gate if a new intent appears.
+
+A view placement deferred past mount (the continuous strips place their
+opening page one frame later) is a motion owner too: it goes through
+`DeferredPlacement`, and every gate intent `flush()`es it before anything
+else. Otherwise a key pressed before that frame — Page Down right after
+switching into continuous mode — scrolls, and the frame then snaps the view
+back to the opening page, losing the press. A handler that MEASURES the
+view before its gate call (the vertical strip's arrow and setting-off page
+keys read the page nearest the centre first) flushes it itself, at its top:
+measured unplaced, the strip is still at its top and the turn heads there.
 
 ### Wheel granularity decides the zoom's shape (#259)
 
