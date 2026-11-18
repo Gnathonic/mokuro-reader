@@ -59,16 +59,8 @@ vi.mock('#lib/reader/edit/layers.js', () => ({
   loadLayerPages
 }));
 vi.mock('#lib/components/Reader/Layers/layer-actions.js', () => ({ runLayerAction }));
-vi.mock('../ReaderSelects.svelte', async () => {
-  const mod = await import('./__stub__/Empty.svelte');
-  return { default: mod.default };
-});
-vi.mock('../ReaderToggles.svelte', async () => {
-  const mod = await import('./__stub__/Empty.svelte');
-  return { default: mod.default };
-});
 
-import ReaderSettings from '../ReaderSettings.svelte';
+import ReaderVolumeSettings from '../ReaderVolumeSettings.svelte';
 // The REAL registry: the settings panel reaches the reader's edit session
 // through it, so the test registers a hook the way `Reader.svelte` does.
 import { registerBeforeLayerMutation } from '#lib/reader/edit/reader-edit-rules.js';
@@ -78,14 +70,22 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+/** The "This volume" section, opened (an accordion item renders nothing closed). */
+async function renderOpen() {
+  const result = render(ReaderVolumeSettings);
+  await fireEvent.click(result.getByRole('button', { name: 'This volume' }));
+  await tick();
+  return result;
+}
+
 const flushTasks = async () => {
   await new Promise((r) => setTimeout(r, 0));
   await tick();
 };
 
-describe('ReaderSettings — OCR layers', () => {
+describe('ReaderVolumeSettings — OCR layers', () => {
   it('lists layers in a select bound to the volume setting and exposes the actions', async () => {
-    const { getByLabelText, queryByLabelText } = render(ReaderSettings);
+    const { getByLabelText, queryByLabelText } = await renderOpen();
     const select = getByLabelText('OCR layer') as HTMLSelectElement;
     // The primary option is named after the mokuro version once the row loads.
     await new Promise((r) => setTimeout(r, 0));
@@ -130,7 +130,7 @@ describe('ReaderSettings — OCR layers', () => {
       ]
     };
     try {
-      const { getByLabelText } = render(ReaderSettings);
+      const { getByLabelText } = await renderOpen();
       const select = getByLabelText('OCR layer') as HTMLSelectElement;
       await flushTasks();
       expect(select.options[0].textContent?.trim()).toBe('Hayai Nova 2.5 · PP-OCR Manga 0.3');
@@ -145,7 +145,7 @@ describe('ReaderSettings — OCR layers', () => {
     };
     volumes.set({ v1: { progress: 1, settings: { ocrLayer: 'english' } } });
     try {
-      const { getByLabelText } = render(ReaderSettings);
+      const { getByLabelText } = await renderOpen();
       await flushTasks();
       const promote = getByLabelText('Promote layer') as HTMLButtonElement;
       expect(promote.disabled).toBe(true);
@@ -165,7 +165,7 @@ describe('ReaderSettings — OCR layers', () => {
     };
     volumes.set({ v1: { progress: 1, settings: { ocrLayer: 'curated' } } });
     try {
-      const { queryByLabelText } = render(ReaderSettings);
+      const { queryByLabelText } = await renderOpen();
       await flushTasks();
       expect(queryByLabelText('Delete layer')).toBeNull();
       expect(queryByLabelText('Export layer')).toBeTruthy();
@@ -179,7 +179,7 @@ describe('ReaderSettings — OCR layers', () => {
     const hook = vi.fn(() => new Promise<void>((r) => (settled = r)));
     const unregister = registerBeforeLayerMutation(hook);
     try {
-      const { getByLabelText } = render(ReaderSettings);
+      const { getByLabelText } = await renderOpen();
       await fireEvent.click(getByLabelText('New layer'));
       await flushTasks();
       expect(hook).toHaveBeenCalledWith('new');
@@ -206,7 +206,7 @@ describe('ReaderSettings — OCR layers', () => {
     const hook = vi.fn(async () => {});
     const unregister = registerBeforeLayerMutation(hook);
     try {
-      const { getByLabelText } = render(ReaderSettings);
+      const { getByLabelText } = await renderOpen();
       await fireEvent.click(getByLabelText('Promote layer'));
       await flushTasks();
       const ctx = runLayerAction.mock.calls[0][1];

@@ -53,6 +53,60 @@ describe('pagedGap migration', () => {
   });
 });
 
+describe('tap-to-turn migration (#54)', () => {
+  it('a profile from before the setting keeps every zone: background on, width kept', () => {
+    const migrated = migrateProfiles({ Old: { edgeButtonWidth: 1 } } as any);
+    expect(migrated.Old.tapOutsideImageToTurn).toBe(true);
+    expect(migrated.Old.edgeButtonWidth).toBe(1);
+  });
+
+  it('the one-switch "off" keeps nothing turning: background off and no image strip', () => {
+    const migrated = migrateProfiles({
+      Off: { tapPageEdgesToTurn: false, edgeButtonWidth: 55 }
+    } as any);
+    expect(migrated.Off.tapOutsideImageToTurn).toBe(false);
+    expect(migrated.Off.edgeButtonWidth).toBe(0);
+    expect('tapPageEdgesToTurn' in migrated.Off).toBe(false);
+  });
+
+  it('the one-switch "on" is the pre-setting behaviour', () => {
+    const migrated = migrateProfiles({
+      On: { tapPageEdgesToTurn: true, edgeButtonWidth: 55 }
+    } as any);
+    expect(migrated.On.tapOutsideImageToTurn).toBe(true);
+    expect(migrated.On.edgeButtonWidth).toBe(55);
+    expect('tapPageEdgesToTurn' in migrated.On).toBe(false);
+  });
+
+  it('an explicit new value wins over a leftover legacy key', () => {
+    const migrated = migrateProfiles({
+      Both: { tapPageEdgesToTurn: false, tapOutsideImageToTurn: true, edgeButtonWidth: 30 }
+    } as any);
+    expect(migrated.Both.tapOutsideImageToTurn).toBe(true);
+    expect(migrated.Both.edgeButtonWidth).toBe(30);
+  });
+
+  it('keeps an explicit off and a 0 width (the slider\'s "off")', () => {
+    const migrated = migrateProfiles({
+      New: { tapOutsideImageToTurn: false, edgeButtonWidth: 0 }
+    } as any);
+    expect(migrated.New.tapOutsideImageToTurn).toBe(false);
+    expect(migrated.New.edgeButtonWidth).toBe(0);
+  });
+
+  it.each([
+    [-5, 0],
+    [250, 100],
+    [12.6, 13],
+    ['40', 40],
+    ['junk', 40],
+    [null, 0]
+  ])('clamps a stored width of %s to %s', (stored, expected) => {
+    const migrated = migrateProfiles({ P: { edgeButtonWidth: stored } } as any);
+    expect(migrated.P.edgeButtonWidth).toBe(expected);
+  });
+});
+
 describe('grayscaleActive', () => {
   beforeEach(() => {
     // Known baseline: manual mode, filter off

@@ -2270,7 +2270,7 @@ SAMEORIGIN`, `Cross-Origin-Opener-Policy: same-origin-allow-popups` (never
 
 1. Add the setting to the `Settings` type in `src/lib/settings/settings.ts`
 2. Add default value to `defaultSettings` constant
-3. Update the settings UI component (e.g., ReaderToggles.svelte, ReaderSelects.svelte)
+3. Add it to the settings drawer section it belongs to (`src/lib/components/Settings/Reader/`: `ReaderSettings` layout, `ReaderTextSettings`, `ReaderControlsSettings`, `ReaderFilterSettings`, `ReaderOverlaySettings`, or the per-volume `ReaderVolumeSettings`); a boolean is one `SettingToggle` row
 4. Use the setting via the `currentSettings` derived store
 
 ### Adding Cloud Sync Features

@@ -42,7 +42,7 @@
   }
 </script>
 
-<div class="mt-4 rounded-lg border border-gray-200 p-3 dark:border-gray-700">
+<div class="rounded-lg border border-gray-200 p-3 dark:border-gray-700">
   <h3 class="mb-2 text-sm font-medium text-gray-900 dark:text-white">Reading timer</h3>
   <div class="space-y-3">
     <div>

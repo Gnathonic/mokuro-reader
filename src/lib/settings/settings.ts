@@ -165,7 +165,27 @@ export type Settings = {
   theme: string; // preset id ('dark' | 'eink' | 'paper' | 'sepia' | 'nord' | 'custom')
   customTheme: import('./theme').CustomTheme; // edited by the Custom theme mode
   swipeThreshold: number;
+  /**
+   * Tap-to-turn on the page IMAGE (#54): how many px of the page's own left /
+   * right edge turn the page on a tap or click (0–100, 0 = off). In camera px,
+   * so the strip scales with the zoom. On desktop the same width also runs
+   * down the screen's left / right edge, for when a zoomed page's own edge is
+   * off-screen — but only where the page is under it: a screen-edge tap over
+   * the background belongs to `tapOutsideImageToTurn`.
+   */
   edgeButtonWidth: number;
+  /**
+   * Tap-to-turn OUTSIDE the page image (#54): taps and clicks anywhere on
+   * the background around the page (beside, above or below it, out to the
+   * screen's edge) turn it. Off for
+   * devices with physical page-turn buttons, where a tap on empty space (e.g.
+   * dismissing a dictionary popup) must not move the page. Each region has
+   * exactly one control: this one never reaches onto the image, and
+   * `edgeButtonWidth` never reaches off it. Keys, quick actions and swipes
+   * (Mobile only) are unaffected. Profiles from before the split migrate in
+   * `migrateTapToTurn`.
+   */
+  tapOutsideImageToTurn: boolean;
   showTimer: boolean;
   quickActions: boolean;
   fontSize: FontSize;
@@ -318,6 +338,7 @@ const defaultSettings: Settings = {
   },
   swipeThreshold: 35,
   edgeButtonWidth: 40,
+  tapOutsideImageToTurn: true,
   showTimer: false,
   quickActions: true,
   fontSize: 'auto',
@@ -428,6 +449,37 @@ const builtInProfiles: Profiles = {
   Mobile: mobileDefaultSettings,
   Desktop: desktopDefaultSettings
 };
+
+/** The page-edge strip's range, px (`edgeButtonWidth`; 0 = off). */
+export const EDGE_STRIP_MAX = 100;
+
+/**
+ * Tap-to-turn's two controls (#54), from whatever a profile stored.
+ *
+ * - develop/1.11 and earlier: no toggle — the background always turned pages,
+ *   and `edgeButtonWidth` (1–100) reached onto the image. → toggle ON, the
+ *   width kept: the same zones turn.
+ * - the unreleased one-switch build: `tapPageEdgesToTurn: false` turned every
+ *   zone off (background, image edge, screen edge). → toggle OFF and width 0,
+ *   so still nothing turns; `true` (or absent) is the case above.
+ *
+ * An explicit `tapOutsideImageToTurn` always wins over the legacy key, which
+ * is dropped so the profiles converge. Reads the RAW stored profile: the
+ * defaults spread has already filled `tapOutsideImageToTurn` in `target`.
+ */
+export function migrateTapToTurn(target: Settings, stored: Partial<Settings>): void {
+  const raw = stored as Record<string, unknown>;
+  const legacyOff = raw.tapPageEdgesToTurn === false;
+  if (typeof raw.tapOutsideImageToTurn !== 'boolean') {
+    target.tapOutsideImageToTurn = !legacyOff;
+    if (legacyOff) target.edgeButtonWidth = 0;
+  }
+  delete (target as unknown as Record<string, unknown>).tapPageEdgesToTurn;
+  const width = Number(target.edgeButtonWidth);
+  target.edgeButtonWidth = Number.isFinite(width)
+    ? Math.min(EDGE_STRIP_MAX, Math.max(0, Math.round(width)))
+    : defaultSettings.edgeButtonWidth;
+}
 
 /**
  * Migrate old profiles to ensure all fields exist with defaults
@@ -552,6 +604,8 @@ export function migrateProfiles(profiles: Profiles): Profiles {
     if (typeof migratedProfile.pageKeysScrollFirst !== 'boolean') {
       migratedProfile.pageKeysScrollFirst = true;
     }
+
+    migrateTapToTurn(migratedProfile, profile);
 
     // Theme migration. The `...defaultSettings, ...profile` spread above already
     // applies `theme`/`customTheme` defaults or carries existing values forward.
