@@ -125,6 +125,17 @@ export function wheelIntentIsZoom(
   return swapWheelBehavior ? !ctrlOrMeta : ctrlOrMeta;
 }
 
+/**
+ * The swap as the wheel select means it (#55): "Turns pages" wins over
+ * "Zooms". Both booleans can be true at once — an older client, which only
+ * knows the swap toggle, turns it on in a profile that already turns pages —
+ * and then the plain wheel must not zoom anywhere: paged mode turns pages,
+ * continuous mode scrolls, as the select's hint promises.
+ */
+export function wheelSwapsZoom(s: { swapWheelBehavior: boolean; wheelTurnsPages?: boolean }) {
+  return s.swapWheelBehavior && !s.wheelTurnsPages;
+}
+
 /** Normalize a wheel delta to pixels across deltaMode values. */
 export function normalizeWheelDelta(deltaY: number, deltaMode: number): number {
   if (deltaMode === 1) return deltaY * 40; // lines (Firefox)

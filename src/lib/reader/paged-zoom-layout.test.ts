@@ -4,6 +4,7 @@ import {
   baseTransform,
   clampTranslate,
   panEdgeState,
+  panEdgeStateVertical,
   spreadContentSize
 } from './paged-zoom-layout';
 
@@ -194,6 +195,35 @@ describe('panEdgeState', () => {
     const s = panEdgeState({ x: 200, y: 0 }, { width: 1200, height: 900 }, viewport);
     expect(s.canRevealLeft).toBe(false);
     expect(s.canRevealRight).toBe(false);
+  });
+});
+
+describe('panEdgeStateVertical (#55 wheel page turns)', () => {
+  const tall = { width: 1600, height: 2700 };
+
+  it('at the top of a tall page only the bottom is hidden', () => {
+    expect(panEdgeStateVertical({ x: 0, y: 0 }, tall, viewport)).toEqual({
+      canRevealUp: false,
+      canRevealDown: true
+    });
+  });
+
+  it('in the middle both are hidden; at the bottom only the top', () => {
+    expect(panEdgeStateVertical({ x: 0, y: -900 }, tall, viewport)).toEqual({
+      canRevealUp: true,
+      canRevealDown: true
+    });
+    expect(panEdgeStateVertical({ x: 0, y: 900 - 2700 }, tall, viewport)).toEqual({
+      canRevealUp: true,
+      canRevealDown: false
+    });
+  });
+
+  it('a page that fits the height has nothing to reveal', () => {
+    expect(panEdgeStateVertical({ x: 0, y: 40 }, { width: 3000, height: 800 }, viewport)).toEqual({
+      canRevealUp: false,
+      canRevealDown: false
+    });
   });
 });
 

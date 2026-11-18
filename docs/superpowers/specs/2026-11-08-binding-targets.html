@@ -1,0 +1,1652 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Binding targets (#55)</title>
+    <style>
+      :root {
+        --bg: #fbfaf7;
+        --fg: #1d1d1f;
+        --mute: #6b6b70;
+        --line: #e3e1db;
+        --card: #fff;
+        --y: #1f7a4d;
+        --ybg: #e5f4ec;
+        --m: #8a6100;
+        --mbg: #fbf1d9;
+        --n: #8b2b2b;
+        --nbg: #f8e4e4;
+        --acc: #3557c4;
+        --chip: #efeee9;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root:not([data-theme='light']) {
+          --bg: #141416;
+          --fg: #e9e9ec;
+          --mute: #9a9aa2;
+          --line: #2c2c31;
+          --card: #1c1c20;
+          --y: #6fd3a0;
+          --ybg: #163024;
+          --m: #e8c063;
+          --mbg: #33290f;
+          --n: #f09a9a;
+          --nbg: #3a1a1a;
+          --acc: #8ea8ff;
+          --chip: #26262b;
+        }
+      }
+      :root[data-theme='dark'] {
+        --bg: #141416;
+        --fg: #e9e9ec;
+        --mute: #9a9aa2;
+        --line: #2c2c31;
+        --card: #1c1c20;
+        --y: #6fd3a0;
+        --ybg: #163024;
+        --m: #e8c063;
+        --mbg: #33290f;
+        --n: #f09a9a;
+        --nbg: #3a1a1a;
+        --acc: #8ea8ff;
+        --chip: #26262b;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font:
+          14px/1.45 system-ui,
+          -apple-system,
+          'Segoe UI',
+          sans-serif;
+      }
+      main {
+        max-width: 1180px;
+        margin: 0 auto;
+        padding: 24px 16px 80px;
+      }
+      h1 {
+        font-size: 22px;
+        margin: 0 0 4px;
+      }
+      h2 {
+        font-size: 16px;
+        margin: 28px 0 8px;
+      }
+      p,
+      li {
+        color: var(--fg);
+      }
+      .mute {
+        color: var(--mute);
+      }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 14px 16px;
+        margin: 12px 0;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 6px 8px;
+        border-bottom: 1px solid var(--line);
+        vertical-align: top;
+      }
+      th {
+        position: sticky;
+        top: 0;
+        background: var(--bg);
+        z-index: 1;
+        font-weight: 600;
+        font-size: 12px;
+        color: var(--mute);
+      }
+      tr.area td {
+        background: var(--chip);
+        font-weight: 600;
+        padding-top: 10px;
+      }
+      code,
+      .k {
+        font:
+          12px ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          monospace;
+      }
+      .k {
+        background: var(--chip);
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        padding: 0 4px;
+        white-space: nowrap;
+      }
+      select {
+        font: inherit;
+        font-size: 12px;
+        border-radius: 6px;
+        border: 1px solid var(--line);
+        padding: 2px 4px;
+        background: var(--card);
+        color: var(--fg);
+      }
+      select.Y {
+        background: var(--ybg);
+        color: var(--y);
+      }
+      select.M {
+        background: var(--mbg);
+        color: var(--m);
+      }
+      select.N {
+        background: var(--nbg);
+        color: var(--n);
+      }
+      tr.changed td:first-child {
+        box-shadow: inset 3px 0 0 var(--acc);
+      }
+      .tools {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+        position: sticky;
+        top: 0;
+        background: var(--bg);
+        padding: 8px 0;
+        z-index: 2;
+        border-bottom: 1px solid var(--line);
+      }
+      button {
+        font: inherit;
+        font-size: 13px;
+        border: 1px solid var(--line);
+        background: var(--card);
+        color: var(--fg);
+        border-radius: 6px;
+        padding: 4px 10px;
+        cursor: pointer;
+      }
+      button.primary {
+        background: var(--acc);
+        border-color: var(--acc);
+        color: #fff;
+      }
+      input[type='text'] {
+        font:
+          12px ui-monospace,
+          monospace;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 2px 4px;
+        background: var(--card);
+        color: var(--fg);
+        width: 100%;
+      }
+      .tbl {
+        overflow-x: auto;
+      }
+      .note {
+        color: var(--mute);
+        font-size: 12px;
+      }
+      .counts span {
+        margin-right: 12px;
+      }
+      textarea {
+        width: 100%;
+        height: 140px;
+        font:
+          12px ui-monospace,
+          monospace;
+        background: var(--card);
+        color: var(--fg);
+        border: 1px solid var(--line);
+        border-radius: 6px;
+      }
+      ol li {
+        margin: 6px 0;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Binding targets for #55</h1>
+      <p class="mute">
+        Every user-facing control in origin/develop @ 61b939f6, with a proposed call on each. Change
+        any cell, then press <b>Copy my changes</b> and paste the result back to Claude. Edits stay
+        in this browser only.
+      </p>
+
+      <div class="card">
+        <b>The model (your decisions so far)</b>
+        <ul>
+          <li>
+            <b>Toggle</b> setting → one action "Toggle X". <b>List</b> → "Next X", "Previous X", and
+            "Set X to &lt;option&gt;" for every option (both, per your answer). <b>Slider</b> →
+            "Increase / Decrease / Reset X" by its step, only where the slider earns it (proposed
+            per row). <b>Commands</b> are registered one by one.
+          </li>
+          <li>
+            Every action has an <b>icon</b> (flowbite-svelte-icons, already a dependency) and a
+            per-profile <b>Show on quick menu</b> option. The quick-menu column below is the
+            proposed DEFAULT; the user can change each.
+          </li>
+          <li>
+            Destructive commands are bindable and still open their confirmation dialog. All new
+            actions ship <b>unbound</b>; only today's keys are defaults.
+          </li>
+          <li>
+            Every generated action announces the new value through the reader's overlay notification
+            ("Brightness: 110%"), and a library toast outside the reader.
+          </li>
+          <li>
+            <b>Hover-target</b> actions (library cards, volume rows) act on the card under the
+            pointer, like today's <span class="k">E</span>/<span class="k">Delete</span>/<span
+              class="k"
+              >C</span
+            >.
+          </li>
+        </ul>
+        <p class="note">
+          Excluded by rule unless you flip them: setup-only settings (accounts, credentials,
+          AnkiConnect URLs and field mapping, schedules' clock times, RAM tier, reset hour/day),
+          anything needing typed input (rename, titles, page number), controls inside one-off modals
+          (cover picker, volume editor fields), and transient prompts.
+        </p>
+      </div>
+
+      <div class="tools">
+        <label
+          >Area
+          <select id="fArea">
+            <option value="">all</option>
+          </select></label
+        >
+        <label
+          >Call
+          <select id="fCall">
+            <option value="">all</option>
+            <option>Y</option>
+            <option>M</option>
+            <option>N</option>
+          </select></label
+        >
+        <label><input type="checkbox" id="fChanged" /> changed only</label>
+        <span class="counts" id="counts"></span>
+        <span style="flex: 1"></span>
+        <button id="reset">Reset to proposal</button>
+        <button class="primary" id="copy">Copy my changes</button>
+      </div>
+
+      <div class="tbl">
+        <table id="t">
+          <thead>
+            <tr>
+              <th style="width: 22%">Control</th>
+              <th>Kind</th>
+              <th>Scope</th>
+              <th>Key today</th>
+              <th>Call</th>
+              <th>Quick menu</th>
+              <th style="width: 14%">Icon</th>
+              <th style="width: 30%">Why / note</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <h2>Decisions (owner, 2026-11-09)</h2>
+      <ol>
+        <li>
+          <b>C and O</b>: one action, "Spreads offset", default <span class="k">O</span>.
+          <span class="k">C</span> is freed. (The cover toggle only overlapped the offset as a side
+          effect.)
+        </li>
+        <li>
+          <b>P and Z</b>: no split. Each stays ONE mode-aware cycle action (P = layout of the
+          current mode, Z = zoom of the current mode). The per-setting "Set to" actions still exist,
+          unbound.
+        </li>
+        <li>
+          <b>Scheduled night / invert / B&amp;W</b>: the key shows the schedule message, and the
+          message carries a "Set to manual" button.
+        </li>
+        <li>
+          <b>Quick menu outside the reader</b>: stays reader-only. Library and series actions are
+          bindable with no quick-menu option.
+        </li>
+        <li>
+          <b>Text-box actions under the pointer</b>: deferred past v1. "Copy whole page text" is in.
+        </li>
+        <li><b>Open settings</b>: yes, with one shared open-state store.</li>
+        <li>Every row left on "maybe" is bindable, unbound by default.</li>
+      </ol>
+
+      <h2>Paste-back</h2>
+      <textarea
+        id="out"
+        readonly
+        placeholder="Your changes appear here after Copy my changes"
+      ></textarea>
+    </main>
+    <script>
+      // [area, label, kind, scope, keyToday, call, quickMenuDefault (1/0/-1 = n/a), icon, note]
+      const R = [
+        // ---------- Reader: navigation ----------
+        [
+          'Reader: navigation',
+          'Next page',
+          'command',
+          'reader',
+          '→ / PageDown / Space (dir-aware)',
+          'Y',
+          1,
+          'ArrowRightOutline',
+          'Today. Quick menu today.'
+        ],
+        [
+          'Reader: navigation',
+          'Previous page',
+          'command',
+          'reader',
+          '← / PageUp',
+          'Y',
+          1,
+          'ArrowLeftOutline',
+          'Today. Quick menu today.'
+        ],
+        [
+          'Reader: navigation',
+          'Page left / Page right (physical)',
+          'command',
+          'reader',
+          '← / →',
+          'Y',
+          0,
+          'ChevronLeftOutline',
+          'Spec keeps left/right separate from forward/back for RTL.'
+        ],
+        [
+          'Reader: navigation',
+          'First page',
+          'command',
+          'reader',
+          'Home',
+          'Y',
+          0,
+          'ChevronDoubleLeftOutline',
+          ''
+        ],
+        [
+          'Reader: navigation',
+          'Last page',
+          'command',
+          'reader',
+          'End',
+          'Y',
+          0,
+          'ChevronDoubleRightOutline',
+          ''
+        ],
+        [
+          'Reader: navigation',
+          'Scroll image up / down',
+          'command',
+          'reader paged',
+          '↑ / ↓',
+          'Y',
+          0,
+          'ArrowUpDownOutline',
+          ''
+        ],
+        [
+          'Reader: navigation',
+          'Next volume',
+          'command',
+          'reader',
+          '—',
+          'Y',
+          0,
+          'ForwardStepOutline',
+          'New (spec phase 2). No standalone command exists today.'
+        ],
+        [
+          'Reader: navigation',
+          'Previous volume',
+          'command',
+          'reader',
+          '—',
+          'Y',
+          0,
+          'BackwardStepOutline',
+          'New.'
+        ],
+        [
+          'Reader: navigation',
+          'Back / close reader',
+          'command',
+          'reader',
+          'Esc',
+          'Y',
+          0,
+          'CloseOutline',
+          ''
+        ],
+        [
+          'Reader: navigation',
+          'Go to page…',
+          'command',
+          'reader',
+          '—',
+          'Y',
+          0,
+          'FileSearchOutline',
+          'Opens the page popover with the number field focused. Needs typed input after, so Maybe. Owner: yes, unbound by default.'
+        ],
+        [
+          'Reader: navigation',
+          'Wheel turns pages',
+          'gesture setting',
+          'profile',
+          '—',
+          'Y',
+          -1,
+          '—',
+          'Spec phase 3: the swap-wheel toggle becomes a select (Pan / Zoom / Turn pages).'
+        ],
+        // ---------- Reader: view ----------
+        [
+          'Reader: view',
+          'Fullscreen',
+          'toggle',
+          'device',
+          'F',
+          'Y',
+          1,
+          'ExpandOutline',
+          'Quick menu today.'
+        ],
+        [
+          'Reader: view',
+          'Zoom to fit (now)',
+          'command',
+          'reader',
+          '—',
+          'Y',
+          1,
+          'MinimizeOutline',
+          'Quick menu today.'
+        ],
+        [
+          'Reader: view',
+          'Zoom in / Zoom out (step)',
+          'command',
+          'reader',
+          'Ctrl+wheel',
+          'Y',
+          0,
+          'ZoomInOutline',
+          'Spec v1 new action.'
+        ],
+        [
+          'Reader: view',
+          'Show/hide reader controls (HUD)',
+          'toggle',
+          'transient',
+          'tap only',
+          'Y',
+          0,
+          'EyeOutline',
+          'Spec v1 new action.'
+        ],
+        [
+          'Reader: view',
+          'Open settings',
+          'command',
+          'app',
+          '—',
+          'Y',
+          0,
+          'CogOutline',
+          'Needs a global open-state store (question 6).'
+        ],
+        [
+          'Reader: view',
+          'Open quick menu',
+          'command',
+          'reader',
+          '—',
+          'Y',
+          -1,
+          'DotsVerticalOutline',
+          'The menu itself.'
+        ],
+        [
+          'Reader: view',
+          'Page view mode',
+          'list: single|dual|auto',
+          'profile',
+          'P cycles (paged)',
+          'Y',
+          0,
+          'BookOpenOutline',
+          'Next/Prev + 3 Set-to. See question 2.'
+        ],
+        [
+          'Reader: view',
+          'Continuous scroll',
+          'toggle',
+          'profile',
+          'V',
+          'Y',
+          0,
+          'ArrowsRepeatOutline',
+          ''
+        ],
+        [
+          'Reader: view',
+          'Scroll mode',
+          'list: auto|vertical|horizontal',
+          'profile',
+          'P cycles (continuous)',
+          'Y',
+          0,
+          'SortOutline',
+          'Next/Prev + 3 Set-to.'
+        ],
+        [
+          'Reader: view',
+          'On page zoom (paged)',
+          'list: fit|width|fill|original|keep',
+          'profile',
+          'Z cycles',
+          'Y',
+          0,
+          'ZoomInOutline',
+          'Next/Prev + 5 Set-to.'
+        ],
+        [
+          'Reader: view',
+          'Continuous zoom',
+          'list: fill|fit|original',
+          'profile',
+          'Z cycles (continuous)',
+          'Y',
+          0,
+          'ZoomInOutline',
+          'Next/Prev + 3 Set-to.'
+        ],
+        [
+          'Reader: view',
+          'Page dividers',
+          'toggle',
+          'profile',
+          'M (continuous)',
+          'Y',
+          0,
+          'HorizontalLinesOutline',
+          ''
+        ],
+        [
+          'Reader: view',
+          'Page transition',
+          'list: none|crossfade|pageTurn|swipe',
+          'profile',
+          '—',
+          'Y',
+          0,
+          'ShuffleOutline',
+          'Next/Prev + 4 Set-to.'
+        ],
+        [
+          'Reader: view',
+          'Bounds',
+          'toggle',
+          'profile',
+          '—',
+          'Y',
+          0,
+          'DrawSquareOutline',
+          'Debug-ish overlay; cheap to include. Owner: yes, unbound by default.'
+        ],
+        [
+          'Reader: view',
+          'Show page number',
+          'toggle',
+          'profile',
+          '—',
+          'Y',
+          0,
+          'OrderedListOutline',
+          ''
+        ],
+        [
+          'Reader: view',
+          'Show character count',
+          'toggle',
+          'profile',
+          '—',
+          'Y',
+          0,
+          'TextSizeOutline',
+          ''
+        ],
+        [
+          'Reader: view',
+          'Show timer',
+          'toggle',
+          'profile',
+          '—',
+          'Y',
+          0,
+          'ClockOutline',
+          '#202, spec v1.'
+        ],
+        [
+          'Reader: view',
+          'Show quick actions button',
+          'toggle',
+          'profile',
+          '—',
+          'Y',
+          -1,
+          'DotsVerticalOutline',
+          'Hiding the menu from a key is fine; it can never be on the menu itself. Owner: yes, unbound by default.'
+        ],
+        [
+          'Reader: view',
+          'Disable animations (e-ink)',
+          'toggle',
+          'profile',
+          '—',
+          'Y',
+          0,
+          'BanOutline',
+          'Set-once for most users. Owner: yes, unbound by default.'
+        ],
+        [
+          'Reader: view',
+          'Mobile mode',
+          'toggle',
+          'profile',
+          '—',
+          'Y',
+          0,
+          'MobilePhoneOutline',
+          'Changes the input model; rarely flipped mid-read. Owner: yes, unbound by default.'
+        ],
+        [
+          'Reader: view',
+          'Open reader in fullscreen',
+          'toggle',
+          'profile',
+          '—',
+          'N',
+          -1,
+          '—',
+          'Only applied on open; setup.'
+        ],
+        [
+          'Reader: view',
+          'Paged gap',
+          'slider 0–100 px',
+          'profile',
+          'Ctrl+Shift+wheel',
+          'Y',
+          0,
+          'ColumnOutline',
+          'Step actions ±4 px + reset? Wheel chord already covers it. Owner: yes, unbound by default.'
+        ],
+        [
+          'Reader: view',
+          'Scroll gap',
+          'slider 0–100 px',
+          'profile',
+          'Ctrl+Shift+wheel',
+          'Y',
+          0,
+          'TableRowOutline',
+          'Same as paged gap. Owner: yes, unbound by default.'
+        ],
+        ['Reader: view', 'Swipe threshold', 'slider 20–90', 'profile', '—', 'N', -1, '—', 'Setup.'],
+        [
+          'Reader: view',
+          'Edge button width',
+          'slider 1–100',
+          'profile',
+          '—',
+          'N',
+          -1,
+          '—',
+          'Setup; #54 adds the on/off toggle instead.'
+        ],
+        [
+          'Reader: view',
+          'Tap page edges to turn (#54)',
+          'toggle',
+          'profile',
+          '—',
+          'Y',
+          0,
+          'TabletOutline',
+          'New on fix/54-tap-to-turn.'
+        ],
+        [
+          'Reader: view',
+          'Page Up/Down scroll first (#283)',
+          'toggle',
+          'profile',
+          '—',
+          'Y',
+          0,
+          'ArrowDownOutline',
+          'New on feat/283; set-once. Owner: yes, unbound by default.'
+        ],
+        // ---------- Reader: image ----------
+        [
+          'Reader: image',
+          'Night mode',
+          'toggle',
+          'profile',
+          'N',
+          'Y',
+          0,
+          'MoonOutline',
+          'See question 3.'
+        ],
+        ['Reader: image', 'Invert colors', 'toggle', 'profile', 'I', 'Y', 0, 'SunOutline', ''],
+        ['Reader: image', 'Black & white', 'toggle', 'profile', 'G', 'Y', 0, 'PaletteOutline', ''],
+        [
+          'Reader: image',
+          'Image adjustment on/off (#362)',
+          'toggle',
+          'profile',
+          '(new key on #362 branch)',
+          'Y',
+          1,
+          'AdjustmentsHorizontalOutline',
+          'The #362 ask; proposed default ON in the quick menu since the reporter wants it at hand.'
+        ],
+        [
+          'Reader: image',
+          'Brightness',
+          'slider 50–200 step 5',
+          'profile',
+          '—',
+          'Y',
+          0,
+          'SunOutline',
+          'Earns step actions: per-page judgement while reading (#362/#363). ±5 % + Reset.'
+        ],
+        [
+          'Reader: image',
+          'Contrast',
+          'slider 50–200 step 5',
+          'profile',
+          '—',
+          'Y',
+          0,
+          'AdjustmentsVerticalOutline',
+          'Same as brightness.'
+        ],
+        [
+          'Reader: image',
+          'Magazine print effect',
+          'list: off|auto|red|…|pink (9)',
+          'profile',
+          '—',
+          'Y',
+          0,
+          'SwatchbookOutline',
+          'Next/Prev + 9 Set-to. Set-once for most. Owner: yes, unbound by default.'
+        ],
+        [
+          'Reader: image',
+          'Ink strength / paper tint / paper age',
+          'sliders',
+          'profile',
+          '—',
+          'Y',
+          0,
+          'SwatchbookOutline',
+          'Owner: yes. Step up / step down / reset per slider.'
+        ],
+        [
+          'Reader: image',
+          'Night/invert/B&W schedule (manual|scheduled)',
+          'list',
+          'profile',
+          '—',
+          'N',
+          -1,
+          '—',
+          'Setup; clock times are typed.'
+        ],
+        // ---------- Reader: text ----------
+        ['Reader: text', 'OCR enabled', 'toggle', 'profile', '—', 'Y', 0, 'CaptionOutline', ''],
+        ['Reader: text', 'Always show OCR', 'toggle', 'profile', 'T', 'Y', 0, 'EyeOutline', ''],
+        [
+          'Reader: text',
+          'Text box borders',
+          'toggle',
+          'profile',
+          '—',
+          'Y',
+          0,
+          'DrawSquareOutline',
+          ''
+        ],
+        ['Reader: text', 'Bold font', 'toggle', 'profile', '—', 'Y', 0, 'LetterBoldOutline', ''],
+        [
+          'Reader: text',
+          'Font size',
+          'list: auto|original|9…60 (15)',
+          'profile',
+          '—',
+          'Y',
+          0,
+          'TextSizeOutline',
+          'Next/Prev read as bigger/smaller + 15 Set-to.'
+        ],
+        [
+          'Reader: text',
+          'Custom text box menu',
+          'toggle',
+          'profile',
+          '—',
+          'Y',
+          0,
+          'MessageDotsOutline',
+          'Set-once. Owner: yes, unbound by default.'
+        ],
+        [
+          'Reader: text',
+          'Copy text box under pointer',
+          'command',
+          'reader',
+          '—',
+          'N',
+          0,
+          'ClipboardOutline',
+          'Deferred past v1 (owner): needs a pointer target.'
+        ],
+        [
+          'Reader: text',
+          'Copy whole page text',
+          'command',
+          'reader',
+          '—',
+          'Y',
+          0,
+          'FileCopyOutline',
+          'Question 5 (no target needed if it is the page). Owner: yes, unbound by default.'
+        ],
+        [
+          'Reader: text',
+          'Add text box under pointer to Anki',
+          'command',
+          'reader',
+          'double-tap',
+          'N',
+          0,
+          'FileCirclePlusOutline',
+          'Deferred past v1 (owner): needs a pointer target.'
+        ],
+        [
+          'Reader: text',
+          'Add image to Anki / image 2',
+          'command',
+          'reader',
+          '—',
+          'Y',
+          1,
+          'ImageOutline',
+          'Quick menu today (when Anki is on).'
+        ],
+        // ---------- Reader: volume (per-volume) ----------
+        [
+          'Reader: this volume',
+          'Right to left',
+          'toggle',
+          'volume',
+          '—',
+          'Y',
+          0,
+          'ArrowsRepeatOutline',
+          'Per-volume; worth a key (wrong-direction imports).'
+        ],
+        [
+          'Reader: this volume',
+          'First page is cover',
+          'toggle',
+          'volume',
+          'C (and O)',
+          'Y',
+          0,
+          'BookOutline',
+          'Question 1: O is a duplicate.'
+        ],
+        [
+          'Reader: this volume',
+          'OCR layer',
+          'list: dynamic',
+          'volume',
+          'L cycles',
+          'Y',
+          1,
+          'LayersOutline',
+          'Next/Prev only; Set-to impossible for a per-volume dynamic list (except "Primary"). Layer picker is on the quick menu today.'
+        ],
+        [
+          'Reader: this volume',
+          'Set OCR layer to primary',
+          'command',
+          'volume',
+          '—',
+          'Y',
+          0,
+          'LayersOutline',
+          'The one fixed Set-to.'
+        ],
+        [
+          'Reader: this volume',
+          'Mark volume read / unread',
+          'toggle',
+          'volume',
+          '—',
+          'Y',
+          0,
+          'CheckCircleOutline',
+          'Goes through the #224 sheet.'
+        ],
+        [
+          'Reader: this volume',
+          'Timer pause / resume',
+          'toggle',
+          'session',
+          'click timer',
+          'Y',
+          0,
+          'CirclePauseOutline',
+          'Counts the time or not.'
+        ],
+        [
+          'Reader: this volume',
+          'Volume defaults (RTL, cover)',
+          'toggle',
+          'profile',
+          '—',
+          'N',
+          -1,
+          '—',
+          'Setup; only shown outside the reader.'
+        ],
+        // ---------- Reader: edit mode ----------
+        [
+          'Reader: edit',
+          'Edit mode',
+          'toggle',
+          'reader paged',
+          'E',
+          'Y',
+          1,
+          'PenOutline',
+          'Quick menu today.'
+        ],
+        [
+          'Reader: edit',
+          'Undo / Redo',
+          'command',
+          'edit',
+          'Ctrl+Z / Ctrl+Shift+Z, Ctrl+Y',
+          'Y',
+          0,
+          'UndoOutline',
+          ''
+        ],
+        [
+          'Reader: edit',
+          'Delete selected box/line',
+          'command',
+          'edit',
+          'Delete / Backspace',
+          'Y',
+          0,
+          'TrashBinOutline',
+          ''
+        ],
+        [
+          'Reader: edit',
+          'Draw new box (tool)',
+          'toggle',
+          'edit',
+          '—',
+          'Y',
+          0,
+          'DrawSquareOutline',
+          ''
+        ],
+        [
+          'Reader: edit',
+          'Merge / Split / Place lines / Flip writing mode',
+          'command',
+          'edit',
+          '—',
+          'Y',
+          0,
+          'MergeCellsOutline',
+          'Act on the selection; four actions.'
+        ],
+        [
+          'Reader: edit',
+          'Revert page',
+          'command',
+          'edit',
+          '—',
+          'Y',
+          0,
+          'RefreshOutline',
+          'Destructive-ish; no confirm today. Propose adding Undo.'
+        ],
+        [
+          'Reader: edit',
+          'Move edit toolbar (top|left)',
+          'list',
+          'device',
+          '—',
+          'Y',
+          0,
+          'ObjectsColumnOutline',
+          'Owner: yes, unbound by default.'
+        ],
+        [
+          'Reader: edit',
+          'Layer: new / rename / promote / publish / unpublish / copy to corrections / export / delete',
+          'command',
+          'volume',
+          '—',
+          'Y',
+          0,
+          'LayersOutline',
+          'Each opens its dialog; delete/unpublish destructive (allowed with confirm). Maybe: rarely repeated. Owner: yes, unbound by default.'
+        ],
+        // ---------- Profiles & app ----------
+        [
+          'App',
+          'Profile',
+          'list: dynamic',
+          'app',
+          '—',
+          'Y',
+          0,
+          'UserSettingsOutline',
+          'Next/Prev + Set-to per profile (dynamic list, regenerated).'
+        ],
+        [
+          'App',
+          'Theme',
+          'list: 10 presets',
+          'profile',
+          '—',
+          'Y',
+          0,
+          'PaletteOutline',
+          'Next/Prev + 10 Set-to.'
+        ],
+        [
+          'App',
+          'Sync progress now',
+          'command',
+          'app',
+          '—',
+          'Y',
+          0,
+          'RefreshOutline',
+          'NavBar today; reader too.'
+        ],
+        [
+          'App',
+          'Backup all series to cloud',
+          'command',
+          'app',
+          '—',
+          'N',
+          -1,
+          'CloudArrowUpOutline',
+          'Dialog; rarely repeated. Owner: no.'
+        ],
+        [
+          'App',
+          'Open: catalog / reading speed / progress tracker / upload / cloud',
+          'command',
+          'app',
+          '—',
+          'Y',
+          -1,
+          'HomeOutline',
+          'Five navigation actions.'
+        ],
+        [
+          'App',
+          'Restore default settings',
+          'command',
+          'profile',
+          '—',
+          'N',
+          -1,
+          'TrashBinOutline',
+          'Destructive with confirm. Allowed, unbound. Owner: no.'
+        ],
+        ['App', 'Turbo mode', 'toggle', 'device', '—', 'N', -1, '—', 'Setup.'],
+        [
+          'App',
+          'Profile manage / import / export; theme custom colours; AniList connect; AnkiConnect setup; provider logins; RAM; reset hour/day',
+          'various',
+          '—',
+          '—',
+          'N',
+          -1,
+          '—',
+          'Setup or typed input.'
+        ],
+        [
+          'App',
+          'Push progress to AniList',
+          'toggle',
+          'profile',
+          '—',
+          'N',
+          -1,
+          'ShareNodesOutline',
+          'Owner: no.'
+        ],
+        [
+          'App',
+          'Sync all AniList-linked series now',
+          'command',
+          'app',
+          '—',
+          'N',
+          -1,
+          'RefreshOutline',
+          'Owner: no.'
+        ],
+        [
+          'App',
+          'Anki: double-tap to capture',
+          'toggle',
+          'profile',
+          '—',
+          'Y',
+          0,
+          'FileCirclePlusOutline',
+          'Owner: yes, unbound by default.'
+        ],
+        [
+          'App',
+          'Anki: card mode create|update',
+          'list',
+          'profile',
+          '—',
+          'Y',
+          0,
+          'FileCirclePlusOutline',
+          'Next/Prev + 2 Set-to. Owner: yes, unbound by default.'
+        ],
+        ['App', 'Anki: note type', 'list: dynamic', 'profile', '—', 'N', -1, '—', 'Setup.'],
+        // ---------- Library ----------
+        [
+          'Library',
+          'Focus search',
+          'command',
+          'catalog',
+          '—',
+          'Y',
+          -1,
+          'SearchOutline',
+          'New; the most-asked library key elsewhere.'
+        ],
+        [
+          'Library',
+          'Gallery layout grid|list',
+          'list',
+          'device',
+          '—',
+          'Y',
+          -1,
+          'GridOutline',
+          'Next/Prev + 2 Set-to.'
+        ],
+        [
+          'Library',
+          'Gallery sort smart|asc|desc',
+          'list',
+          'device',
+          '—',
+          'Y',
+          -1,
+          'SortOutline',
+          'Next/Prev + 3 Set-to.'
+        ],
+        [
+          'Library',
+          'Hide completed volumes',
+          'toggle',
+          'profile',
+          '—',
+          'Y',
+          -1,
+          'EyeSlashOutline',
+          ''
+        ],
+        [
+          'Library',
+          'Stacking preset compact|default|spine|custom',
+          'list',
+          'profile',
+          '—',
+          'Y',
+          -1,
+          'CubesStackedOutline',
+          ''
+        ],
+        [
+          'Library',
+          'Preferred title language native|english|imported',
+          'list',
+          'profile',
+          '—',
+          'Y',
+          -1,
+          'LanguageOutline',
+          ''
+        ],
+        [
+          'Library',
+          'Compact cloud series / drop shadow / centre H / centre V',
+          'toggle',
+          'profile',
+          '—',
+          'N',
+          -1,
+          'AdjustmentsHorizontalOutline',
+          'Four toggles; mostly set-once. Owner: no.'
+        ],
+        [
+          'Library',
+          'Stack count / horizontal step / vertical step',
+          'slider',
+          'profile',
+          '—',
+          'N',
+          -1,
+          '—',
+          'Tuned once.'
+        ],
+        [
+          'Library',
+          'Download all cloud series',
+          'command',
+          'catalog',
+          '—',
+          'N',
+          -1,
+          'DownloadOutline',
+          'Bulk. Owner: no.'
+        ],
+        [
+          'Library',
+          'Card: open series',
+          'command',
+          'hover',
+          'click',
+          'Y',
+          -1,
+          'BookOpenOutline',
+          'Hover target.'
+        ],
+        [
+          'Library',
+          'Card: series editor',
+          'command',
+          'hover',
+          'E',
+          'Y',
+          -1,
+          'EditOutline',
+          'Today.'
+        ],
+        [
+          'Library',
+          'Card: remove series',
+          'command',
+          'hover',
+          'Delete',
+          'Y',
+          -1,
+          'TrashBinOutline',
+          'Today; confirm.'
+        ],
+        [
+          'Library',
+          'Card: spine offset ±, reset (series / volume)',
+          'gesture',
+          'hover',
+          'Shift(+Alt)+wheel, right-click',
+          'N',
+          -1,
+          '—',
+          'Fixed gestures, listed read-only (spec decision 8).'
+        ],
+        [
+          'Library',
+          'Merge series view / Clear catalog',
+          'command',
+          'app',
+          '—',
+          'N',
+          -1,
+          'CodeMergeOutline',
+          'Clear catalog destructive with confirm. Owner: no.'
+        ],
+        // ---------- Series page / volumes ----------
+        ['Series page', 'Edit series', 'command', 'series', '—', 'Y', -1, 'EditOutline', ''],
+        [
+          'Series page',
+          'Series sort unread-first|A–Z|Z–A',
+          'list',
+          'device',
+          '—',
+          'Y',
+          -1,
+          'ArrowSortLettersOutline',
+          ''
+        ],
+        ['Series page', 'Series view grid|list', 'list', 'device', '—', 'Y', -1, 'GridOutline', ''],
+        [
+          'Series page',
+          'Download all / Backup remaining',
+          'command',
+          'series',
+          '—',
+          'Y',
+          -1,
+          'DownloadOutline',
+          ''
+        ],
+        [
+          'Series page',
+          'Remove manga / Delete from provider / Clean duplicates',
+          'command',
+          'series',
+          '—',
+          'Y',
+          -1,
+          'TrashBinOutline',
+          'Destructive with confirm. Owner: yes, unbound by default.'
+        ],
+        [
+          'Series page',
+          'Extract… / View series text',
+          'command',
+          'series',
+          '—',
+          'Y',
+          -1,
+          'FileExportOutline',
+          'Owner: yes, unbound by default.'
+        ],
+        ['Series page', 'Back', 'command', 'series', 'Esc', 'Y', -1, 'ArrowLeftOutline', 'Today.'],
+        [
+          'Volume row',
+          'Open in reader',
+          'command',
+          'hover',
+          'click',
+          'Y',
+          -1,
+          'BookOpenReaderOutline',
+          ''
+        ],
+        [
+          'Volume row',
+          'Volume editor',
+          'command',
+          'hover',
+          'E',
+          'Y',
+          -1,
+          'EditOutline',
+          'Today (fix: ignores modifiers today).'
+        ],
+        ['Volume row', 'Change cover', 'command', 'hover', 'C', 'Y', -1, 'ImageOutline', 'Today.'],
+        [
+          'Volume row',
+          'Delete / Delete cloud copy only',
+          'command',
+          'hover',
+          'Delete / Shift+Delete',
+          'Y',
+          -1,
+          'TrashBinOutline',
+          'Today; confirm.'
+        ],
+        [
+          'Volume row',
+          'Mark read / unread',
+          'toggle',
+          'hover',
+          '—',
+          'Y',
+          -1,
+          'CheckCircleOutline',
+          'Through #224 sheet.'
+        ],
+        [
+          'Volume row',
+          'Download / Backup / Retry upload / Delete from cloud',
+          'command',
+          'hover',
+          '—',
+          'Y',
+          -1,
+          'CloudArrowUpOutline',
+          'Owner: yes, unbound by default.'
+        ],
+        [
+          'Volume row',
+          'View text / Extract',
+          'command',
+          'hover',
+          '—',
+          'Y',
+          -1,
+          'FileLinesOutline',
+          'Owner: yes, unbound by default.'
+        ],
+        [
+          'Series editor',
+          'Next unlinked series / Next series without titles',
+          'command',
+          'modal',
+          '—',
+          'Y',
+          -1,
+          'ForwardOutline',
+          'Useful for bulk tagging sessions. Owner: yes, unbound by default.'
+        ],
+        [
+          'Series editor',
+          'Read count ± / Restart series / Ask again about re-reads',
+          'command',
+          'modal',
+          '—',
+          'N',
+          -1,
+          '—',
+          'Rare; restart destructive.'
+        ],
+        // ---------- Other views ----------
+        [
+          'Other views',
+          'Progress tracker: target mode daily|weekly, sort, completed view',
+          'list',
+          'device',
+          '—',
+          'Y',
+          -1,
+          'ChartLineUpOutline',
+          'Three lists. Owner: yes, unbound by default.'
+        ],
+        [
+          'Other views',
+          'Progress tracker: back to current period',
+          'command',
+          'tracker',
+          '—',
+          'Y',
+          -1,
+          'CalendarMonthOutline',
+          'Owner: yes, unbound by default.'
+        ],
+        [
+          'Other views',
+          'Text views: copy text / back',
+          'command',
+          'text view',
+          '—',
+          'Y',
+          -1,
+          'ClipboardOutline',
+          'Owner: yes, unbound by default.'
+        ],
+        [
+          'Other views',
+          'Goals forms, reading-speed deletes, merge picker, import steps, prompts',
+          'various',
+          '—',
+          '—',
+          'N',
+          -1,
+          '—',
+          'Typed input, one-off flows or transient prompts.'
+        ]
+      ];
+      const KEY = 'binding-targets-2026-11-08';
+      let state = {};
+      try {
+        state = JSON.parse(localStorage.getItem(KEY) || '{}');
+      } catch (e) {}
+      const save = () => {
+        try {
+          localStorage.setItem(KEY, JSON.stringify(state));
+        } catch (e) {}
+      };
+      const tb = document.querySelector('#t tbody'),
+        fArea = document.getElementById('fArea');
+      [...new Set(R.map((r) => r[0]))].forEach((a) => {
+        const o = document.createElement('option');
+        o.textContent = a;
+        fArea.appendChild(o);
+      });
+      function cur(i) {
+        const r = R[i],
+          s = state[i] || {};
+        return { call: s.call ?? r[5], qm: s.qm ?? r[6], icon: s.icon ?? r[7], note: s.note ?? '' };
+      }
+      function render() {
+        tb.innerHTML = '';
+        let last = '';
+        const fa = fArea.value,
+          fc = document.getElementById('fCall').value,
+          fch = document.getElementById('fChanged').checked;
+        const c = { Y: 0, M: 0, N: 0 };
+        R.forEach((r, i) => {
+          const v = cur(i);
+          c[v.call]++;
+          const changed = !!state[i] && Object.keys(state[i]).length > 0;
+          if (fa && r[0] !== fa) return;
+          if (fc && v.call !== fc) return;
+          if (fch && !changed) return;
+          if (r[0] !== last) {
+            last = r[0];
+            const tr = document.createElement('tr');
+            tr.className = 'area';
+            tr.innerHTML = `<td colspan="8">${r[0]}</td>`;
+            tb.appendChild(tr);
+          }
+          const tr = document.createElement('tr');
+          if (changed) tr.className = 'changed';
+          const qm =
+            v.qm === -1
+              ? '<span class="note">n/a</span>'
+              : `<input type="checkbox" data-i="${i}" data-f="qm" ${v.qm ? 'checked' : ''}>`;
+          tr.innerHTML = `<td>${r[1]}</td><td class="note">${r[2]}</td><td class="note">${r[3]}</td><td>${r[4] === '—' ? '<span class="note">—</span>' : `<span class="k">${r[4]}</span>`}</td>
+    <td><select class="${v.call}" data-i="${i}" data-f="call"><option ${v.call === 'Y' ? 'selected' : ''}>Y</option><option ${v.call === 'M' ? 'selected' : ''}>M</option><option ${v.call === 'N' ? 'selected' : ''}>N</option></select></td>
+    <td>${qm}</td><td><input type="text" data-i="${i}" data-f="icon" value="${v.icon}"></td>
+    <td><div class="note">${r[8]}</div><input type="text" data-i="${i}" data-f="note" placeholder="your note" value="${v.note.replace(/"/g, '&quot;')}"></td>`;
+          tb.appendChild(tr);
+        });
+        document.getElementById('counts').innerHTML =
+          `<span>Y ${c.Y}</span><span>M ${c.M}</span><span>N ${c.N}</span>`;
+      }
+      tb.addEventListener('change', (e) => {
+        const t = e.target,
+          i = +t.dataset.i,
+          f = t.dataset.f;
+        if (f === undefined) return;
+        const r = R[i];
+        const orig = { call: r[5], qm: r[6], icon: r[7], note: '' }[f];
+        const val = f === 'qm' ? (t.checked ? 1 : 0) : t.value;
+        state[i] = state[i] || {};
+        if (val === orig) delete state[i][f];
+        else state[i][f] = val;
+        if (!Object.keys(state[i]).length) delete state[i];
+        save();
+        render();
+      });
+      ['fArea', 'fCall', 'fChanged'].forEach((id) =>
+        document.getElementById(id).addEventListener('change', render)
+      );
+      document.getElementById('reset').onclick = () => {
+        state = {};
+        save();
+        render();
+      };
+      document.getElementById('copy').onclick = async () => {
+        const lines = Object.keys(state).map((i) => {
+          const r = R[i],
+            s = state[i];
+          return (
+            `- ${r[0]} / ${r[1]}: ` +
+            Object.entries(s)
+              .map(([k, v]) => `${k}=${k === 'qm' ? (v ? 'on' : 'off') : v}`)
+              .join(', ')
+          );
+        });
+        const txt = lines.length
+          ? '#55 binding-target changes:\n' + lines.join('\n')
+          : '#55 binding targets: proposal accepted as is.';
+        document.getElementById('out').value = txt;
+        try {
+          await navigator.clipboard.writeText(txt);
+        } catch (e) {}
+      };
+      render();
+    </script>
+  </body>
+</html>

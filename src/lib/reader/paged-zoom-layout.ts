@@ -188,6 +188,27 @@ export function panEdgeState(
 }
 
 /**
+ * The vertical counterpart of `panEdgeState`: whether content remains hidden
+ * above/below the viewport. The paged wheel's "turns pages" mode (#55) gates
+ * each wheel stream on it — a stream that could still pan in its direction
+ * when it began pans for its whole length, like an edge-gated swipe.
+ */
+export function panEdgeStateVertical(
+  translate: Translate,
+  scaledContent: Size,
+  viewport: Size
+): { canRevealUp: boolean; canRevealDown: boolean } {
+  if (scaledContent.height <= viewport.height) {
+    return { canRevealUp: false, canRevealDown: false };
+  }
+  const minY = viewport.height - scaledContent.height;
+  return {
+    canRevealUp: translate.y < 0 - EDGE_EPSILON,
+    canRevealDown: translate.y > minY + EDGE_EPSILON
+  };
+}
+
+/**
  * Native-pixel content size of the displayed page or pair. The gap between a
  * pair lives in image-pixel space (it scales with zoom like a physical
  * gutter) and must be part of the content size, or fit modes, pan clamping,

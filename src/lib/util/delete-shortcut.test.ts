@@ -1,17 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { anyModalOpen, shouldTriggerDelete } from './delete-shortcut';
-
-function keyEvent(overrides: Partial<KeyboardEvent> = {}): KeyboardEvent {
-  return {
-    key: 'Delete',
-    repeat: false,
-    ctrlKey: false,
-    metaKey: false,
-    altKey: false,
-    shiftKey: false,
-    ...overrides
-  } as KeyboardEvent;
-}
+import { anyModalOpen, shortcutAllowed } from './delete-shortcut';
 
 function elementWithTag(tag: string, contentEditable = false): Element {
   const el = document.createElement(tag);
@@ -21,48 +9,42 @@ function elementWithTag(tag: string, contentEditable = false): Element {
   return el;
 }
 
-describe('shouldTriggerDelete', () => {
-  it('is true when hovered, key is Delete, no repeat, no modal, focus outside a field', () => {
-    expect(shouldTriggerDelete(keyEvent(), true, null, false)).toBe(true);
+const onBody = { target: document.body } as Pick<KeyboardEvent, 'target'>;
+
+describe('shortcutAllowed', () => {
+  afterEach(() => {
+    document.body.innerHTML = '';
   });
 
-  it('is false when not hovered', () => {
-    expect(shouldTriggerDelete(keyEvent(), false, null, false)).toBe(false);
-  });
-
-  it('is false for any other key', () => {
-    expect(shouldTriggerDelete(keyEvent({ key: 'Backspace' }), true, null, false)).toBe(false);
-    expect(shouldTriggerDelete(keyEvent({ key: 'd' }), true, null, false)).toBe(false);
-  });
-
-  it('ignores auto-repeat, so holding the key cannot stack dialogs', () => {
-    expect(shouldTriggerDelete(keyEvent({ repeat: true }), true, null, false)).toBe(false);
-  });
-
-  it('is false while a modal is already open', () => {
-    expect(shouldTriggerDelete(keyEvent(), true, null, true)).toBe(false);
-  });
-
-  it('is false when ctrl, meta or alt is held', () => {
-    expect(shouldTriggerDelete(keyEvent({ ctrlKey: true }), true, null, false)).toBe(false);
-    expect(shouldTriggerDelete(keyEvent({ metaKey: true }), true, null, false)).toBe(false);
-    expect(shouldTriggerDelete(keyEvent({ altKey: true }), true, null, false)).toBe(false);
-  });
-
-  it('leaves shift to the caller (a volume reads it as "cloud copy only")', () => {
-    expect(shouldTriggerDelete(keyEvent({ shiftKey: true }), true, null, false)).toBe(true);
+  it('is true with focus outside a field', () => {
+    expect(shortcutAllowed(onBody, null)).toBe(true);
+    expect(shortcutAllowed(onBody, elementWithTag('div'))).toBe(true);
+    expect(shortcutAllowed(onBody, elementWithTag('button'))).toBe(true);
   });
 
   it('is false while a text field has focus', () => {
-    expect(shouldTriggerDelete(keyEvent(), true, elementWithTag('input'), false)).toBe(false);
-    expect(shouldTriggerDelete(keyEvent(), true, elementWithTag('textarea'), false)).toBe(false);
-    expect(shouldTriggerDelete(keyEvent(), true, elementWithTag('select'), false)).toBe(false);
-    expect(shouldTriggerDelete(keyEvent(), true, elementWithTag('div', true), false)).toBe(false);
+    for (const el of [
+      elementWithTag('input'),
+      elementWithTag('textarea'),
+      elementWithTag('select'),
+      elementWithTag('div', true)
+    ]) {
+      expect(shortcutAllowed(onBody, el)).toBe(false);
+    }
   });
 
-  it('is true when focus is on a non-typing element', () => {
-    expect(shouldTriggerDelete(keyEvent(), true, elementWithTag('div'), false)).toBe(true);
+  it('is false for a key pressed inside the settings panel or a popover', () => {
+    document.body.innerHTML =
+      '<div id="settings"><button id="a">x</button></div><div data-popover><button id="b">y</button></div>';
+    const inSettings = { target: document.getElementById('a') } as Pick<KeyboardEvent, 'target'>;
+    const inPopover = { target: document.getElementById('b') } as Pick<KeyboardEvent, 'target'>;
+    expect(shortcutAllowed(inSettings, null)).toBe(false);
+    expect(shortcutAllowed(inPopover, null)).toBe(false);
   });
+
+  // "Hovered" and "no dialog open" are no longer this guard's: a card provides
+  // its handlers only while hovered, and under a dialog only the dialog's own
+  // scope is tried (`keys/providers.test.ts`).
 });
 
 describe('anyModalOpen', () => {

@@ -31,6 +31,7 @@ vi.mock('#lib/catalog/index.js', () => ({
 }));
 
 import CatalogListItem from '../CatalogListItem.svelte';
+import { installLayoutKeyListener } from '#lib/keys/__tests__/layout-listener.js';
 import type { VolumeMetadata } from '#lib/types/index.js';
 
 function localVolume(overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
@@ -63,6 +64,15 @@ function getRow(container: HTMLElement): HTMLElement {
   if (!row) throw new Error('row element not found');
   return row as HTMLElement;
 }
+
+// The card's shortcuts are PROVIDED to the app's one key listener outside the
+// reader (#55): each test runs under that listener, installed as the layout
+// installs it on this page.
+let stopLayoutKeys: () => void = () => {};
+beforeEach(() => {
+  stopLayoutKeys = installLayoutKeyListener('library');
+});
+afterEach(() => stopLayoutKeys());
 
 describe('CatalogListItem hover + "e" opens the series editor', () => {
   beforeEach(() => {

@@ -6,7 +6,11 @@
  */
 import { readonly, writable } from 'svelte/store';
 import type { Page, VolumeOcrLayerKind } from '#lib/types/index.js';
-import { TRANSLATION_PROMOTE_BLOCKED, isTranslationLayer } from '#lib/reader/edit/layer-kind.js';
+import {
+  TRANSLATION_PROMOTE_BLOCKED,
+  isTranslationLayer,
+  type LayerCommand
+} from '#lib/reader/edit/layer-kind.js';
 import {
   buildLayerExportFile as realBuildLayerExportFile,
   copyIntoEditLayer as realCopyIntoEditLayer,
@@ -29,8 +33,8 @@ import {
 import { EDIT_LAYER_ID } from '#lib/reader/edit/layer-names.js';
 import { CANNOT_PUBLISH_CURATED_MESSAGE } from '#lib/util/sync/account-capabilities.js';
 
-export type LayerAction =
-  'new' | 'rename' | 'promote' | 'export' | 'delete' | 'publish' | 'unpublish' | 'copy-to-edit';
+/** One list, with its availability rules, in `layer-kind.ts`. */
+export type LayerAction = LayerCommand;
 export type LayerSource = 'copy' | 'empty';
 
 export interface LayerNamePrompt {

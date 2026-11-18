@@ -14,6 +14,9 @@
   import { normalizeSeriesKey } from '#lib/metadata/series-key.js';
   import { resolveDisplayTitle } from '#lib/metadata/display-title.js';
   import { needsDownload } from '#lib/catalog/volume-state.js';
+  import { provideKeyHandlers } from '#lib/keys/providers.js';
+  import type { KeyHandler } from '#lib/keys/dispatch.js';
+  import type { ScopeActionId } from '#lib/keys/actions.js';
 
   let volumeId = $derived($routeParams.volume || '');
   let volume = $derived($currentVolume);
@@ -135,6 +138,18 @@
       }, 3000);
     }
   }
+
+  // The text view's own key action (#55), provided to the layout's one key
+  // listener while this page is mounted: the Copy button's handler, once the
+  // button is on screen.
+  onMount(() =>
+    provideKeyHandlers('text', {
+      'text.copy': () => {
+        if (!(dataLoaded && volume && volumeData && pages.length > 0)) return false;
+        void copyText();
+      }
+    } satisfies Record<ScopeActionId<'text'>, KeyHandler>)
+  );
 
   function goBackToReader() {
     if (volume?.series_uuid && volumeId) nav.toReader(volume.series_uuid, volumeId);

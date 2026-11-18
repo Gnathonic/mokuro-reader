@@ -322,6 +322,138 @@ describe('notOnDeviceDisplay removal', () => {
   });
 });
 
+describe('key bindings (#55)', () => {
+  it('defaults to {} (today’s keys) and wheelTurnsPages off', () => {
+    const out = migrateProfiles({ Test: {} as any });
+    expect(out.Test.keyBindings).toEqual({});
+    expect(out.Test.wheelTurnsPages).toBe(false);
+  });
+
+  it('checks shape only: a non-object becomes {}, a non-array entry is dropped', () => {
+    expect(migrateProfiles({ T: { keyBindings: 'KeyA' } as any }).T.keyBindings).toEqual({});
+    expect(migrateProfiles({ T: { keyBindings: [['KeyA']] } as any }).T.keyBindings).toEqual({});
+    expect(
+      migrateProfiles({
+        T: { keyBindings: { 'reader.night': 'KeyN', 'reader.page-left': [] } } as any
+      }).T.keyBindings
+    ).toEqual({ 'reader.page-left': [] });
+    expect(migrateProfiles({ T: { wheelTurnsPages: 'yes' } as any }).T.wheelTurnsPages).toBe(false);
+  });
+
+  it('keeps unknown ids and unparseable chords: an older client cannot erase a newer one’s', () => {
+    const newer = { 'reader.page-left': ['KeyA'], 'future.action': ['Hyper+KeyQ'] };
+    // An older client reads the profile, edits something else, writes it back.
+    const read = migrateProfiles({ T: { keyBindings: newer } as any });
+    const written = { ...read.T, nightMode: true };
+    const roundTrip = migrateProfiles({ T: JSON.parse(JSON.stringify(written)) });
+    expect(roundTrip.T.keyBindings).toEqual(newer);
+  });
+});
+
+describe('key bindings: retired actions (#55)', () => {
+  it('folds a stored reader.cover into Spreads offset on load, without touching the stamp', () => {
+    const stored = {
+      T: {
+        keyBindings: { 'reader.cover': ['KeyC', 'KeyX'], 'reader.night': ['KeyB'] },
+        lastUpdated: '2026-01-01T00:00:00.000Z'
+      } as any
+    };
+    const out = migrateProfiles(stored);
+    expect(out.T.keyBindings).toEqual({
+      'reader.offset-spreads': ['KeyO', 'KeyX'],
+      'reader.night': ['KeyB']
+    });
+    // A shape migration: two devices converge without a write.
+    expect(out.T.lastUpdated).toBe('2026-01-01T00:00:00.000Z');
+    expect(migrateProfiles(JSON.parse(JSON.stringify(out))).T.keyBindings).toEqual(
+      out.T.keyBindings
+    );
+  });
+});
+
+describe('quick menu selection (#55)', () => {
+  it('defaults to {}: today’s menu, nothing to configure', () => {
+    expect(migrateProfiles({ Test: {} as any }).Test.quickMenu).toEqual({});
+  });
+
+  it('checks shape only: a non-object becomes {}, a non-boolean entry is dropped', () => {
+    for (const bad of ['on', 3, null, ['reader.fullscreen'], true]) {
+      expect(migrateProfiles({ T: { quickMenu: bad } as any }).T.quickMenu, String(bad)).toEqual(
+        {}
+      );
+    }
+    expect(
+      migrateProfiles({
+        T: {
+          quickMenu: {
+            'reader.fullscreen': false,
+            'set.bold.toggle': true,
+            'reader.night': 'yes',
+            'reader.invert': 1,
+            'reader.timer': null
+          }
+        } as any
+      }).T.quickMenu
+    ).toEqual({ 'reader.fullscreen': false, 'set.bold.toggle': true });
+  });
+
+  it('keeps unknown ids, and ids that can never be on the menu: an older client cannot erase them', () => {
+    const newer = { 'future.action': true, 'library.series-edit': true, 'set.wheel.next': false };
+    const read = migrateProfiles({ T: { quickMenu: newer } as any });
+    const written = { ...read.T, nightMode: true };
+    const roundTrip = migrateProfiles({ T: JSON.parse(JSON.stringify(written)) });
+    expect(roundTrip.T.quickMenu).toEqual(newer);
+  });
+});
+
+describe('copyKeyBindingsToAllProfiles (#55)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('writes the current map into every live profile and touches each one', async () => {
+    const {
+      copyKeyBindingsToAllProfiles,
+      createProfile,
+      deleteProfile,
+      changeProfile,
+      profilesWithTrash
+    } = await import('./settings');
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    createProfile('KeysA');
+    createProfile('KeysGone');
+    deleteProfile('KeysGone');
+    changeProfile('Desktop');
+    updateSetting('keyBindings', { 'reader.page-left': ['KeyA'] });
+    updateSetting('quickMenu', { 'reader.fullscreen': false, 'set.bold.toggle': true });
+
+    vi.setSystemTime(new Date('2026-02-01T00:00:00Z'));
+    copyKeyBindingsToAllProfiles();
+    const all = get(profilesWithTrash);
+    for (const name of ['Desktop', 'Mobile', 'KeysA']) {
+      expect(all[name].keyBindings, name).toEqual({ 'reader.page-left': ['KeyA'] });
+      // Both maps: the keys and the quick-menu selection.
+      expect(all[name].quickMenu, name).toEqual({
+        'reader.fullscreen': false,
+        'set.bold.toggle': true
+      });
+      expect(all[name].lastUpdated, name).toBe('2026-02-01T00:00:00.000Z');
+    }
+    // A tombstone stays a tombstone.
+    expect(all.KeysGone.deletedOn).toBeTruthy();
+    expect(all.KeysGone.keyBindings).toEqual({});
+    expect(all.KeysGone.quickMenu).toEqual({});
+    // Copies, not one shared object.
+    expect(all.KeysA.keyBindings).not.toBe(all.Desktop.keyBindings);
+    expect(all.KeysA.quickMenu).not.toBe(all.Desktop.quickMenu);
+    updateSetting('keyBindings', {});
+    updateSetting('quickMenu', {});
+  });
+});
+
 describe('page keys scroll tall pages first (#283)', () => {
   it('defaults ON for a profile stored before the key existed', () => {
     expect(migrateProfiles({ Test: {} as any }).Test.pageKeysScrollFirst).toBe(true);
@@ -341,5 +473,31 @@ describe('page keys scroll tall pages first (#283)', () => {
     const live = get(profiles);
     expect(live.Mobile.pageKeysScrollFirst).toBe(true);
     expect(live.Desktop.pageKeysScrollFirst).toBe(true);
+  });
+});
+
+describe('quick menu stays open after an action (#55, owner review)', () => {
+  it('defaults ON for a profile stored before the key existed', () => {
+    expect(migrateProfiles({ Test: {} as any }).Test.quickMenuStaysOpen).toBe(true);
+  });
+
+  it('keeps a stored OFF, and repairs a malformed value to ON', () => {
+    const out = migrateProfiles({
+      A: { quickMenuStaysOpen: false } as any,
+      B: { quickMenuStaysOpen: 'no' } as any
+    });
+    expect(out.A.quickMenuStaysOpen).toBe(false);
+    expect(out.B.quickMenuStaysOpen).toBe(true);
+  });
+
+  it('is ON in both built-in presets, and a profile setting (it syncs in profiles.json)', () => {
+    const live = get(profiles);
+    expect(live.Mobile.quickMenuStaysOpen).toBe(true);
+    expect(live.Desktop.quickMenuStaysOpen).toBe(true);
+    // A profile round-trips it through the synced JSON shape unchanged.
+    const stored = JSON.parse(
+      JSON.stringify({ T: { ...live.Desktop, quickMenuStaysOpen: false } })
+    );
+    expect(migrateProfiles(stored).T.quickMenuStaysOpen).toBe(false);
   });
 });

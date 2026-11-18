@@ -5,13 +5,13 @@ import ScheduledFilterCard from '../ScheduledFilterCard.svelte';
 const baseProps = {
   title: 'Black & white',
   enableLabel: 'Enable black & white',
-  hotkeyHint: 'G',
+  hotkeyAction: 'reader.grayscale',
   settingKey: 'grayscale',
   scheduleKey: 'grayscaleSchedule'
 } as const;
 
 describe('ScheduledFilterCard', () => {
-  it('renders the title and the manual hotkey hint', () => {
+  it('renders the title and the manual hotkey hint from the live keymap', () => {
     const { getByText } = render(ScheduledFilterCard, {
       props: { ...baseProps, active: false }
     });

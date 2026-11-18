@@ -14,6 +14,11 @@ export interface PagedZoomApi {
   /** QuickActions: show the whole page (fit-to-screen view, level 1). */
   zoomFitToScreen(): void;
   /**
+   * Zoom in (1) or out (-1) one step of the notched-wheel ladder, anchored at
+   * the screen centre — what one wheel notch does, without a pointer (#55).
+   */
+  zoomStep(direction: 1 | -1): void;
+  /**
    * Page Down / Space / Page Up on content taller than the screen (#283):
    * scroll it a screenful toward `direction` if it continues past the
    * viewport that way. True when it scrolled — the caller must then NOT turn

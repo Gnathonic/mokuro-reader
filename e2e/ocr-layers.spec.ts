@@ -91,7 +91,7 @@ async function openQuickActions(page: Page) {
 
 async function enterEditMode(page: Page) {
   await openQuickActions(page);
-  await page.getByLabel('Edit OCR', { exact: true }).click();
+  await page.getByLabel('Edit OCR text', { exact: true }).click();
   await expect(page.locator('[data-edit-toolbar]')).toBeVisible();
 }
 
@@ -268,7 +268,7 @@ test.describe('OCR layers', () => {
     await page.getByRole('radio', { name: /Original/ }).click();
     await expect.poll(async () => (await readState(page)).setting).toBe('original');
     await openQuickActions(page);
-    const edit = page.getByLabel('Edit OCR', { exact: true });
+    const edit = page.getByLabel('Edit OCR text', { exact: true });
     await expect(edit).toBeDisabled();
     await expect(edit).toHaveAttribute('title', 'The original layer is read-only');
     await page.getByLabel('Quick actions menu').click();
@@ -278,7 +278,7 @@ test.describe('OCR layers', () => {
     await page.getByRole('radio', { name: /mokuro 0\.2\.1/ }).click();
     await expect.poll(async () => (await readState(page)).setting).toBeNull();
     await openQuickActions(page);
-    await expect(page.getByLabel('Edit OCR', { exact: true })).toBeEnabled();
+    await expect(page.getByLabel('Edit OCR text', { exact: true })).toBeEnabled();
     await page.getByLabel('Quick actions menu').click();
 
     // Delete the scratch layer (original offers no delete).

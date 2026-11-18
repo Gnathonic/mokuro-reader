@@ -27,6 +27,7 @@ vi.mock('#lib/settings/index.js', async () => {
     mobile: false,
     showTimer: false,
     quickActions: true,
+    quickMenuStaysOpen: true,
     swapWheelBehavior: false,
     pageKeysScrollFirst: true,
     disableAnimations: false,
@@ -109,6 +110,21 @@ describe('ReaderToggles — reading timer', () => {
   });
 });
 
+describe('ReaderToggles — keep the quick menu open (#55, owner review)', () => {
+  it('lists the toggle under Show quick actions, ON by default, and writes the setting', async () => {
+    const { updateSetting } = await import('#lib/settings/index.js');
+    vi.mocked(updateSetting).mockClear();
+    settingsStore.get().update((s) => ({ ...s, continuousScroll: false }));
+    const { getByLabelText } = render(ReaderToggles);
+    const input = getByLabelText(/Keep quick menu open after an action/) as HTMLInputElement;
+    expect(input.checked).toBe(true);
+    const show = getByLabelText(/Show quick actions/);
+    expect(show.compareDocumentPosition(input) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await fireEvent.click(input);
+    expect(updateSetting).toHaveBeenCalledWith('quickMenuStaysOpen', false);
+  });
+});
+
 describe('ReaderToggles — page keys scroll tall pages (#283)', () => {
   it('lists the toggle next to the other input toggles and writes the setting', async () => {
     const { updateSetting } = await import('#lib/settings/index.js');
@@ -119,8 +135,9 @@ describe('ReaderToggles — page keys scroll tall pages (#283)', () => {
       /Page Up\/Down scroll tall pages before turning/
     ) as HTMLInputElement;
     expect(input.checked).toBe(true);
-    const swap = getByLabelText(/Swap mouse wheel scroll\/zoom/);
-    expect(swap.compareDocumentPosition(input) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // Beside the other input toggles (the wheel itself is a select on this branch, #55).
+    const menu = getByLabelText(/Keep quick menu open after an action/);
+    expect(menu.compareDocumentPosition(input) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     await fireEvent.click(input);
     expect(updateSetting).toHaveBeenCalledWith('pageKeysScrollFirst', false);
   });

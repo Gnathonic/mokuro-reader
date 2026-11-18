@@ -7,6 +7,7 @@
   import { currentView } from '#lib/util/hash-router.js';
   import AnkiConnectSettings from './AnkiConnectSettings.svelte';
   import ReaderSettings from './Reader/ReaderSettings.svelte';
+  import KeyboardShortcuts from './Keys/KeyboardShortcuts.svelte';
   import Profiles from './Profiles/Profiles.svelte';
   import CatalogSettings from './CatalogSettings.svelte';
   import MetadataSettings from './MetadataSettings.svelte';
@@ -97,6 +98,9 @@
       <MetadataSettings />
       <AppearanceSettings />
       <Stats />
+      <!-- Advanced, not a primary feature (owner review of #55): at defaults
+           nothing here needs touching, so it sits at the end, out of the way. -->
+      <KeyboardShortcuts />
       <About />
     </Accordion>
     <div class="flex flex-col gap-2">
