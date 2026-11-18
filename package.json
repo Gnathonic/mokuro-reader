@@ -33,7 +33,6 @@
     "@types/gapi.client.drive-v3": "^0.0.5",
     "@types/google.accounts": "^0.0.18",
     "@types/google.picker": "^0.0.52",
-    "@types/pica": "^9.0.5",
     "@typescript-eslint/eslint-plugin": "^8.72.1",
     "@typescript-eslint/parser": "^8.26.0",
     "@vitest/coverage-v8": "^5.1.0",

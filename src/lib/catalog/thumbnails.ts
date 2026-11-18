@@ -1,4 +1,4 @@
-import Pica from 'pica';
+import { Pica } from 'pica';
 
 export interface ThumbnailResult {
   file: File;
@@ -13,8 +13,8 @@ type ResizeStrategy = 'default' | 'js-only' | 'prescale' | 'canvas-native';
 let currentStrategy: ResizeStrategy = 'default';
 
 // Pica instances - created lazily as needed
-let picaDefault: ReturnType<typeof Pica> | null = null;
-let picaJsOnly: ReturnType<typeof Pica> | null = null;
+let picaDefault: Pica | null = null;
+let picaJsOnly: Pica | null = null;
 
 // Safe canvas size limit for mobile (4 megapixels is conservative)
 const SAFE_CANVAS_PIXELS = 4_000_000;
@@ -25,14 +25,12 @@ function isMobileBrowser(): boolean {
   return /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
 }
 
-type PicaInstance = ReturnType<typeof Pica>;
-
-function getPicaDefault(): PicaInstance {
+function getPicaDefault(): Pica {
   if (!picaDefault) picaDefault = new Pica();
   return picaDefault;
 }
 
-function getPicaJsOnly(): PicaInstance {
+function getPicaJsOnly(): Pica {
   if (!picaJsOnly) picaJsOnly = new Pica({ features: ['js'] });
   return picaJsOnly;
 }
@@ -45,7 +43,7 @@ const PICA_OPTIONS = {
 };
 
 async function resizeWithPica(
-  pica: PicaInstance,
+  pica: Pica,
   srcCanvas: HTMLCanvasElement,
   destCanvas: HTMLCanvasElement,
   mimeType: string
