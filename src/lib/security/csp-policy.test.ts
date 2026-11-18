@@ -116,7 +116,7 @@ describe('the directives', () => {
     // No default: it would refuse the https: media extensions inject (Migaku).
     expect(d['default-src']).toBeUndefined();
     expect(d['media-src']).toBeUndefined();
-    // pica's capability probe and zip.js's codec workers are data: URLs.
+    // pica's resize workers are blob: URLs; zip.js's codec workers are data: URLs.
     expect(d['worker-src']).toEqual(['self', 'blob:', 'data:']);
     expect(d['object-src']).toEqual(['none']);
     expect(d['base-uri']).toEqual(['self']);

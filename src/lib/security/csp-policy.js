@@ -65,9 +65,9 @@
 //                        interaction-required error: no reconnect prompt).
 // worker-src 'self' blob: data:
 //   the app's module workers and the service worker; pica starts its resize
-//   workers from blob: URLs and probes OffscreenCanvas support with a data:
-//   worker, and zip.js starts its codec workers from a data: URL (seen in the
-//   e2e run: without data: the probe is a violation on every thumbnail, and an
+//   workers from blob: URLs (since pica 10 its OffscreenCanvas probe runs in
+//   that same blob: worker, no longer in a data: one), and zip.js starts its
+//   codec workers from a data: URL (seen in the e2e run: without data: an
 //   archive import inside the file worker hangs)
 // object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'
 // No default-src: every fetch directive that can run code is named above, and a
