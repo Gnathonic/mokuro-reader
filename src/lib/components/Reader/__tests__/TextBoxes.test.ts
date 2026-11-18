@@ -9,6 +9,7 @@ import { processLine } from '#lib/reader/line-coords-layout.js';
 import textBoxesSource from '../TextBoxes.svelte?raw';
 import { getLastCardInfo } from '#lib/anki-connect/index.js';
 import { snackbarStore } from '#lib/util/snackbar.js';
+import { cssRoundingSlack, expectCssNumber } from './css-number';
 
 vi.mock('#lib/settings/index.js', async () => {
   const { writable } = await import('svelte/store');
@@ -221,8 +222,12 @@ describe('TextBoxes auto mode with lines_coords', () => {
         const size = parseFloat(span.style.fontSize);
         expect(size).toBeLessThan(46);
         expect(size).toBeGreaterThan(20);
-        // closed up by 5% of a glyph at the very most
-        expect(parseFloat(span.style.letterSpacing) / size).toBeGreaterThanOrEqual(-0.05 - 1e-9);
+        // closed up by 5% of a glyph at the very most — both read back
+        // rounded to 6 significant digits, so allow exactly that much
+        const spacing = parseFloat(span.style.letterSpacing);
+        expect(spacing).toBeGreaterThanOrEqual(
+          -0.05 * size - cssRoundingSlack(spacing) - 0.05 * cssRoundingSlack(size) - 1e-9
+        );
         // the file is not second-guessed beyond that: auto wraps line 0 into
         // its quad, original never does
         expect(span.classList.contains('wrappedLine')).toBe(false);
@@ -412,12 +417,15 @@ describe('TextBoxes: the fixed-pitch grid and rotation', () => {
       await vi.waitFor(() => expect(short.style.transform).not.toBe(''));
 
       // upright: the plain translate, the inset added along the reading axis
-      // (quad start 4.4, first cell 4.4 before it)
-      const translate = (el: HTMLElement) =>
-        /^translate\((-?[\d.e-]+)px, (-?[\d.e-]+)px\)$/
-          .exec(el.style.transform)!
-          .slice(1)
-          .map(Number);
+      // (quad start 4.4, first cell 4.4 before it). A zero y may be serialised
+      // away — `translate(50px)` is `translate(50px, 0)` by definition.
+      const translate = (el: HTMLElement) => {
+        const match = /^translate\((-?[\d.e+-]+)px(?:, (-?[\d.e+-]+)px)?\)$/.exec(
+          el.style.transform
+        );
+        expect(match, el.style.transform).not.toBeNull();
+        return [Number(match![1]), Number(match![2] ?? 0)];
+      };
       expect(translate(full)[0]).toBe(50);
       expect(translate(full)[1]).toBeCloseTo(0, 6);
       expect(translate(short)[0]).toBe(0);
@@ -512,10 +520,10 @@ describe('TextBoxes: the fixed-pitch grid and rotation', () => {
       const [full, short] = lineSpans(
         withFontSize('original', () => renderBlocks([{ ...loose, font_size: 80 }]))
       );
-      expect(parseFloat(full.style.fontSize)).toBeCloseTo(40 / 0.95, 6);
+      expectCssNumber(full.style.fontSize, 40 / 0.95);
       expect(short.style.fontSize).toBe(full.style.fontSize);
-      expect(parseFloat(full.style.letterSpacing)).toBeCloseTo(40 - 40 / 0.95, 6);
-      expect(parseFloat(short.style.letterSpacing)).toBeCloseTo(56 - 40 / 0.95, 6);
+      expectCssNumber(full.style.letterSpacing, 40 - 40 / 0.95);
+      expectCssNumber(short.style.letterSpacing, 56 - 40 / 0.95);
       // the block's own font-size stays the file's: only the lines are capped
       expect(full.closest<HTMLElement>('.textBox')!.style.fontSize).toBe('80px');
     });
